@@ -62,6 +62,24 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     return canvasPosition;
   }
 
+  void _increaseThickness() {
+    setState(() {
+      if (_selectedWidth < 8.0) {
+        _selectedWidth = (_selectedWidth + 0.5).clamp(1.0, 8.0);
+      }
+    });
+    HapticFeedback.selectionClick();
+  }
+
+  void _decreaseThickness() {
+    setState(() {
+      if (_selectedWidth > 1.0) {
+        _selectedWidth = (_selectedWidth - 0.5).clamp(1.0, 8.0);
+      }
+    });
+    HapticFeedback.selectionClick();
+  }
+
   void _showPageSelector() {
     showDialog(
       context: context,
@@ -293,9 +311,9 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
       ),
       body: Column(
         children: [
-          // Compact Toolbar
+          // 🔧 FIXED: Responsive Toolbar with proper overflow handling
           Container(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
             decoration: BoxDecoration(
               color: Colors.white,
               boxShadow: [
@@ -306,152 +324,207 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
                 ),
               ],
             ),
-            child: Row(
+            child: Column(
               children: [
-                // Mode indicator
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: _isPanMode ? Colors.orange[100] : Colors.blue[100],
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: Text(
-                    _isPanMode ? '🤏 Pan' : '✏️ Draw',
-                    style: TextStyle(
-                      fontSize: 10,
-                      fontWeight: FontWeight.w600,
-                      color: _isPanMode ? Colors.orange[800] : Colors.blue[800],
-                    ),
-                  ),
-                ),
-
-                const SizedBox(width: 12),
-
-                // Pen/Eraser toggle
-                if (!_isPanMode) ...[
-                  Container(
-                    decoration: BoxDecoration(
-                      color: Colors.grey[100],
-                      borderRadius: BorderRadius.circular(6),
-                    ),
-                    child: ToggleButtons(
-                      isSelected: [!_isErasing, _isErasing],
-                      onPressed: (index) {
-                        setState(() {
-                          _isErasing = index == 1;
-                        });
-                      },
-                      borderRadius: BorderRadius.circular(6),
-                      selectedColor: Colors.white,
-                      fillColor: const Color(0xFF3B82F6),
-                      color: const Color(0xFF64748B),
-                      constraints: const BoxConstraints(minWidth: 50, minHeight: 28),
-                      children: const [
-                        Icon(Icons.edit, size: 14),
-                        Icon(Icons.cleaning_services, size: 14),
-                      ],
-                    ),
-                  ),
-
-                  const SizedBox(width: 12),
-
-                  // Color picker
-                  if (!_isErasing) ...[
-                    Row(
-                      children: [
-                        _colorButton(const Color(0xFF1E40AF)),
-                        _colorButton(const Color(0xFF1F2937)),
-                        _colorButton(const Color(0xFFDC2626)),
-                        _colorButton(const Color(0xFF059669)),
-                        _colorButton(const Color(0xFF7C3AED)),
-                      ],
-                    ),
-
-                    const SizedBox(width: 12),
-
-                    // Thickness slider
-                    SizedBox(
-                      width: 80,
-                      child: SliderTheme(
-                        data: SliderTheme.of(context).copyWith(
-                          activeTrackColor: const Color(0xFF3B82F6),
-                          inactiveTrackColor: Colors.grey[300],
-                          thumbColor: const Color(0xFF3B82F6),
-                          overlayColor: const Color(0xFF3B82F6).withOpacity(0.2),
-                          trackHeight: 2,
-                          thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
-                        ),
-                        child: Slider(
-                          value: _selectedWidth,
-                          min: 1.0,
-                          max: 8.0,
-                          divisions: 7,
-                          onChanged: (value) {
-                            setState(() {
-                              _selectedWidth = value;
-                            });
-                          },
-                        ),
-                      ),
-                    ),
-
-                    Container(
-                      width: 16,
-                      height: 16,
-                      decoration: BoxDecoration(
-                        color: _selectedColor,
-                        shape: BoxShape.circle,
-                        border: Border.all(color: Colors.grey[300]!, width: 1),
-                      ),
-                      child: Center(
-                        child: Container(
-                          width: _selectedWidth,
-                          height: _selectedWidth,
-                          decoration: const BoxDecoration(
-                            color: Colors.white,
-                            shape: BoxShape.circle,
-                          ),
-                        ),
-                      ),
-                    ),
-                  ],
-                ],
-
-                const Spacer(),
-
-                // Zoom controls
+                // First Row: Mode and Basic Controls
                 Row(
                   children: [
-                    IconButton(
-                      icon: const Icon(Icons.zoom_in, size: 18),
-                      onPressed: _zoomIn,
-                      tooltip: 'Zoom In',
-                      padding: const EdgeInsets.all(4),
-                      constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+                    // Mode indicator
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+                      decoration: BoxDecoration(
+                        color: _isPanMode ? Colors.orange[100] : Colors.blue[100],
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Text(
+                        _isPanMode ? '🤏 Pan' : '✏️ Draw',
+                        style: TextStyle(
+                          fontSize: 9,
+                          fontWeight: FontWeight.w600,
+                          color: _isPanMode ? Colors.orange[800] : Colors.blue[800],
+                        ),
+                      ),
                     ),
-                    IconButton(
-                      icon: const Icon(Icons.zoom_out, size: 18),
-                      onPressed: _zoomOut,
-                      tooltip: 'Zoom Out',
-                      padding: const EdgeInsets.all(4),
-                      constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
-                    ),
-                    IconButton(
-                      icon: const Icon(Icons.center_focus_strong, size: 18),
-                      onPressed: _resetZoom,
-                      tooltip: 'Reset',
-                      padding: const EdgeInsets.all(4),
-                      constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
-                    ),
-                    IconButton(
-                      icon: const Icon(Icons.clear_all, size: 18),
-                      onPressed: _clearCanvas,
-                      tooltip: 'Clear',
-                      padding: const EdgeInsets.all(4),
-                      constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+
+                    const SizedBox(width: 8),
+
+                    // Pen/Eraser toggle
+                    if (!_isPanMode) ...[
+                      Container(
+                        decoration: BoxDecoration(
+                          color: Colors.grey[100],
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        child: ToggleButtons(
+                          isSelected: [!_isErasing, _isErasing],
+                          onPressed: (index) {
+                            setState(() {
+                              _isErasing = index == 1;
+                            });
+                          },
+                          borderRadius: BorderRadius.circular(4),
+                          selectedColor: Colors.white,
+                          fillColor: const Color(0xFF3B82F6),
+                          color: const Color(0xFF64748B),
+                          constraints: const BoxConstraints(minWidth: 40, minHeight: 24),
+                          children: const [
+                            Icon(Icons.edit, size: 12),
+                            Icon(Icons.cleaning_services, size: 12),
+                          ],
+                        ),
+                      ),
+                    ],
+
+                    const Spacer(),
+
+                    // Quick action buttons
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        IconButton(
+                          icon: const Icon(Icons.undo, size: 16),
+                          onPressed: _undo,
+                          tooltip: 'Undo',
+                          padding: const EdgeInsets.all(4),
+                          constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.clear_all, size: 16),
+                          onPressed: _clearCanvas,
+                          tooltip: 'Clear',
+                          padding: const EdgeInsets.all(4),
+                          constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+                        ),
+                      ],
                     ),
                   ],
                 ),
+
+                // Second Row: Drawing Controls (only when not in pan mode)
+                if (!_isPanMode) ...[
+                  const SizedBox(height: 6),
+                  Row(
+                    children: [
+                      // Color picker
+                      if (!_isErasing) ...[
+                        Expanded(
+                          flex: 2,
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              _colorButton(const Color(0xFF1E40AF)),
+                              _colorButton(const Color(0xFF1F2937)),
+                              _colorButton(const Color(0xFFDC2626)),
+                              _colorButton(const Color(0xFF059669)),
+                              _colorButton(const Color(0xFF7C3AED)),
+                            ],
+                          ),
+                        ),
+
+                        const SizedBox(width: 8),
+
+                        // Thickness controls
+                        Expanded(
+                          flex: 3,
+                          child: Container(
+                            decoration: BoxDecoration(
+                              color: Colors.grey[100],
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                // Decrease thickness
+                                IconButton(
+                                  icon: const Icon(Icons.remove, size: 14),
+                                  onPressed: _selectedWidth > 1.0 ? _decreaseThickness : null,
+                                  tooltip: 'Thinner',
+                                  padding: const EdgeInsets.all(2),
+                                  constraints: const BoxConstraints(minWidth: 24, minHeight: 24),
+                                  color: _selectedWidth > 1.0 ? const Color(0xFF64748B) : Colors.grey[400],
+                                ),
+
+                                // Current thickness display
+                                Expanded(
+                                  child: Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFF3B82F6).withOpacity(0.1),
+                                      borderRadius: BorderRadius.circular(3),
+                                    ),
+                                    child: Row(
+                                      mainAxisAlignment: MainAxisAlignment.center,
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Container(
+                                          width: (_selectedWidth * 1.5).clamp(3.0, 12.0),
+                                          height: (_selectedWidth * 1.5).clamp(3.0, 12.0),
+                                          decoration: BoxDecoration(
+                                            color: _selectedColor,
+                                            shape: BoxShape.circle,
+                                          ),
+                                        ),
+                                        const SizedBox(width: 3),
+                                        Text(
+                                          '${_selectedWidth.toStringAsFixed(1)}',
+                                          style: const TextStyle(
+                                            fontSize: 9,
+                                            fontWeight: FontWeight.w600,
+                                            color: Color(0xFF3B82F6),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+
+                                // Increase thickness
+                                IconButton(
+                                  icon: const Icon(Icons.add, size: 14),
+                                  onPressed: _selectedWidth < 8.0 ? _increaseThickness : null,
+                                  tooltip: 'Thicker',
+                                  padding: const EdgeInsets.all(2),
+                                  constraints: const BoxConstraints(minWidth: 24, minHeight: 24),
+                                  color: _selectedWidth < 8.0 ? const Color(0xFF64748B) : Colors.grey[400],
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ],
+
+                      const Spacer(),
+
+                      // Zoom controls
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          IconButton(
+                            icon: const Icon(Icons.zoom_out, size: 16),
+                            onPressed: _zoomOut,
+                            tooltip: 'Zoom Out',
+                            padding: const EdgeInsets.all(4),
+                            constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.zoom_in, size: 16),
+                            onPressed: _zoomIn,
+                            tooltip: 'Zoom In',
+                            padding: const EdgeInsets.all(4),
+                            constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.center_focus_strong, size: 16),
+                            onPressed: _resetZoom,
+                            tooltip: 'Reset',
+                            padding: const EdgeInsets.all(4),
+                            constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ],
               ],
             ),
           ),
@@ -487,7 +560,15 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
           if (_isErasing) {
             _eraseAtPoint(canvasPosition);
           } else {
-            _line = DrawnLine([canvasPosition], _selectedColor, _selectedWidth);
+            // 🔥 INSTANT RESPONSE: Create line with tiny second point for immediate visibility
+            final instantSecondPoint = Offset(
+                canvasPosition.dx + 0.01,
+                canvasPosition.dy + 0.01
+            );
+
+            setState(() {
+              _line = DrawnLine([canvasPosition, instantSecondPoint], _selectedColor, _selectedWidth);
+            });
           }
         },
         onPanUpdate: _isPanMode ? null : (details) {
@@ -497,13 +578,27 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
             _eraseAtPoint(canvasPosition);
           } else if (_line != null) {
             setState(() {
-              _line = DrawnLine([..._line!.path, canvasPosition], _selectedColor, _selectedWidth);
+              // Replace the tiny second point with actual movement
+              if (_line!.path.length == 2 &&
+                  (_line!.path[1] - _line!.path[0]).distance < 0.1) {
+                // Replace tiny point with real movement
+                _line = DrawnLine([_line!.path[0], canvasPosition], _selectedColor, _selectedWidth);
+              } else {
+                // Continue adding points normally
+                _line = DrawnLine([..._line!.path, canvasPosition], _selectedColor, _selectedWidth);
+              }
             });
           }
         },
         onPanEnd: _isPanMode ? null : (details) {
           if (!_isErasing && _line != null) {
             setState(() {
+              // If it was just a tap (tiny movement), make it a proper dot
+              if (_line!.path.length == 2 &&
+                  (_line!.path[1] - _line!.path[0]).distance < 0.1) {
+                _line = DrawnLine([_line!.path[0]], _selectedColor, _selectedWidth);
+              }
+
               _pageLines[_currentPage]!.add(_line!);
               _line = null;
             });
@@ -577,9 +672,9 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
         });
       },
       child: Container(
-        width: 20,
-        height: 20,
-        margin: const EdgeInsets.symmetric(horizontal: 2),
+        width: 16,
+        height: 16,
+        margin: const EdgeInsets.symmetric(horizontal: 1),
         decoration: BoxDecoration(
           color: color,
           shape: BoxShape.circle,
@@ -591,7 +686,7 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
             if (isSelected)
               BoxShadow(
                 color: color.withOpacity(0.4),
-                blurRadius: 4,
+                blurRadius: 3,
                 offset: const Offset(0, 1),
               ),
           ],
@@ -688,9 +783,8 @@ class DrawingPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
+    // Draw completed lines
     for (final line in lines) {
-      if (line.path.length < 2) continue;
-
       final paint = Paint()
         ..color = line.color
         ..strokeCap = StrokeCap.round
@@ -698,16 +792,23 @@ class DrawingPainter extends CustomPainter {
         ..strokeWidth = line.width
         ..style = PaintingStyle.stroke;
 
-      final path = Path();
-      path.moveTo(line.path.first.dx, line.path.first.dy);
+      if (line.path.length == 1) {
+        // 🎯 INSTANT DOT: Draw single points as circles immediately
+        canvas.drawCircle(line.path.first, line.width / 2, paint..style = PaintingStyle.fill);
+      } else if (line.path.length >= 2) {
+        // Draw multi-point lines
+        final path = Path();
+        path.moveTo(line.path.first.dx, line.path.first.dy);
 
-      for (int i = 1; i < line.path.length; i++) {
-        path.lineTo(line.path[i].dx, line.path[i].dy);
+        for (int i = 1; i < line.path.length; i++) {
+          path.lineTo(line.path[i].dx, line.path[i].dy);
+        }
+        canvas.drawPath(path, paint);
       }
-      canvas.drawPath(path, paint);
     }
 
-    if (currentLine != null && currentLine!.path.length > 1) {
+    // Draw current line being drawn
+    if (currentLine != null) {
       final paint = Paint()
         ..color = currentLine!.color
         ..strokeCap = StrokeCap.round
@@ -715,13 +816,19 @@ class DrawingPainter extends CustomPainter {
         ..strokeWidth = currentLine!.width
         ..style = PaintingStyle.stroke;
 
-      final path = Path();
-      path.moveTo(currentLine!.path.first.dx, currentLine!.path.first.dy);
+      if (currentLine!.path.length == 1) {
+        // 🎯 INSTANT DOT: Single point as circle
+        canvas.drawCircle(currentLine!.path.first, currentLine!.width / 2, paint..style = PaintingStyle.fill);
+      } else if (currentLine!.path.length >= 2) {
+        // Multi-point line
+        final path = Path();
+        path.moveTo(currentLine!.path.first.dx, currentLine!.path.first.dy);
 
-      for (int i = 1; i < currentLine!.path.length; i++) {
-        path.lineTo(currentLine!.path[i].dx, currentLine!.path[i].dy);
+        for (int i = 1; i < currentLine!.path.length; i++) {
+          path.lineTo(currentLine!.path[i].dx, currentLine!.path[i].dy);
+        }
+        canvas.drawPath(path, paint);
       }
-      canvas.drawPath(path, paint);
     }
   }
 
