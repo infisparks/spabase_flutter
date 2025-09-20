@@ -22,7 +22,7 @@ class _LoginPageState extends State<LoginPage> {
     try {
       await SupabaseConfig.client.auth.signInWithPassword(email: email, password: password);
       if (mounted) {
-        Navigator.of(context).pushReplacement(MaterialPageRoute(builder: (_) => const DashboardPage()));
+        Navigator.of(context).pushReplacement(MaterialPageRoute(builder: (_) => const IpdManagementPage()));
       }
     } catch (e) {
       _showMessage('Login error: ${e.toString()}');

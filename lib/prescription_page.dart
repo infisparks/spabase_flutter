@@ -1,943 +1,1035 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'dart:ui' as ui;
+import 'dart:async';
+import 'dart:math';
+import 'package:supabase_flutter/supabase_flutter.dart';
+import 'supabase_config.dart'; // Make sure you have this file configured
+
+// --- Top-Level Constants ---
+const double canvasWidth = 1000;
+const double canvasHeight = 1414;
+
+// --- Data Models (Simulated from ManageIpdPatientPage.dart) ---
+String generateUniqueId() {
+  return DateTime.now().millisecondsSinceEpoch.toString() + Random().nextInt(999999).toString();
+}
+
+/// Represents a single piece of text on the canvas.
+class DrawingText {
+  final String id;
+  final String text;
+  final Offset position;
+  final int colorValue;
+  final double fontSize;
+
+  DrawingText({
+    required this.id,
+    required this.text,
+    required this.position,
+    required this.colorValue,
+    required this.fontSize,
+  });
+
+  DrawingText copyWith({
+    String? id,
+    String? text,
+    Offset? position,
+    int? colorValue,
+    double? fontSize,
+  }) {
+    return DrawingText(
+      id: id ?? this.id,
+      text: text ?? this.text,
+      position: position ?? this.position,
+      colorValue: colorValue ?? this.colorValue,
+      fontSize: fontSize ?? this.fontSize,
+    );
+  }
+
+  factory DrawingText.fromJson(Map<String, dynamic> json) {
+    return DrawingText(
+      id: (json['id'] as String?) ?? '',
+      text: (json['text'] as String?) ?? '',
+      position: Offset(
+        (json['position']?['dx'] as num?)?.toDouble() ?? 0.0,
+        (json['position']?['dy'] as num?)?.toDouble() ?? 0.0,
+      ),
+      colorValue: (json['colorValue'] as int?) ?? Colors.black.value,
+      fontSize: (json['fontSize'] as num?)?.toDouble() ?? 20.0,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    return {
+      'id': id,
+      'text': text,
+      'position': {'dx': position.dx, 'dy': position.dy},
+      'colorValue': colorValue,
+      'fontSize': fontSize,
+    };
+  }
+}
+
+/// Represents a single continuous line drawn by the user.
+class DrawingLine {
+  final List<Offset> points;
+  final int colorValue;
+  final double strokeWidth;
+
+  DrawingLine({
+    required this.points,
+    required this.colorValue,
+    required this.strokeWidth,
+  });
+
+  DrawingLine copyWith({
+    List<Offset>? points,
+    int? colorValue,
+    double? strokeWidth,
+  }) {
+    return DrawingLine(
+      points: points ?? this.points,
+      colorValue: colorValue ?? this.colorValue,
+      strokeWidth: strokeWidth ?? this.strokeWidth,
+    );
+  }
+
+  factory DrawingLine.fromJson(Map<String, dynamic> json) {
+    final pointsList = (json['points'] as List<dynamic>?)
+        ?.map((pointJson) => Offset(
+      (pointJson['dx'] as num?)?.toDouble() ?? 0.0,
+      (pointJson['dy'] as num?)?.toDouble() ?? 0.0,
+    )).toList() ?? [];
+    return DrawingLine(
+      points: pointsList,
+      colorValue: (json['colorValue'] as int?) ?? Colors.black.value,
+      strokeWidth: (json['strokeWidth'] as num?)?.toDouble() ?? 2.0,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    return {
+      'points': points.map((p) => {'dx': p.dx, 'dy': p.dy}).toList(),
+      'colorValue': colorValue,
+      'strokeWidth': strokeWidth,
+    };
+  }
+}
+
+/// Represents a single page, containing lines and text.
+class DrawingPage {
+  final String id;
+  final int pageNumber;
+  final String pageName;
+  final String groupName;
+  final String templateImageUrl;
+  final List<DrawingLine> lines;
+  final List<DrawingText> texts;
+
+  DrawingPage({
+    required this.id,
+    required this.pageNumber,
+    required this.pageName,
+    required this.groupName,
+    required this.templateImageUrl,
+    this.lines = const [],
+    this.texts = const [],
+  });
+
+  DrawingPage copyWith({
+    String? id,
+    int? pageNumber,
+    String? pageName,
+    String? groupName,
+    String? templateImageUrl,
+    List<DrawingLine>? lines,
+    List<DrawingText>? texts,
+  }) {
+    return DrawingPage(
+      id: id ?? this.id,
+      pageNumber: pageNumber ?? this.pageNumber,
+      pageName: pageName ?? this.pageName,
+      groupName: groupName ?? this.groupName,
+      templateImageUrl: templateImageUrl ?? this.templateImageUrl,
+      lines: lines ?? this.lines,
+      texts: texts ?? this.texts,
+    );
+  }
+
+  factory DrawingPage.fromJson(Map<String, dynamic> json) {
+    return DrawingPage(
+      id: (json['id'] as String?) ?? '',
+      pageNumber: (json['pageNumber'] as int?) ?? 0,
+      pageName: (json['pageName'] as String?) ?? 'Unnamed Page',
+      groupName: (json['groupName'] as String?) ?? 'Unnamed Group',
+      templateImageUrl: (json['templateImageUrl'] as String?) ?? '',
+      lines: (json['lines'] as List<dynamic>?)
+          ?.map((lineJson) => DrawingLine.fromJson(lineJson))
+          .toList() ?? [],
+      texts: (json['texts'] as List<dynamic>?)
+          ?.map((textJson) => DrawingText.fromJson(textJson))
+          .toList() ?? [],
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    return {
+      'id': id,
+      'pageNumber': pageNumber,
+      'pageName': pageName,
+      'groupName': groupName,
+      'templateImageUrl': templateImageUrl,
+      'lines': lines.map((line) => line.toJson()).toList(),
+      'texts': texts.map((text) => text.toJson()).toList(),
+    };
+  }
+}
+
+/// Represents a group of pages (e.g., "Admission Notes").
+class DrawingGroup {
+  final String id;
+  final String name;
+  final List<DrawingPage> pages;
+
+  DrawingGroup({
+    required this.id,
+    required this.name,
+    this.pages = const [],
+  });
+
+  DrawingGroup copyWith({
+    String? id,
+    String? name,
+    List<DrawingPage>? pages,
+  }) {
+    return DrawingGroup(
+      id: id ?? this.id,
+      name: name ?? this.name,
+      pages: pages ?? this.pages,
+    );
+  }
+
+  factory DrawingGroup.fromJson(Map<String, dynamic> json) {
+    return DrawingGroup(
+      id: (json['id'] as String?) ?? '',
+      name: (json['name'] as String?) ?? 'Unnamed Group',
+      pages: (json['pages'] as List<dynamic>?)
+          ?.map((pageJson) => DrawingPage.fromJson(pageJson))
+          .toList() ?? [],
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    return {
+      'id': id,
+      'name': name,
+      'pages': pages.map((page) => page.toJson()).toList(),
+    };
+  }
+}
+// --- End of Data Models ---
+
+enum DrawingTool { pen, eraser, text }
 
 class PrescriptionPage extends StatefulWidget {
-  const PrescriptionPage({super.key});
+  final int ipdId;
+  final String uhid;
+  final String groupId;
+  final String pageId;
+
+  const PrescriptionPage({
+    super.key,
+    required this.ipdId,
+    required this.uhid,
+    required this.groupId,
+    required this.pageId,
+  });
 
   @override
   State<PrescriptionPage> createState() => _PrescriptionPageState();
 }
 
 class _PrescriptionPageState extends State<PrescriptionPage> {
+  final SupabaseClient supabase = SupabaseConfig.client;
+  List<DrawingPage> _viewablePages = [];
+  int _currentPageIndex = 0;
+  List<DrawingGroup> _allDrawingGroups = [];
+  String? _healthRecordId;
+  DrawingGroup? _currentGroup;
+  List<DrawingPage> _pagesInCurrentGroup = [];
+
+  // --- Drawing State ---
+  Color _currentColor = Colors.black;
+  double _strokeWidth = 2.0;
+  double _currentFontSize = 20.0;
+  DrawingTool _selectedTool = DrawingTool.pen;
+
+  // --- Text Editing State ---
+  final TextEditingController _textController = TextEditingController();
+  final FocusNode _textFocusNode = FocusNode();
+  String? _editingTextId;
+
+  // --- Navigation & View State ---
+  final PageController _pageController = PageController();
   final TransformationController _transformationController = TransformationController();
-  final Map<int, List<DrawnLine>> _pageLines = {}; // Store lines for each page
-  final GlobalKey _interactiveViewerKey = GlobalKey();
-
-  DrawnLine? _line;
-  Color _selectedColor = const Color(0xFF1E40AF);
-  double _selectedWidth = 3.0;
-  bool _isErasing = false;
+  // FIXED: Start in Draw/Write mode by default
   bool _isPanMode = false;
-  int _currentPage = 1;
+  ui.Image? _currentTemplateUiImage;
+  bool _isLoadingPrescription = true;
+  bool _isSaving = false;
+  bool _isInitialZoomSet = false;
+  bool _isPenOnlyMode = false;
+  bool _isStylusInteraction = false;
 
-  // Available prescription templates
-  final List<PrescriptionTemplate> _templates = [
-    PrescriptionTemplate(id: 1, name: "General Prescription", asset: "assets/prescription1.png"),
-    PrescriptionTemplate(id: 2, name: "Pediatric Form", asset: "assets/prescription2.png"),
-    PrescriptionTemplate(id: 3, name: "Specialist Consultation", asset: "assets/prescription3.png"),
-    PrescriptionTemplate(id: 4, name: "Emergency Prescription", asset: "assets/prescription4.png"),
-    PrescriptionTemplate(id: 5, name: "Follow-up Form", asset: "assets/prescription5.png"),
-    PrescriptionTemplate(id: 6, name: "Discharge Summary", asset: "assets/prescription6.png"),
-  ];
-
-  List<DrawnLine> get _currentLines => _pageLines[_currentPage] ?? [];
+  // --- Constants ---
+  static const Color primaryBlue = Color(0xFF3B82F6);
+  static const Color darkText = Color(0xFF1E293B);
+  static const Color mediumGreyText = Color(0xFF64748B);
+  static const Color lightBackground = Color(0xFFF8FAFC);
 
   @override
   void initState() {
     super.initState();
-    // Initialize first page
-    _pageLines[_currentPage] = [];
+    _loadHealthDetailsAndPage();
+    _transformationController.addListener(_onTransformUpdated);
+    _textFocusNode.addListener(_onTextFocusChange);
   }
 
   @override
   void dispose() {
+    _transformationController.removeListener(_onTransformUpdated);
     _transformationController.dispose();
+    _pageController.dispose();
+    _textController.dispose();
+    _textFocusNode.removeListener(_onTextFocusChange);
+    _textFocusNode.dispose();
     super.dispose();
   }
 
-  Offset _getCanvasPosition(Offset globalPosition) {
-    final RenderBox? renderBox = _interactiveViewerKey.currentContext?.findRenderObject() as RenderBox?;
-    if (renderBox == null) return Offset.zero;
+  // --- Data Loading and Saving ---
 
-    final Offset localPosition = renderBox.globalToLocal(globalPosition);
-    final Matrix4 transform = _transformationController.value;
-    final double scale = transform.getMaxScaleOnAxis();
-    final Offset translation = Offset(transform.getTranslation().x, transform.getTranslation().y);
-
-    final Offset canvasPosition = Offset(
-      (localPosition.dx - translation.dx) / scale,
-      (localPosition.dy - translation.dy) / scale,
-    );
-
-    return canvasPosition;
+  Future<void> _loadTemplateUiImage(String imageUrl) async {
+    if (imageUrl.isEmpty) {
+      if (mounted) setState(() => _currentTemplateUiImage = null);
+      return;
+    }
+    try {
+      final stream = NetworkImage(imageUrl).resolve(ImageConfiguration.empty);
+      final completer = Completer<ui.Image>();
+      late ImageStreamListener listener;
+      listener = ImageStreamListener((info, _) {
+        completer.complete(info.image);
+        stream.removeListener(listener);
+      }, onError: (error, stackTrace) {
+        completer.completeError(error, stackTrace);
+        stream.removeListener(listener);
+      });
+      stream.addListener(listener);
+      final loadedImage = await completer.future;
+      if (mounted) setState(() => _currentTemplateUiImage = loadedImage);
+    } catch (e) {
+      debugPrint('Error loading image: $e');
+      if (mounted) setState(() => _currentTemplateUiImage = null);
+    }
   }
 
-  void _increaseThickness() {
-    setState(() {
-      if (_selectedWidth < 8.0) {
-        _selectedWidth = (_selectedWidth + 0.5).clamp(1.0, 8.0);
-      }
-    });
-    HapticFeedback.selectionClick();
-  }
+  Future<void> _loadHealthDetailsAndPage() async {
+    setState(() => _isLoadingPrescription = true);
+    try {
+      final response = await supabase
+          .from('user_health_details')
+          .select('id, prescription_data')
+          .eq('ipd_registration_id', widget.ipdId)
+          .eq('patient_uhid', widget.uhid)
+          .maybeSingle();
 
-  void _decreaseThickness() {
-    setState(() {
-      if (_selectedWidth > 1.0) {
-        _selectedWidth = (_selectedWidth - 0.5).clamp(1.0, 8.0);
-      }
-    });
-    HapticFeedback.selectionClick();
-  }
+      if (response != null) {
+        _healthRecordId = response['id'] as String?;
+        final rawGroups = response['prescription_data'] ?? [];
+        _allDrawingGroups = rawGroups.map<DrawingGroup>((json) => DrawingGroup.fromJson(json as Map<String, dynamic>)).toList();
 
-  void _showPageSelector() {
-    showDialog(
-      context: context,
-      builder: (BuildContext context) {
-        return Dialog(
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-          child: Container(
-            width: MediaQuery.of(context).size.width * 0.9,
-            height: MediaQuery.of(context).size.height * 0.7,
-            padding: const EdgeInsets.all(20),
-            child: Column(
-              children: [
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    const Text(
-                      "Select Prescription Template",
-                      style: TextStyle(
-                        fontSize: 20,
-                        fontWeight: FontWeight.bold,
-                        color: Color(0xFF1E293B),
-                      ),
-                    ),
-                    IconButton(
-                      icon: const Icon(Icons.close),
-                      onPressed: () => Navigator.of(context).pop(),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 20),
-                Expanded(
-                  child: GridView.builder(
-                    gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                      crossAxisCount: 2,
-                      crossAxisSpacing: 16,
-                      mainAxisSpacing: 16,
-                      childAspectRatio: 0.7,
-                    ),
-                    itemCount: _templates.length,
-                    itemBuilder: (context, index) {
-                      final template = _templates[index];
-                      final isSelected = template.id == _currentPage;
-                      final hasContent = _pageLines[template.id]?.isNotEmpty ?? false;
-
-                      return GestureDetector(
-                        onTap: () {
-                          setState(() {
-                            _currentPage = template.id;
-                            if (_pageLines[_currentPage] == null) {
-                              _pageLines[_currentPage] = [];
-                            }
-                          });
-                          Navigator.of(context).pop();
-                        },
-                        child: Container(
-                          decoration: BoxDecoration(
-                            borderRadius: BorderRadius.circular(12),
-                            border: Border.all(
-                              color: isSelected ? const Color(0xFF3B82F6) : Colors.grey[300]!,
-                              width: isSelected ? 3 : 1,
-                            ),
-                            boxShadow: [
-                              BoxShadow(
-                                color: Colors.black.withOpacity(0.1),
-                                blurRadius: 8,
-                                offset: const Offset(0, 2),
-                              ),
-                            ],
-                          ),
-                          child: Column(
-                            children: [
-                              Expanded(
-                                child: Container(
-                                  margin: const EdgeInsets.all(8),
-                                  decoration: BoxDecoration(
-                                    borderRadius: BorderRadius.circular(8),
-                                    color: Colors.white,
-                                  ),
-                                  child: Stack(
-                                    children: [
-                                      ClipRRect(
-                                        borderRadius: BorderRadius.circular(8),
-                                        child: Image.asset(
-                                          template.asset,
-                                          fit: BoxFit.cover,
-                                          width: double.infinity,
-                                          height: double.infinity,
-                                          errorBuilder: (context, error, stackTrace) {
-                                            return Container(
-                                              color: Colors.grey[100],
-                                              child: const Center(
-                                                child: Icon(Icons.description, size: 40, color: Colors.grey),
-                                              ),
-                                            );
-                                          },
-                                        ),
-                                      ),
-                                      if (hasContent)
-                                        Positioned(
-                                          top: 8,
-                                          right: 8,
-                                          child: Container(
-                                            padding: const EdgeInsets.all(4),
-                                            decoration: const BoxDecoration(
-                                              color: Colors.green,
-                                              shape: BoxShape.circle,
-                                            ),
-                                            child: const Icon(Icons.edit, color: Colors.white, size: 16),
-                                          ),
-                                        ),
-                                      if (isSelected)
-                                        Positioned(
-                                          top: 8,
-                                          left: 8,
-                                          child: Container(
-                                            padding: const EdgeInsets.all(4),
-                                            decoration: const BoxDecoration(
-                                              color: Color(0xFF3B82F6),
-                                              shape: BoxShape.circle,
-                                            ),
-                                            child: const Icon(Icons.check, color: Colors.white, size: 16),
-                                          ),
-                                        ),
-                                    ],
-                                  ),
-                                ),
-                              ),
-                              Padding(
-                                padding: const EdgeInsets.all(8),
-                                child: Column(
-                                  children: [
-                                    Text(
-                                      template.name,
-                                      style: TextStyle(
-                                        fontSize: 12,
-                                        fontWeight: FontWeight.w600,
-                                        color: isSelected ? const Color(0xFF3B82F6) : const Color(0xFF64748B),
-                                      ),
-                                      textAlign: TextAlign.center,
-                                      maxLines: 2,
-                                      overflow: TextOverflow.ellipsis,
-                                    ),
-                                    const SizedBox(height: 4),
-                                    Text(
-                                      "Page ${template.id}",
-                                      style: TextStyle(
-                                        fontSize: 10,
-                                        color: Colors.grey[600],
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      );
-                    },
-                  ),
-                ),
-              ],
-            ),
-          ),
+        _currentGroup = _allDrawingGroups.firstWhere(
+              (g) => g.id == widget.groupId,
+          orElse: () => throw Exception("The required group (ID: ${widget.groupId}) was not found in the patient's record."),
         );
-      },
-    );
+        _pagesInCurrentGroup = _currentGroup!.pages;
+
+        DrawingPage currentPage = _pagesInCurrentGroup.firstWhere(
+              (p) => p.id == widget.pageId,
+          orElse: () => throw Exception("The required page (ID: ${widget.pageId}) was not found in the group '${_currentGroup?.name}'."),
+        );
+
+        String pagePrefix = currentPage.pageName.split(' - ')[0];
+        if (pagePrefix == 'OT') pagePrefix = 'OT Form';
+
+        _viewablePages = _pagesInCurrentGroup.where((p) => p.pageName.startsWith(pagePrefix)).toList();
+
+        int initialIndex = _viewablePages.indexWhere((p) => p.id == widget.pageId);
+        if (initialIndex != -1) {
+          _currentPageIndex = initialIndex;
+          await _loadTemplateUiImage(_viewablePages[_currentPageIndex].templateImageUrl);
+        } else {
+          throw Exception("The starting page could not be located in the viewable pages list.");
+        }
+      } else {
+        throw Exception("No health record found for this patient.");
+      }
+    } catch (e) {
+      debugPrint('Error loading health details: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed to load details: ${e.toString()}'), backgroundColor: Colors.red));
+      }
+    } finally {
+      if (mounted) setState(() => _isLoadingPrescription = false);
+    }
   }
+
+  Future<void> _savePrescriptionData() async {
+    _commitTextChanges();
+    if (_viewablePages.isEmpty) return;
+    setState(() => _isSaving = true);
+    try {
+      int groupIndex = _allDrawingGroups.indexWhere((g) => g.id == widget.groupId);
+      if (groupIndex == -1) throw Exception("Group not found");
+
+      final updatedGroupPages = List<DrawingPage>.from(_allDrawingGroups[groupIndex].pages);
+      for (var page in _viewablePages) {
+        int pageIndex = updatedGroupPages.indexWhere((p) => p.id == page.id);
+        if (pageIndex != -1) updatedGroupPages[pageIndex] = page;
+      }
+
+      final updatedGroup = _allDrawingGroups[groupIndex].copyWith(pages: updatedGroupPages);
+      final finalGroupsToSave = List<DrawingGroup>.from(_allDrawingGroups);
+      finalGroupsToSave[groupIndex] = updatedGroup;
+
+      final groupsJson = finalGroupsToSave.map((group) => group.toJson()).toList();
+
+      if (_healthRecordId != null) {
+        await supabase.from('user_health_details').update({
+          'prescription_data': groupsJson,
+          'updated_at': DateTime.now().toIso8601String(),
+        }).eq('id', _healthRecordId!);
+      } else {
+        // Handle insert case for a new health record
+      }
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Prescription Saved!'), backgroundColor: Colors.green));
+      }
+    } catch (e) {
+      debugPrint('Error saving: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Save failed: $e'), backgroundColor: Colors.red));
+      }
+    } finally {
+      if (mounted) setState(() => _isSaving = false);
+    }
+  }
+
+  // --- Pointer and Interaction Handlers ---
+
+  void _handlePointerDown(PointerDownEvent details) {
+    _commitTextChanges();
+    setState(() {
+      _isStylusInteraction = details.kind == ui.PointerDeviceKind.stylus;
+    });
+
+    final bool isPenOnlyStylusDraw = _isPenOnlyMode && _isStylusInteraction;
+    final bool isNormalDraw = !_isPenOnlyMode && !_isPanMode;
+
+    if (!isPenOnlyStylusDraw && !isNormalDraw || _viewablePages.isEmpty) {
+      return;
+    }
+
+    final transformedPosition = _transformToCanvasCoordinates(details.localPosition);
+    if (!_isPointOnCanvas(transformedPosition)) return;
+
+    if (_selectedTool == DrawingTool.pen) {
+      setState(() {
+        final currentPage = _viewablePages[_currentPageIndex];
+        final newLine = DrawingLine(
+          points: [transformedPosition],
+          colorValue: _currentColor.value,
+          strokeWidth: _strokeWidth,
+        );
+        _viewablePages[_currentPageIndex] = currentPage.copyWith(lines: [...currentPage.lines, newLine]);
+      });
+    } else if (_selectedTool == DrawingTool.text) {
+      _handleTextTap(transformedPosition);
+    }
+  }
+
+  void _handlePointerMove(PointerMoveEvent details) {
+    final bool isPenOnlyStylusDraw = _isPenOnlyMode && _isStylusInteraction;
+    final bool isNormalDraw = !_isPenOnlyMode && !_isPanMode;
+
+    if (!isPenOnlyStylusDraw && !isNormalDraw || _viewablePages.isEmpty) return;
+
+    final transformedPosition = _transformToCanvasCoordinates(details.localPosition);
+    if (!_isPointOnCanvas(transformedPosition)) return;
+
+    if (_selectedTool == DrawingTool.pen) {
+      setState(() {
+        final currentPage = _viewablePages[_currentPageIndex];
+        if (currentPage.lines.isEmpty) return;
+        final lastLine = currentPage.lines.last;
+        final newPoints = [...lastLine.points, transformedPosition];
+        final updatedLines = List<DrawingLine>.from(currentPage.lines);
+        updatedLines[updatedLines.length - 1] = lastLine.copyWith(points: newPoints);
+        _viewablePages[_currentPageIndex] = currentPage.copyWith(lines: updatedLines);
+      });
+    } else if (_selectedTool == DrawingTool.eraser) {
+      _eraseLineAtPoint(transformedPosition);
+    }
+  }
+
+  void _handlePointerUp(PointerUpEvent details) {
+    setState(() => _isStylusInteraction = false);
+  }
+
+  // --- Text Handling ---
+
+  void _onTransformUpdated() {
+    setState(() {}); // Rebuild to update TextField position during pan/zoom
+  }
+
+  void _onTextFocusChange() {
+    if (!_textFocusNode.hasFocus) {
+      _commitTextChanges();
+    }
+  }
+
+  void _commitTextChanges() {
+    if (_editingTextId == null) return;
+
+    setState(() {
+      final currentPage = _viewablePages[_currentPageIndex];
+      final textIndex = currentPage.texts.indexWhere((t) => t.id == _editingTextId);
+      if (textIndex != -1) {
+        if (_textController.text.trim().isEmpty) {
+          // Delete text if it's empty
+          final updatedTexts = List<DrawingText>.from(currentPage.texts)..removeAt(textIndex);
+          _viewablePages[_currentPageIndex] = currentPage.copyWith(texts: updatedTexts);
+        } else {
+          // Update text content
+          final updatedText = currentPage.texts[textIndex].copyWith(text: _textController.text);
+          final updatedTexts = List<DrawingText>.from(currentPage.texts);
+          updatedTexts[textIndex] = updatedText;
+          _viewablePages[_currentPageIndex] = currentPage.copyWith(texts: updatedTexts);
+        }
+      }
+      _editingTextId = null;
+      _textController.clear();
+    });
+  }
+
+  void _handleTextTap(Offset canvasPosition) {
+    setState(() {
+      final currentPage = _viewablePages[_currentPageIndex];
+      DrawingText? tappedText;
+
+      for (final text in currentPage.texts) {
+        final textRect = Rect.fromLTWH(
+          text.position.dx,
+          text.position.dy - text.fontSize,
+          text.fontSize * text.text.length * 0.6,
+          text.fontSize * 2,
+        );
+        if (textRect.contains(canvasPosition)) {
+          tappedText = text;
+          break;
+        }
+      }
+
+      if (tappedText != null) {
+        _editingTextId = tappedText.id;
+        _textController.text = tappedText.text;
+        _currentColor = Color(tappedText.colorValue);
+        _currentFontSize = tappedText.fontSize;
+        _textFocusNode.requestFocus();
+      } else {
+        final newText = DrawingText(
+          id: generateUniqueId(),
+          text: "",
+          position: canvasPosition,
+          colorValue: _currentColor.value,
+          fontSize: _currentFontSize,
+        );
+        _viewablePages[_currentPageIndex] = currentPage.copyWith(texts: [...currentPage.texts, newText]);
+        _editingTextId = newText.id;
+        _textController.clear();
+        _textFocusNode.requestFocus();
+      }
+    });
+  }
+
+  // --- Utility & Action Methods ---
+
+  void _undoLastAction() {
+    HapticFeedback.lightImpact();
+    if (_viewablePages.isEmpty || _viewablePages[_currentPageIndex].lines.isEmpty) return;
+    setState(() {
+      final currentPage = _viewablePages[_currentPageIndex];
+      final newLines = List<DrawingLine>.from(currentPage.lines)..removeLast();
+      _viewablePages[_currentPageIndex] = currentPage.copyWith(lines: newLines);
+    });
+  }
+
+  void _clearAllDrawings() {
+    HapticFeedback.mediumImpact();
+    if (_viewablePages.isEmpty) return;
+    setState(() {
+      _viewablePages[_currentPageIndex] = _viewablePages[_currentPageIndex].copyWith(lines: [], texts: []);
+    });
+  }
+
+  void _eraseLineAtPoint(Offset point) {
+    if (_viewablePages.isEmpty) return;
+    final currentPage = _viewablePages[_currentPageIndex];
+    final linesToKeep = <DrawingLine>[];
+    bool changed = false;
+    for (final line in currentPage.lines) {
+      bool remove = false;
+      for (final p in line.points) {
+        if ((p - point).distance < _strokeWidth * 2) {
+          remove = true;
+          changed = true;
+          break;
+        }
+      }
+      if (!remove) linesToKeep.add(line);
+    }
+    if (changed) {
+      setState(() => _viewablePages[_currentPageIndex] = currentPage.copyWith(lines: linesToKeep));
+    }
+  }
+
+  void _togglePanDrawMode() {
+    HapticFeedback.lightImpact();
+    setState(() {
+      _isPanMode = !_isPanMode;
+      if (!_isPanMode) _selectedTool = DrawingTool.pen;
+    });
+  }
+
+  void _togglePenOnlyMode() {
+    HapticFeedback.lightImpact();
+    setState(() {
+      _isPenOnlyMode = !_isPenOnlyMode;
+      _isPanMode = _isPenOnlyMode ? true : false;
+    });
+  }
+
+  void _zoomByFactor(double factor) {
+    HapticFeedback.lightImpact();
+    final center = (context.findRenderObject() as RenderBox).size.center(Offset.zero);
+    final newMatrix = _transformationController.value.clone()
+      ..translate(center.dx, center.dy)
+      ..scale(factor)
+      ..translate(-center.dx, -center.dy);
+    _transformationController.value = newMatrix;
+  }
+
+  void _zoomIn() => _zoomByFactor(1.2);
+  void _zoomOut() => _zoomByFactor(1 / 1.2);
+  void _resetZoom() {
+    final size = context.size;
+    if (size != null) {
+      _setInitialZoom(size);
+    }
+  }
+
+  Offset _transformToCanvasCoordinates(Offset localPosition) {
+    final inverseMatrix = Matrix4.inverted(_transformationController.value);
+    return Matrix4Utils.transformPoint(inverseMatrix, localPosition);
+  }
+
+  bool _isPointOnCanvas(Offset point) {
+    return point.dx >= 0 && point.dx <= canvasWidth && point.dy >= 0 && point.dy <= canvasHeight;
+  }
+
+  void _setInitialZoom(Size viewportSize) {
+    if (viewportSize.isEmpty) return;
+    final scale = min(viewportSize.width / canvasWidth, viewportSize.height / canvasHeight);
+    final dx = (viewportSize.width - canvasWidth * scale) / 2;
+    final dy = (viewportSize.height - canvasHeight * scale) / 2;
+    _transformationController.value = Matrix4.identity()..translate(dx, dy)..scale(scale);
+  }
+
+  void _navigateToPage(int index) async {
+    if (index >= 0 && index < _viewablePages.length) {
+      _pageController.jumpToPage(index);
+      setState(() {
+        _currentPageIndex = index;
+        _isInitialZoomSet = false;
+      });
+      await _loadTemplateUiImage(_viewablePages[index].templateImageUrl);
+    }
+  }
+
+  Future<void> _showFolderPageSelector() async {
+    // This method should contain your page selection UI, e.g., a Dialog.
+  }
+
+  // --- Build Methods ---
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: const Color(0xFFF8FAFC),
-      appBar: AppBar(
-        title: Row(
-          children: [
-            const Text(
-              "Prescription",
-              style: TextStyle(fontWeight: FontWeight.w600, fontSize: 18),
-            ),
-            const SizedBox(width: 8),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-              decoration: BoxDecoration(
-                color: const Color(0xFF3B82F6).withOpacity(0.1),
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: Text(
-                "Page $_currentPage",
-                style: const TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w600,
-                  color: Color(0xFF3B82F6),
-                ),
-              ),
-            ),
-          ],
-        ),
-        backgroundColor: Colors.white,
-        foregroundColor: const Color(0xFF1E293B),
-        elevation: 0,
-        shadowColor: Colors.black12,
-        surfaceTintColor: Colors.transparent,
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.library_books, size: 20),
-            onPressed: _showPageSelector,
-            tooltip: 'Change Page',
-          ),
-          IconButton(
-            icon: Icon(_isPanMode ? Icons.edit : Icons.pan_tool, size: 20),
-            onPressed: () {
-              setState(() {
-                _isPanMode = !_isPanMode;
-              });
-            },
-            tooltip: _isPanMode ? 'Draw Mode' : 'Pan Mode',
-          ),
-          IconButton(
-            icon: const Icon(Icons.undo, size: 20),
-            onPressed: _undo,
-            tooltip: 'Undo',
-          ),
-          IconButton(
-            icon: const Icon(Icons.save_outlined, size: 20),
-            onPressed: _savePrescription,
-            tooltip: 'Save',
-          ),
-        ],
-      ),
-      body: Column(
-        children: [
-          // 🔧 FIXED: Responsive Toolbar with proper overflow handling
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withOpacity(0.05),
-                  blurRadius: 4,
-                  offset: const Offset(0, 1),
-                ),
-              ],
-            ),
-            child: Column(
-              children: [
-                // First Row: Mode and Basic Controls
-                Row(
-                  children: [
-                    // Mode indicator
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
-                      decoration: BoxDecoration(
-                        color: _isPanMode ? Colors.orange[100] : Colors.blue[100],
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: Text(
-                        _isPanMode ? '🤏 Pan' : '✏️ Draw',
-                        style: TextStyle(
-                          fontSize: 9,
-                          fontWeight: FontWeight.w600,
-                          color: _isPanMode ? Colors.orange[800] : Colors.blue[800],
-                        ),
-                      ),
-                    ),
-
-                    const SizedBox(width: 8),
-
-                    // Pen/Eraser toggle
-                    if (!_isPanMode) ...[
-                      Container(
-                        decoration: BoxDecoration(
-                          color: Colors.grey[100],
-                          borderRadius: BorderRadius.circular(4),
-                        ),
-                        child: ToggleButtons(
-                          isSelected: [!_isErasing, _isErasing],
-                          onPressed: (index) {
-                            setState(() {
-                              _isErasing = index == 1;
-                            });
-                          },
-                          borderRadius: BorderRadius.circular(4),
-                          selectedColor: Colors.white,
-                          fillColor: const Color(0xFF3B82F6),
-                          color: const Color(0xFF64748B),
-                          constraints: const BoxConstraints(minWidth: 40, minHeight: 24),
-                          children: const [
-                            Icon(Icons.edit, size: 12),
-                            Icon(Icons.cleaning_services, size: 12),
-                          ],
-                        ),
-                      ),
-                    ],
-
-                    const Spacer(),
-
-                    // Quick action buttons
-                    Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        IconButton(
-                          icon: const Icon(Icons.undo, size: 16),
-                          onPressed: _undo,
-                          tooltip: 'Undo',
-                          padding: const EdgeInsets.all(4),
-                          constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
-                        ),
-                        IconButton(
-                          icon: const Icon(Icons.clear_all, size: 16),
-                          onPressed: _clearCanvas,
-                          tooltip: 'Clear',
-                          padding: const EdgeInsets.all(4),
-                          constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-
-                // Second Row: Drawing Controls (only when not in pan mode)
-                if (!_isPanMode) ...[
-                  const SizedBox(height: 6),
-                  Row(
-                    children: [
-                      // Color picker
-                      if (!_isErasing) ...[
-                        Expanded(
-                          flex: 2,
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              _colorButton(const Color(0xFF1E40AF)),
-                              _colorButton(const Color(0xFF1F2937)),
-                              _colorButton(const Color(0xFFDC2626)),
-                              _colorButton(const Color(0xFF059669)),
-                              _colorButton(const Color(0xFF7C3AED)),
-                            ],
-                          ),
-                        ),
-
-                        const SizedBox(width: 8),
-
-                        // Thickness controls
-                        Expanded(
-                          flex: 3,
-                          child: Container(
-                            decoration: BoxDecoration(
-                              color: Colors.grey[100],
-                              borderRadius: BorderRadius.circular(6),
-                            ),
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                // Decrease thickness
-                                IconButton(
-                                  icon: const Icon(Icons.remove, size: 14),
-                                  onPressed: _selectedWidth > 1.0 ? _decreaseThickness : null,
-                                  tooltip: 'Thinner',
-                                  padding: const EdgeInsets.all(2),
-                                  constraints: const BoxConstraints(minWidth: 24, minHeight: 24),
-                                  color: _selectedWidth > 1.0 ? const Color(0xFF64748B) : Colors.grey[400],
-                                ),
-
-                                // Current thickness display
-                                Expanded(
-                                  child: Container(
-                                    padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-                                    decoration: BoxDecoration(
-                                      color: const Color(0xFF3B82F6).withOpacity(0.1),
-                                      borderRadius: BorderRadius.circular(3),
-                                    ),
-                                    child: Row(
-                                      mainAxisAlignment: MainAxisAlignment.center,
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: [
-                                        Container(
-                                          width: (_selectedWidth * 1.5).clamp(3.0, 12.0),
-                                          height: (_selectedWidth * 1.5).clamp(3.0, 12.0),
-                                          decoration: BoxDecoration(
-                                            color: _selectedColor,
-                                            shape: BoxShape.circle,
-                                          ),
-                                        ),
-                                        const SizedBox(width: 3),
-                                        Text(
-                                          '${_selectedWidth.toStringAsFixed(1)}',
-                                          style: const TextStyle(
-                                            fontSize: 9,
-                                            fontWeight: FontWeight.w600,
-                                            color: Color(0xFF3B82F6),
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                ),
-
-                                // Increase thickness
-                                IconButton(
-                                  icon: const Icon(Icons.add, size: 14),
-                                  onPressed: _selectedWidth < 8.0 ? _increaseThickness : null,
-                                  tooltip: 'Thicker',
-                                  padding: const EdgeInsets.all(2),
-                                  constraints: const BoxConstraints(minWidth: 24, minHeight: 24),
-                                  color: _selectedWidth < 8.0 ? const Color(0xFF64748B) : Colors.grey[400],
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                      ],
-
-                      const Spacer(),
-
-                      // Zoom controls
-                      Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          IconButton(
-                            icon: const Icon(Icons.zoom_out, size: 16),
-                            onPressed: _zoomOut,
-                            tooltip: 'Zoom Out',
-                            padding: const EdgeInsets.all(4),
-                            constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
-                          ),
-                          IconButton(
-                            icon: const Icon(Icons.zoom_in, size: 16),
-                            onPressed: _zoomIn,
-                            tooltip: 'Zoom In',
-                            padding: const EdgeInsets.all(4),
-                            constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
-                          ),
-                          IconButton(
-                            icon: const Icon(Icons.center_focus_strong, size: 16),
-                            onPressed: _resetZoom,
-                            tooltip: 'Reset',
-                            padding: const EdgeInsets.all(4),
-                            constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
-                          ),
-                        ],
-                      ),
-                    ],
-                  ),
-                ],
-              ],
-            ),
-          ),
-
-          // Expanded Drawing area
-          Expanded(
-            child: Container(
-              width: double.infinity,
-              color: const Color(0xFFF8FAFC),
-              padding: const EdgeInsets.all(8),
-              child: _buildDrawingArea(),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildDrawingArea() {
-    return InteractiveViewer(
-      key: _interactiveViewerKey,
-      transformationController: _transformationController,
-      boundaryMargin: const EdgeInsets.all(20),
-      minScale: 0.5,
-      maxScale: 4.0,
-      panEnabled: _isPanMode,
-      scaleEnabled: _isPanMode,
-      child: GestureDetector(
-        behavior: HitTestBehavior.translucent,
-        onPanStart: _isPanMode ? null : (details) {
-          final canvasPosition = _getCanvasPosition(details.globalPosition);
-
-          if (_isErasing) {
-            _eraseAtPoint(canvasPosition);
-          } else {
-            // 🔥 INSTANT RESPONSE: Create line with tiny second point for immediate visibility
-            final instantSecondPoint = Offset(
-                canvasPosition.dx + 0.01,
-                canvasPosition.dy + 0.01
-            );
-
-            setState(() {
-              _line = DrawnLine([canvasPosition, instantSecondPoint], _selectedColor, _selectedWidth);
-            });
-          }
-        },
-        onPanUpdate: _isPanMode ? null : (details) {
-          final canvasPosition = _getCanvasPosition(details.globalPosition);
-
-          if (_isErasing) {
-            _eraseAtPoint(canvasPosition);
-          } else if (_line != null) {
-            setState(() {
-              // Replace the tiny second point with actual movement
-              if (_line!.path.length == 2 &&
-                  (_line!.path[1] - _line!.path[0]).distance < 0.1) {
-                // Replace tiny point with real movement
-                _line = DrawnLine([_line!.path[0], canvasPosition], _selectedColor, _selectedWidth);
-              } else {
-                // Continue adding points normally
-                _line = DrawnLine([..._line!.path, canvasPosition], _selectedColor, _selectedWidth);
-              }
-            });
-          }
-        },
-        onPanEnd: _isPanMode ? null : (details) {
-          if (!_isErasing && _line != null) {
-            setState(() {
-              // If it was just a tap (tiny movement), make it a proper dot
-              if (_line!.path.length == 2 &&
-                  (_line!.path[1] - _line!.path[0]).distance < 0.1) {
-                _line = DrawnLine([_line!.path[0]], _selectedColor, _selectedWidth);
-              }
-
-              _pageLines[_currentPage]!.add(_line!);
-              _line = null;
-            });
-          }
-        },
-        child: _buildPrescriptionContainer(),
-      ),
-    );
-  }
-
-  Widget _buildPrescriptionContainer() {
-    final currentTemplate = _templates.firstWhere((t) => t.id == _currentPage);
-
-    return Container(
-      width: MediaQuery.of(context).size.width * 1.1,
-      height: MediaQuery.of(context).size.height * 1.3,
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(8),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.1),
-            blurRadius: 15,
-            offset: const Offset(0, 3),
-          ),
-        ],
-      ),
-      child: Stack(
-        children: [
-          // Prescription background
-          Positioned.fill(
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(8),
-              child: Image.asset(
-                currentTemplate.asset,
-                fit: BoxFit.fill,
-                errorBuilder: (context, error, stackTrace) {
-                  return Container(
-                    decoration: BoxDecoration(
-                      color: Colors.white,
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: CustomPaint(
-                      painter: PrescriptionBackgroundPainter(),
-                      size: Size.infinite,
-                    ),
-                  );
-                },
-              ),
-            ),
-          ),
-
-          // Drawing layer
-          Positioned.fill(
-            child: CustomPaint(
-              painter: DrawingPainter(_currentLines, _line),
-              size: Size.infinite,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _colorButton(Color color) {
-    final isSelected = _selectedColor == color;
-    return GestureDetector(
-      onTap: () {
-        setState(() {
-          _selectedColor = color;
-        });
-      },
-      child: Container(
-        width: 16,
-        height: 16,
-        margin: const EdgeInsets.symmetric(horizontal: 1),
-        decoration: BoxDecoration(
-          color: color,
-          shape: BoxShape.circle,
-          border: Border.all(
-            color: isSelected ? Colors.white : Colors.transparent,
-            width: 2,
-          ),
-          boxShadow: [
-            if (isSelected)
-              BoxShadow(
-                color: color.withOpacity(0.4),
-                blurRadius: 3,
-                offset: const Offset(0, 1),
-              ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  void _zoomIn() {
-    final Matrix4 matrix = _transformationController.value.clone();
-    matrix.scale(1.2);
-    _transformationController.value = matrix;
-  }
-
-  void _zoomOut() {
-    final Matrix4 matrix = _transformationController.value.clone();
-    matrix.scale(0.8);
-    _transformationController.value = matrix;
-  }
-
-  void _resetZoom() {
-    _transformationController.value = Matrix4.identity();
-  }
-
-  void _eraseAtPoint(Offset point) {
-    setState(() {
-      _pageLines[_currentPage]!.removeWhere((line) {
-        return line.path.any((linePoint) {
-          return (linePoint - point).distance < 30.0;
-        });
-      });
-    });
-  }
-
-  void _undo() {
-    if (_currentLines.isNotEmpty) {
-      setState(() {
-        _pageLines[_currentPage]!.removeLast();
-      });
+    if (_isLoadingPrescription) {
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
-  }
-
-  void _clearCanvas() {
-    setState(() {
-      _pageLines[_currentPage]!.clear();
-      _line = null;
-    });
-  }
-
-  void _savePrescription() {
-    HapticFeedback.lightImpact();
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Row(
-          children: [
-            const Icon(Icons.check_circle, color: Colors.white),
-            const SizedBox(width: 8),
-            Text('Page $_currentPage saved successfully!'),
-          ],
-        ),
-        backgroundColor: Colors.green[600],
-        behavior: SnackBarBehavior.floating,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-      ),
-    );
-  }
-}
-
-class PrescriptionTemplate {
-  final int id;
-  final String name;
-  final String asset;
-
-  PrescriptionTemplate({
-    required this.id,
-    required this.name,
-    required this.asset,
-  });
-}
-
-class DrawnLine {
-  final List<Offset> path;
-  final Color color;
-  final double width;
-
-  DrawnLine(this.path, this.color, this.width);
-}
-
-class DrawingPainter extends CustomPainter {
-  final List<DrawnLine> lines;
-  final DrawnLine? currentLine;
-
-  DrawingPainter(this.lines, this.currentLine);
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    // Draw completed lines
-    for (final line in lines) {
-      final paint = Paint()
-        ..color = line.color
-        ..strokeCap = StrokeCap.round
-        ..strokeJoin = StrokeJoin.round
-        ..strokeWidth = line.width
-        ..style = PaintingStyle.stroke;
-
-      if (line.path.length == 1) {
-        // 🎯 INSTANT DOT: Draw single points as circles immediately
-        canvas.drawCircle(line.path.first, line.width / 2, paint..style = PaintingStyle.fill);
-      } else if (line.path.length >= 2) {
-        // Draw multi-point lines
-        final path = Path();
-        path.moveTo(line.path.first.dx, line.path.first.dy);
-
-        for (int i = 1; i < line.path.length; i++) {
-          path.lineTo(line.path[i].dx, line.path[i].dy);
-        }
-        canvas.drawPath(path, paint);
-      }
-    }
-
-    // Draw current line being drawn
-    if (currentLine != null) {
-      final paint = Paint()
-        ..color = currentLine!.color
-        ..strokeCap = StrokeCap.round
-        ..strokeJoin = StrokeJoin.round
-        ..strokeWidth = currentLine!.width
-        ..style = PaintingStyle.stroke;
-
-      if (currentLine!.path.length == 1) {
-        // 🎯 INSTANT DOT: Single point as circle
-        canvas.drawCircle(currentLine!.path.first, currentLine!.width / 2, paint..style = PaintingStyle.fill);
-      } else if (currentLine!.path.length >= 2) {
-        // Multi-point line
-        final path = Path();
-        path.moveTo(currentLine!.path.first.dx, currentLine!.path.first.dy);
-
-        for (int i = 1; i < currentLine!.path.length; i++) {
-          path.lineTo(currentLine!.path[i].dx, currentLine!.path[i].dy);
-        }
-        canvas.drawPath(path, paint);
-      }
-    }
-  }
-
-  @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => true;
-}
-
-class PrescriptionBackgroundPainter extends CustomPainter {
-  @override
-  void paint(Canvas canvas, Size size) {
-    final headerPaint = Paint()
-      ..color = const Color(0xFF3B82F6).withOpacity(0.1);
-
-    canvas.drawRect(
-      Rect.fromLTWH(0, 0, size.width, 120),
-      headerPaint,
-    );
-
-    final textPainter = TextPainter(
-      textDirection: TextDirection.ltr,
-    );
-
-    textPainter.text = const TextSpan(
-      text: 'MEDFORD HOSPITAL',
-      style: TextStyle(
-        fontSize: 24,
-        fontWeight: FontWeight.bold,
-        color: Color(0xFF1E40AF),
-      ),
-    );
-    textPainter.layout();
-    textPainter.paint(canvas, const Offset(40, 20));
-
-    textPainter.text = const TextSpan(
-      text: 'Address: 123 Medical Center Drive, City, State 12345\nPhone: (555) 123-4567 | Email: info@medfordhospital.com',
-      style: TextStyle(
-        fontSize: 12,
-        color: Color(0xFF64748B),
-      ),
-    );
-    textPainter.layout();
-    textPainter.paint(canvas, const Offset(40, 55));
-
-    textPainter.text = const TextSpan(
-      text: 'PRESCRIPTION',
-      style: TextStyle(
-        fontSize: 18,
-        fontWeight: FontWeight.bold,
-        color: Color(0xFF1E40AF),
-      ),
-    );
-    textPainter.layout();
-    textPainter.paint(canvas, const Offset(40, 140));
-
-    final linePaint = Paint()
-      ..color = Colors.grey.withOpacity(0.3)
-      ..strokeWidth = 1;
-
-    canvas.drawLine(const Offset(40, 180), Offset(size.width - 40, 180), linePaint);
-    textPainter.text = const TextSpan(
-      text: 'Patient Name: ________________________________',
-      style: TextStyle(fontSize: 12, color: Color(0xFF64748B)),
-    );
-    textPainter.layout();
-    textPainter.paint(canvas, const Offset(40, 165));
-
-    canvas.drawLine(const Offset(40, 220), const Offset(200, 220), linePaint);
-    canvas.drawLine(Offset(size.width - 200, 220), Offset(size.width - 40, 220), linePaint);
-
-    textPainter.text = const TextSpan(
-      text: 'Age: _______',
-      style: TextStyle(fontSize: 12, color: Color(0xFF64748B)),
-    );
-    textPainter.layout();
-    textPainter.paint(canvas, const Offset(40, 205));
-
-    textPainter.text = const TextSpan(
-      text: 'Date: _______',
-      style: TextStyle(fontSize: 12, color: Color(0xFF64748B)),
-    );
-    textPainter.layout();
-    textPainter.paint(canvas, Offset(size.width - 150, 205));
-
-    for (double i = 260; i < size.height - 100; i += 30) {
-      canvas.drawLine(
-        Offset(40, i),
-        Offset(size.width - 40, i),
-        Paint()..color = Colors.blue.withOpacity(0.1)..strokeWidth = 0.5,
+    if (_viewablePages.isEmpty) {
+      return Scaffold(
+        appBar: AppBar(title: const Text("Error")),
+        body: const Center(child: Padding(
+          padding: EdgeInsets.all(16.0),
+          child: Text(
+            "Page data could not be loaded. Please go back and try again.",
+            textAlign: TextAlign.center,
+          ),
+        )),
       );
     }
 
-    final signaturePaint = Paint()
-      ..color = Colors.grey.withOpacity(0.3)
-      ..strokeWidth = 1;
+    final currentPageData = _viewablePages[_currentPageIndex];
 
-    canvas.drawLine(
-      Offset(size.width - 250, size.height - 60),
-      Offset(size.width - 40, size.height - 60),
-      signaturePaint,
+    return Scaffold(
+      backgroundColor: lightBackground,
+      appBar: AppBar(
+        title: Text("${currentPageData.pageName} (${currentPageData.groupName})"),
+        backgroundColor: Colors.white,
+        elevation: 2,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.list_alt, color: primaryBlue),
+            tooltip: 'Select Page',
+            onPressed: _showFolderPageSelector,
+          ),
+          if (_viewablePages.length > 1)
+            TextButton(
+              onPressed: () => _navigateToPage((_currentPageIndex + 1) % _viewablePages.length),
+              child: Text("${_currentPageIndex + 1}/${_viewablePages.length}", style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+            ),
+          IconButton(
+            icon: Icon(_isPenOnlyMode ? Icons.style_outlined : Icons.touch_app_outlined, color: primaryBlue),
+            tooltip: _isPenOnlyMode ? "Pen-Only Mode" : "Touch & Pen Mode",
+            onPressed: _togglePenOnlyMode,
+          ),
+          IconButton(
+            icon: Icon(_isPanMode ? Icons.pan_tool_alt_rounded : Icons.edit_note_rounded, color: primaryBlue),
+            tooltip: _isPanMode ? "Pan/Zoom Mode" : "Draw/Write Mode",
+            onPressed: _togglePanDrawMode,
+          ),
+          IconButton(
+            icon: _isSaving
+                ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: primaryBlue))
+                : const Icon(Icons.save_alt_rounded, color: primaryBlue),
+            tooltip: "Save Prescription",
+            onPressed: _isSaving ? null : _savePrescriptionData,
+          ),
+          const SizedBox(width: 8),
+        ],
+        bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(48),
+          child: Container(
+            color: Colors.white,
+            padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 4.0),
+            child: _isPanMode ? _buildPanToolbar() : _buildDrawingToolbar(),
+          ),
+        ),
+      ),
+      body: LayoutBuilder(
+        builder: (context, constraints) {
+          if (!_isInitialZoomSet) {
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (mounted) {
+                _setInitialZoom(constraints.biggest);
+                _isInitialZoomSet = true;
+              }
+            });
+          }
+          return Stack(
+            children: [
+              Listener(
+                onPointerDown: _handlePointerDown,
+                onPointerMove: _handlePointerMove,
+                onPointerUp: _handlePointerUp,
+                child: PageView.builder(
+                  controller: _pageController,
+                  itemCount: _viewablePages.length,
+                  onPageChanged: (index) async {
+                    _commitTextChanges();
+                    setState(() {
+                      _currentPageIndex = index;
+                      _isInitialZoomSet = false;
+                      _transformationController.value = Matrix4.identity();
+                    });
+                    await _loadTemplateUiImage(_viewablePages[index].templateImageUrl);
+                  },
+                  physics: const NeverScrollableScrollPhysics(),
+                  itemBuilder: (context, index) {
+                    return InteractiveViewer(
+                      transformationController: _transformationController,
+                      panEnabled: _isPanMode || _isPenOnlyMode,
+                      scaleEnabled: _isPanMode || _isPenOnlyMode,
+                      minScale: 0.1,
+                      maxScale: 10.0,
+                      constrained: false,
+                      boundaryMargin: const EdgeInsets.all(double.infinity),
+                      child: CustomPaint(
+                        painter: PrescriptionPainter(
+                          drawingPage: _viewablePages[index],
+                          templateUiImage: _currentTemplateUiImage,
+                          editingTextId: _editingTextId,
+                        ),
+                        child: const SizedBox(
+                          width: canvasWidth,
+                          height: canvasHeight,
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ),
+              if (_editingTextId != null) _buildTextFieldOverlay(),
+            ],
+          );
+        },
+      ),
     );
+  }
 
-    textPainter.text = const TextSpan(
-      text: 'Doctor Signature',
-      style: TextStyle(fontSize: 12, color: Color(0xFF64748B)),
+  Widget _buildTextFieldOverlay() {
+    if (_editingTextId == null) return const SizedBox.shrink();
+
+    final currentPage = _viewablePages[_currentPageIndex];
+    final textToEdit = currentPage.texts.firstWhere((t) => t.id == _editingTextId);
+
+    final matrix = _transformationController.value;
+    final canvasOffset = textToEdit.position;
+    final screenOffset = MatrixUtils.transformPoint(matrix, canvasOffset);
+
+    final currentScale = matrix.getMaxScaleOnAxis();
+    final scaledFontSize = textToEdit.fontSize * currentScale;
+
+    return Positioned(
+      left: screenOffset.dx,
+      top: screenOffset.dy,
+      child: Container(
+        constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width - screenOffset.dx - 20),
+        child: IntrinsicWidth(
+          child: TextField(
+            controller: _textController,
+            focusNode: _textFocusNode,
+            autofocus: true,
+            maxLines: null,
+            decoration: const InputDecoration(
+              border: InputBorder.none,
+              contentPadding: EdgeInsets.zero,
+              isDense: true,
+            ),
+            style: TextStyle(
+              fontSize: scaledFontSize,
+              color: Color(textToEdit.colorValue),
+            ),
+            onSubmitted: (_) => _commitTextChanges(),
+          ),
+        ),
+      ),
     );
-    textPainter.layout();
-    textPainter.paint(canvas, Offset(size.width - 200, size.height - 45));
+  }
+
+  Widget _buildDrawingToolbar() {
+    // FIXED: Removed Spacer and reorganized for proper scrolling layout
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.start,
+        children: [
+          ToggleButtons(
+            isSelected: [
+              _selectedTool == DrawingTool.pen,
+              _selectedTool == DrawingTool.eraser,
+              _selectedTool == DrawingTool.text,
+            ],
+            onPressed: (index) {
+              HapticFeedback.selectionClick();
+              setState(() {
+                _commitTextChanges();
+                if (index == 0) _selectedTool = DrawingTool.pen;
+                else if (index == 1) _selectedTool = DrawingTool.eraser;
+                else _selectedTool = DrawingTool.text;
+              });
+            },
+            borderRadius: BorderRadius.circular(8),
+            selectedBorderColor: primaryBlue,
+            fillColor: primaryBlue,
+            color: mediumGreyText,
+            selectedColor: Colors.white,
+            constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+            children: const [
+              Tooltip(message: "Pen", child: Icon(Icons.edit, size: 20)),
+              Tooltip(message: "Eraser", child: Icon(Icons.cleaning_services, size: 20)),
+              Tooltip(message: "Text", child: Icon(Icons.text_fields_rounded, size: 20)),
+            ],
+          ),
+          const SizedBox(width: 16),
+          ...[Colors.black, Colors.blue, Colors.red, Colors.green]
+              .map((color) => _buildColorOption(color))
+              .toList(),
+          const SizedBox(width: 16),
+          if (_selectedTool == DrawingTool.text)
+            Row(
+              children: [
+                const Icon(Icons.format_size, size: 20, color: mediumGreyText),
+                SizedBox(
+                  width: 120,
+                  child: Slider(
+                    value: _currentFontSize,
+                    min: 10.0,
+                    max: 60.0,
+                    divisions: 10,
+                    onChanged: (value) => setState(() => _currentFontSize = value),
+                    activeColor: primaryBlue,
+                  ),
+                ),
+              ],
+            ),
+          const SizedBox(width: 24),
+          IconButton(
+            icon: const Icon(Icons.undo_rounded, color: primaryBlue, size: 22),
+            onPressed: _undoLastAction,
+            tooltip: "Undo",
+          ),
+          IconButton(
+            icon: const Icon(Icons.delete_sweep_rounded, color: primaryBlue, size: 22),
+            onPressed: _clearAllDrawings,
+            tooltip: "Clear All",
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildPanToolbar() {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        ElevatedButton.icon(onPressed: _zoomIn, icon: const Icon(Icons.zoom_in), label: const Text("Zoom In")),
+        const SizedBox(width: 12),
+        ElevatedButton.icon(onPressed: _zoomOut, icon: const Icon(Icons.zoom_out), label: const Text("Zoom Out")),
+        const SizedBox(width: 12),
+        ElevatedButton.icon(onPressed: _resetZoom, icon: const Icon(Icons.zoom_out_map), label: const Text("Reset Zoom")),
+      ],
+    );
+  }
+
+  Widget _buildColorOption(Color color) {
+    bool isSelected = _currentColor == color;
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 3.0),
+      child: GestureDetector(
+        onTap: () => setState(() => _currentColor = color),
+        child: Tooltip(
+          message: color.toString(),
+          child: Container(
+            width: 30,
+            height: 30,
+            decoration: BoxDecoration(
+              color: color,
+              shape: BoxShape.circle,
+              border: isSelected
+                  ? Border.all(color: primaryBlue, width: 2.5)
+                  : Border.all(color: Colors.grey.shade300, width: 1),
+            ),
+            child: isSelected ? const Icon(Icons.check, color: Colors.white, size: 16) : null,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class PrescriptionPainter extends CustomPainter {
+  final DrawingPage drawingPage;
+  final ui.Image? templateUiImage;
+  final String? editingTextId;
+
+  PrescriptionPainter({
+    required this.drawingPage,
+    required this.templateUiImage,
+    this.editingTextId,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (templateUiImage != null) {
+      paintImage(
+        canvas: canvas,
+        rect: Rect.fromLTWH(0, 0, size.width, size.height),
+        image: templateUiImage!,
+        fit: BoxFit.contain,
+        alignment: Alignment.center,
+      );
+    } else {
+      canvas.drawRect(Rect.fromLTWH(0, 0, size.width, size.height), Paint()..color = Colors.grey[200]!);
+    }
+
+    for (var line in drawingPage.lines) {
+      final paint = Paint()
+        ..color = Color(line.colorValue)
+        ..strokeWidth = line.strokeWidth
+        ..strokeCap = StrokeCap.round
+        ..style = PaintingStyle.stroke;
+      if (line.points.length > 1) {
+        final path = Path()..moveTo(line.points.first.dx, line.points.first.dy);
+        for (int i = 1; i < line.points.length; i++) {
+          path.lineTo(line.points[i].dx, line.points[i].dy);
+        }
+        canvas.drawPath(path, paint);
+      }
+    }
+
+    for (var text in drawingPage.texts) {
+      if (text.id == editingTextId) continue;
+
+      final textSpan = TextSpan(
+        text: text.text,
+        style: TextStyle(
+          color: Color(text.colorValue),
+          fontSize: text.fontSize,
+          fontWeight: FontWeight.w500,
+        ),
+      );
+      final textPainter = TextPainter(
+        text: textSpan,
+        textDirection: TextDirection.ltr,
+      );
+      textPainter.layout(minWidth: 0, maxWidth: canvasWidth - text.position.dx);
+      textPainter.paint(canvas, text.position);
+    }
   }
 
   @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
+  bool shouldRepaint(covariant PrescriptionPainter oldDelegate) {
+    return oldDelegate.drawingPage != drawingPage ||
+        oldDelegate.templateUiImage != templateUiImage ||
+        oldDelegate.editingTextId != editingTextId;
+  }
+}
+
+// --- Helper Class ---
+class Matrix4Utils {
+  static Offset transformPoint(Matrix4 matrix, Offset offset) {
+    final storage = matrix.storage;
+    final dx = offset.dx;
+    final dy = offset.dy;
+    final x = storage[0] * dx + storage[4] * dy + storage[12];
+    final y = storage[1] * dx + storage[5] * dy + storage[13];
+    final w = storage[3] * dx + storage[7] * dy + storage[15];
+    if (w != 1.0 && w != 0.0) {
+      return Offset(x / w, y / w);
+    }
+    return Offset(x, y);
+  }
 }

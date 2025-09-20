@@ -23,7 +23,7 @@ class MyApp extends StatelessWidget {
       title: 'Medford App',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(primarySwatch: Colors.blue),
-      home: isLoggedIn ? const DashboardPage() : const LoginPage(),
+      home: isLoggedIn ? const IpdManagementPage() : const LoginPage(),
     );
   }
 }
