@@ -1,7 +1,7 @@
 import 'package:supabase_flutter/supabase_flutter.dart';
 
-const supabaseUrl = 'https://reihuolixhizaychbttl.supabase.co';
-const supabaseAnonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJlaWh1b2xpeGhpemF5Y2hidHRsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTg3MzA2OTQsImV4cCI6MjA3NDMwNjY5NH0.1HEWQEWBA3JxNCZPeTBpMmu8q1oeYxUH4hkRWUj-ftI'; // use full key
+const supabaseUrl = 'https://apimmedford.infispark.in';
+const supabaseAnonKey = 'eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJzdXBhYmFzZSIsImlhdCI6MTc1OTgzMjY0MCwiZXhwIjo0OTE1NTA2MjQwLCJyb2xlIjoiYW5vbiJ9.WCvYapuptIMkVDYae1qTMy6AqT4brJa6GWNc-au-Cx8'; // use full key
 
 class SupabaseConfig {
   static Future<void> init() async {

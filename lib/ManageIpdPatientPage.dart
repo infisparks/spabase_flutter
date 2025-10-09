@@ -1,5 +1,3 @@
-// File: ManageIpdPatientPage.dart
-
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:intl/intl.dart';
@@ -7,29 +5,51 @@ import 'supabase_config.dart';
 import 'prescription_page.dart';
 import 'patient_documents_page.dart'; // New Import
 import 'dart:math';
-import 'dart:ui' show Offset;
+import 'dart:ui' show Offset, Color;
 
-// --- Helper Functions for Robust JSON Parsing ---
-int _safeParseInt(dynamic value, {int defaultValue = 0}) {
-  if (value == null) return defaultValue;
-  if (value is int) return value;
-  if (value is double) return value.toInt();
-  if (value is String) return int.tryParse(value) ?? defaultValue;
-  return defaultValue;
-}
 
-double _safeParseDouble(dynamic value, {double defaultValue = 0.0}) {
-  if (value == null) return defaultValue;
-  if (value is double) return value;
-  if (value is num) return value.toDouble();
-  if (value is String) return double.tryParse(value) ?? defaultValue;
-  return defaultValue;
-}
+// --- NEW: Unified & Highly Compressed Data Models ---
 
-// --- Data Models for Supabase Serialization ---
 String generateUniqueId() {
   return DateTime.now().microsecondsSinceEpoch.toString() + Random().nextInt(100000).toString();
 }
+
+/// A more robust implementation of the Ramer-Douglas-Peucker algorithm.
+List<Offset> simplify(List<Offset> points, double epsilon) {
+  if (points.length < 3) {
+    return points;
+  }
+
+  double findPerpendicularDistance(Offset point, Offset lineStart, Offset lineEnd) {
+    double dx = lineEnd.dx - lineStart.dx;
+    double dy = lineEnd.dy - lineStart.dy;
+    if (dx == 0 && dy == 0) return (point - lineStart).distance;
+    double t = ((point.dx - lineStart.dx) * dx + (point.dy - lineStart.dy) * dy) / (dx * dx + dy * dy);
+    t = max(0, min(1, t));
+    double closestX = lineStart.dx + t * dx;
+    double closestY = lineStart.dy + t * dy;
+    return sqrt(pow(point.dx - closestX, 2) + pow(point.dy - closestY, 2));
+  }
+
+  double dMax = 0;
+  int index = 0;
+  for (int i = 1; i < points.length - 1; i++) {
+    double d = findPerpendicularDistance(points[i], points.first, points.last);
+    if (d > dMax) {
+      index = i;
+      dMax = d;
+    }
+  }
+
+  if (dMax > epsilon) {
+    var recResults1 = simplify(points.sublist(0, index + 1), epsilon);
+    var recResults2 = simplify(points.sublist(index, points.length), epsilon);
+    return recResults1.sublist(0, recResults1.length - 1) + recResults2;
+  } else {
+    return [points.first, points.last];
+  }
+}
+
 
 class DrawingLine {
   final List<Offset> points;
@@ -42,20 +62,80 @@ class DrawingLine {
     required this.strokeWidth,
   });
 
-  Map<String, dynamic> toJson() => {
-    'points': points.map((p) => {'dx': p.dx, 'dy': p.dy}).toList(),
-    'colorValue': colorValue,
-    'strokeWidth': strokeWidth,
-  };
-
+  // MODIFIED: Handles multiple data formats for full backward compatibility.
   factory DrawingLine.fromJson(Map<String, dynamic> json) {
-    return DrawingLine(
-      points: (json['points'] as List<dynamic>?)
-          ?.map((p) => Offset(_safeParseDouble(p['dx']), _safeParseDouble(p['dy'])))
-          .toList() ?? [],
-      colorValue: _safeParseInt(json['colorValue']),
-      strokeWidth: _safeParseDouble(json['strokeWidth']),
-    );
+    final pointsList = <Offset>[];
+    final pointsData = json['points'];
+    final color = (json['colorValue'] as num?)?.toInt() ?? Colors.black.value;
+    final width = (json['strokeWidth'] as num?)?.toDouble() ?? 2.0;
+
+    if (pointsData is List && pointsData.isNotEmpty) {
+      if (pointsData[0] is Map) {
+        // OLD UNCOMPRESSED FORMAT: [{'dx': 123.45, 'dy': 678.90}]
+        for (var pointJson in pointsData) {
+          if (pointJson is Map) {
+            pointsList.add(Offset(
+              (pointJson['dx'] as num?)?.toDouble() ?? 0.0,
+              (pointJson['dy'] as num?)?.toDouble() ?? 0.0,
+            ));
+          }
+        }
+      } else if (pointsData[0] is num) {
+        // NEW COMPRESSED FORMAT (Delta Encoded Integers): [x1, y1, dx2, dy2, ...]
+        if (pointsData.length >= 2) {
+          double lastX = (pointsData[0] as num).toDouble() / 100.0;
+          double lastY = (pointsData[1] as num).toDouble() / 100.0;
+          pointsList.add(Offset(lastX, lastY));
+
+          for (int i = 2; i < pointsData.length; i += 2) {
+            if (i + 1 < pointsData.length) {
+              lastX += (pointsData[i] as num).toDouble() / 100.0;
+              lastY += (pointsData[i + 1] as num).toDouble() / 100.0;
+              pointsList.add(Offset(lastX, lastY));
+            }
+          }
+        }
+      }
+    }
+
+    return DrawingLine(points: pointsList, colorValue: color, strokeWidth: width);
+  }
+
+  // MODIFIED: Applies simplification, integer conversion, and delta encoding for high compression.
+  Map<String, dynamic> toJson() {
+    if (points.isEmpty) {
+      return {'points': [], 'colorValue': colorValue, 'strokeWidth': strokeWidth};
+    }
+
+    // 1. Simplify the line first (highest impact). Epsilon = 1.0 is a good balance.
+    final simplifiedPoints = simplify(points, 1.0);
+    if (simplifiedPoints.isEmpty) {
+      return {'points': [], 'colorValue': colorValue, 'strokeWidth': strokeWidth};
+    }
+
+    final compressedPoints = <int>[];
+
+    // 2. Add the first point as absolute coordinates (multiplied by 100).
+    int lastX = (simplifiedPoints.first.dx * 100).round();
+    int lastY = (simplifiedPoints.first.dy * 100).round();
+    compressedPoints.add(lastX);
+    compressedPoints.add(lastY);
+
+    // 3. Add subsequent points as delta (differences).
+    for (int i = 1; i < simplifiedPoints.length; i++) {
+      int currentX = (simplifiedPoints[i].dx * 100).round();
+      int currentY = (simplifiedPoints[i].dy * 100).round();
+      compressedPoints.add(currentX - lastX); // Add delta X
+      compressedPoints.add(currentY - lastY); // Add delta Y
+      lastX = currentX;
+      lastY = currentY;
+    }
+
+    return {
+      'points': compressedPoints,
+      'colorValue': colorValue,
+      'strokeWidth': strokeWidth,
+    };
   }
 
   DrawingLine copyWith({List<Offset>? points}) {
@@ -96,11 +176,11 @@ class DrawingText {
       id: json['id'] as String? ?? generateUniqueId(),
       text: json['text'] as String? ?? '',
       position: Offset(
-        _safeParseDouble(positionJson['dx']),
-        _safeParseDouble(positionJson['dy']),
+        (positionJson['dx'] as num?)?.toDouble() ?? 0.0,
+        (positionJson['dy'] as num?)?.toDouble() ?? 0.0,
       ),
-      colorValue: _safeParseInt(json['colorValue']),
-      fontSize: _safeParseDouble(json['fontSize'], defaultValue: 16.0),
+      colorValue: (json['colorValue'] as num?)?.toInt() ?? Colors.black.value,
+      fontSize: (json['fontSize'] as num?)?.toDouble() ?? 16.0,
     );
   }
 
@@ -153,14 +233,16 @@ class DrawingPage {
     return DrawingPage(
       id: json['id'] as String? ?? generateUniqueId(),
       templateImageUrl: json['templateImageUrl'] as String? ?? '',
-      pageNumber: _safeParseInt(json['pageNumber']),
+      pageNumber: (json['pageNumber'] as num?)?.toInt() ?? 0,
       pageName: json['pageName'] as String? ?? 'Unnamed Page',
       groupName: json['groupName'] as String? ?? 'Uncategorized',
       lines: (json['lines'] as List<dynamic>?)
-          ?.map((lineJson) => DrawingLine.fromJson(lineJson as Map<String, dynamic>))
+          ?.whereType<Map<String, dynamic>>()
+          .map((lineJson) => DrawingLine.fromJson(lineJson))
           .toList() ?? [],
       texts: (json['texts'] as List<dynamic>?)
-          ?.map((textJson) => DrawingText.fromJson(textJson as Map<String, dynamic>))
+          ?.whereType<Map<String, dynamic>>()
+          .map((textJson) => DrawingText.fromJson(textJson))
           .toList() ?? [],
     );
   }
@@ -200,7 +282,8 @@ class DrawingGroup {
       id: json['id'] as String? ?? generateUniqueId(),
       groupName: json['groupName'] as String? ?? 'indoor patients progress',
       pages: (json['pages'] as List<dynamic>?)
-          ?.map((pageJson) => DrawingPage.fromJson(pageJson as Map<String, dynamic>))
+          ?.whereType<Map<String, dynamic>>()
+          .map((pageJson) => DrawingPage.fromJson(pageJson))
           .toList() ?? [],
     );
   }
@@ -213,6 +296,8 @@ class DrawingGroup {
     );
   }
 }
+
+// --- End of Data Models ---
 
 class SupabaseTemplateImage {
   final String id;
@@ -292,14 +377,12 @@ class _ManageIpdPatientPageState extends State<ManageIpdPatientPage> {
       _isLoading = true;
     });
     try {
-      // FIX: Use a more robust join syntax with aliased tables
       final patientDetailsResponse = await supabase
           .from('ipd_registration')
           .select('uhid, patient:patient_detail(name), bed:bed_management(room_type, bed_number)')
           .eq('ipd_id', widget.ipdId)
           .single();
 
-      // FIX: Access the data using the aliases
       final patientData = patientDetailsResponse['patient'];
       _patientName = (patientData != null) ? patientData['name'] as String? : 'N/A';
 
@@ -312,13 +395,11 @@ class _ManageIpdPatientPageState extends State<ManageIpdPatientPage> {
         _roomType = 'N/A';
       }
 
-      // Fetch available templates, including the 'tag'
       final List<Map<String, dynamic>> templateData = await supabase
           .from('template_images')
           .select('id, name, url, 2url, isbook, book_img_url, tag');
       _availableTemplates = templateData.map((json) => SupabaseTemplateImage.fromJson(json)).toList();
 
-      // Fetch existing health records
       final response = await supabase
           .from('user_health_details')
           .select('id, prescription_data, ipd_registration_id')
@@ -330,7 +411,8 @@ class _ManageIpdPatientPageState extends State<ManageIpdPatientPage> {
         _healthRecordId = response['id'] as String;
         final List<dynamic> rawGroups = response['prescription_data'] ?? [];
         setState(() {
-          _drawingGroups = rawGroups.map((json) => DrawingGroup.fromJson(json)).toList();
+          // THE FIX IS HERE: The updated DrawingGroup.fromJson can now handle the compressed data
+          _drawingGroups = rawGroups.whereType<Map<String, dynamic>>().map((json) => DrawingGroup.fromJson(json)).toList();
         });
       } else {
         debugPrint('No existing health records found. Creating default group.');

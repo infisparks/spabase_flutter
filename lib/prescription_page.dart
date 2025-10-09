@@ -9,13 +9,148 @@ import 'supabase_config.dart'; // Make sure you have this file configured
 // --- Top-Level Constants ---
 const double canvasWidth = 1000;
 const double canvasHeight = 1414;
+const String kBaseImageUrl = 'https://apimmedford.infispark.in/';
 
-// --- Data Models (Simulated from ManageIpdPatientPage.dart) ---
+// --- Unified & Highly Compressed Data Models ---
+
 String generateUniqueId() {
-  return DateTime.now().millisecondsSinceEpoch.toString() + Random().nextInt(999999).toString();
+  return DateTime.now().microsecondsSinceEpoch.toString() + Random().nextInt(100000).toString();
 }
 
-/// Represents a single piece of text on the canvas.
+/// A more robust implementation of the Ramer-Douglas-Peucker algorithm.
+List<Offset> simplify(List<Offset> points, double epsilon) {
+  if (points.length < 3) {
+    return points;
+  }
+
+  double findPerpendicularDistance(Offset point, Offset lineStart, Offset lineEnd) {
+    double dx = lineEnd.dx - lineStart.dx;
+    double dy = lineEnd.dy - lineStart.dy;
+    if (dx == 0 && dy == 0) return (point - lineStart).distance;
+    double t = ((point.dx - lineStart.dx) * dx + (point.dy - lineStart.dy) * dy) / (dx * dx + dy * dy);
+    t = max(0, min(1, t));
+    double closestX = lineStart.dx + t * dx;
+    double closestY = lineStart.dy + t * dy;
+    return sqrt(pow(point.dx - closestX, 2) + pow(point.dy - closestY, 2));
+  }
+
+  double dMax = 0;
+  int index = 0;
+  for (int i = 1; i < points.length - 1; i++) {
+    double d = findPerpendicularDistance(points[i], points.first, points.last);
+    if (d > dMax) {
+      index = i;
+      dMax = d;
+    }
+  }
+
+  if (dMax > epsilon) {
+    var recResults1 = simplify(points.sublist(0, index + 1), epsilon);
+    var recResults2 = simplify(points.sublist(index, points.length), epsilon);
+    return recResults1.sublist(0, recResults1.length - 1) + recResults2;
+  } else {
+    return [points.first, points.last];
+  }
+}
+
+class DrawingLine {
+  final List<Offset> points;
+  final int colorValue;
+  final double strokeWidth;
+
+  DrawingLine({
+    required this.points,
+    required this.colorValue,
+    required this.strokeWidth,
+  });
+
+  factory DrawingLine.fromJson(Map<String, dynamic> json) {
+    final pointsList = <Offset>[];
+    final pointsData = json['points'];
+    final color = (json['colorValue'] as num?)?.toInt() ?? Colors.black.value;
+    final width = (json['strokeWidth'] as num?)?.toDouble() ?? 2.0;
+
+    if (pointsData is List && pointsData.isNotEmpty) {
+      if (pointsData[0] is Map) {
+        // OLD UNCOMPRESSED FORMAT: [{'dx': 123.45, 'dy': 678.90}]
+        for (var pointJson in pointsData) {
+          if (pointJson is Map) {
+            pointsList.add(Offset(
+              (pointJson['dx'] as num?)?.toDouble() ?? 0.0,
+              (pointJson['dy'] as num?)?.toDouble() ?? 0.0,
+            ));
+          }
+        }
+      } else if (pointsData[0] is num) {
+        // NEW COMPRESSED FORMAT (Delta Encoded Integers): [x1, y1, dx2, dy2, ...]
+        if (pointsData.length >= 2) {
+          double lastX = (pointsData[0] as num).toDouble() / 100.0;
+          double lastY = (pointsData[1] as num).toDouble() / 100.0;
+          pointsList.add(Offset(lastX, lastY));
+
+          for (int i = 2; i < pointsData.length; i += 2) {
+            if (i + 1 < pointsData.length) {
+              lastX += (pointsData[i] as num).toDouble() / 100.0;
+              lastY += (pointsData[i + 1] as num).toDouble() / 100.0;
+              pointsList.add(Offset(lastX, lastY));
+            }
+          }
+        }
+      }
+    }
+
+    return DrawingLine(points: pointsList, colorValue: color, strokeWidth: width);
+  }
+
+  Map<String, dynamic> toJson() {
+    if (points.isEmpty) {
+      return {'points': [], 'colorValue': colorValue, 'strokeWidth': strokeWidth};
+    }
+
+    // 1. Simplify the line first (highest impact). Epsilon = 1.0 is a good balance.
+    final simplifiedPoints = simplify(points, 0.2);
+    if (simplifiedPoints.isEmpty) {
+      return {'points': [], 'colorValue': colorValue, 'strokeWidth': strokeWidth};
+    }
+
+    final compressedPoints = <int>[];
+
+    // 2. Add the first point as absolute coordinates (multiplied by 100).
+    int lastX = (simplifiedPoints.first.dx * 100).round();
+    int lastY = (simplifiedPoints.first.dy * 100).round();
+    compressedPoints.add(lastX);
+    compressedPoints.add(lastY);
+
+    // 3. Add subsequent points as delta (differences).
+    for (int i = 1; i < simplifiedPoints.length; i++) {
+      int currentX = (simplifiedPoints[i].dx * 100).round();
+      int currentY = (simplifiedPoints[i].dy * 100).round();
+      compressedPoints.add(currentX - lastX); // Add delta X
+      compressedPoints.add(currentY - lastY); // Add delta Y
+      lastX = currentX;
+      lastY = currentY;
+    }
+
+    return {
+      'points': compressedPoints,
+      'colorValue': colorValue,
+      'strokeWidth': strokeWidth,
+    };
+  }
+
+  DrawingLine copyWith({
+    List<Offset>? points,
+    int? colorValue,
+    double? strokeWidth,
+  }) {
+    return DrawingLine(
+      points: points ?? this.points,
+      colorValue: colorValue ?? this.colorValue,
+      strokeWidth: strokeWidth ?? this.strokeWidth,
+    );
+  }
+}
+
 class DrawingText {
   final String id;
   final String text;
@@ -71,53 +206,6 @@ class DrawingText {
   }
 }
 
-/// Represents a single continuous line drawn by the user.
-class DrawingLine {
-  final List<Offset> points;
-  final int colorValue;
-  final double strokeWidth;
-
-  DrawingLine({
-    required this.points,
-    required this.colorValue,
-    required this.strokeWidth,
-  });
-
-  DrawingLine copyWith({
-    List<Offset>? points,
-    int? colorValue,
-    double? strokeWidth,
-  }) {
-    return DrawingLine(
-      points: points ?? this.points,
-      colorValue: colorValue ?? this.colorValue,
-      strokeWidth: strokeWidth ?? this.strokeWidth,
-    );
-  }
-
-  factory DrawingLine.fromJson(Map<String, dynamic> json) {
-    final pointsList = (json['points'] as List<dynamic>?)
-        ?.map((pointJson) => Offset(
-      (pointJson['dx'] as num?)?.toDouble() ?? 0.0,
-      (pointJson['dy'] as num?)?.toDouble() ?? 0.0,
-    )).toList() ?? [];
-    return DrawingLine(
-      points: pointsList,
-      colorValue: (json['colorValue'] as int?) ?? Colors.black.value,
-      strokeWidth: (json['strokeWidth'] as num?)?.toDouble() ?? 2.0,
-    );
-  }
-
-  Map<String, dynamic> toJson() {
-    return {
-      'points': points.map((p) => {'dx': p.dx, 'dy': p.dy}).toList(),
-      'colorValue': colorValue,
-      'strokeWidth': strokeWidth,
-    };
-  }
-}
-
-/// Represents a single page, containing lines and text.
 class DrawingPage {
   final String id;
   final int pageNumber;
@@ -161,14 +249,16 @@ class DrawingPage {
     return DrawingPage(
       id: (json['id'] as String?) ?? '',
       pageNumber: (json['pageNumber'] as int?) ?? 0,
-      pageName: (json['pageName'] as String?) ?? 'Unnamed Page',
-      groupName: (json['groupName'] as String?) ?? 'Unnamed Group',
+      pageName: json['pageName'] as String? ?? 'Unnamed Page',
+      groupName: json['groupName'] as String? ?? 'Unnamed Group',
       templateImageUrl: (json['templateImageUrl'] as String?) ?? '',
       lines: (json['lines'] as List<dynamic>?)
-          ?.map((lineJson) => DrawingLine.fromJson(lineJson))
+          ?.whereType<Map<String, dynamic>>()
+          .map((lineJson) => DrawingLine.fromJson(lineJson))
           .toList() ?? [],
       texts: (json['texts'] as List<dynamic>?)
-          ?.map((textJson) => DrawingText.fromJson(textJson))
+          ?.whereType<Map<String, dynamic>>()
+          .map((textJson) => DrawingText.fromJson(textJson))
           .toList() ?? [],
     );
   }
@@ -186,48 +276,51 @@ class DrawingPage {
   }
 }
 
-/// Represents a group of pages (e.g., "Admission Notes").
 class DrawingGroup {
   final String id;
-  final String name;
+  final String groupName; // Standardized to groupName
   final List<DrawingPage> pages;
 
   DrawingGroup({
     required this.id,
-    required this.name,
+    required this.groupName,
     this.pages = const [],
   });
 
   DrawingGroup copyWith({
     String? id,
-    String? name,
+    String? groupName,
     List<DrawingPage>? pages,
   }) {
     return DrawingGroup(
       id: id ?? this.id,
-      name: name ?? this.name,
+      groupName: groupName ?? this.groupName,
       pages: pages ?? this.pages,
     );
   }
 
+  // MODIFIED: Handles both 'name' and 'groupName' for backward compatibility
   factory DrawingGroup.fromJson(Map<String, dynamic> json) {
     return DrawingGroup(
       id: (json['id'] as String?) ?? '',
-      name: (json['name'] as String?) ?? 'Unnamed Group',
+      groupName: json['groupName'] as String? ?? json['name'] as String? ?? 'Unnamed Group',
       pages: (json['pages'] as List<dynamic>?)
-          ?.map((pageJson) => DrawingPage.fromJson(pageJson))
+          ?.whereType<Map<String, dynamic>>()
+          .map((pageJson) => DrawingPage.fromJson(pageJson))
           .toList() ?? [],
     );
   }
 
+  // MODIFIED: Saves with the standardized 'groupName' key
   Map<String, dynamic> toJson() {
     return {
       'id': id,
-      'name': name,
+      'groupName': groupName,
       'pages': pages.map((page) => page.toJson()).toList(),
     };
   }
 }
+
 // --- End of Data Models ---
 
 enum DrawingTool { pen, eraser, text }
@@ -273,7 +366,6 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
   // --- Navigation & View State ---
   final PageController _pageController = PageController();
   final TransformationController _transformationController = TransformationController();
-  // FIXED: Start in Draw/Write mode by default
   bool _isPanMode = false;
   ui.Image? _currentTemplateUiImage;
   bool _isLoadingPrescription = true;
@@ -307,15 +399,28 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     super.dispose();
   }
 
+  String _getFullImageUrl(String relativePath) {
+    if (relativePath.isEmpty) return '';
+    if (relativePath.startsWith('http')) return relativePath;
+
+    final baseUri = Uri.parse(kBaseImageUrl);
+    final finalUri = baseUri.resolve(relativePath);
+
+    debugPrint("✅ Correctly formed URL: $finalUri");
+    return finalUri.toString();
+  }
+
   // --- Data Loading and Saving ---
 
-  Future<void> _loadTemplateUiImage(String imageUrl) async {
-    if (imageUrl.isEmpty) {
+  Future<void> _loadTemplateUiImage(String relativePath) async {
+    final String fullUrl = _getFullImageUrl(relativePath);
+
+    if (fullUrl.isEmpty) {
       if (mounted) setState(() => _currentTemplateUiImage = null);
       return;
     }
     try {
-      final stream = NetworkImage(imageUrl).resolve(ImageConfiguration.empty);
+      final stream = NetworkImage(fullUrl).resolve(ImageConfiguration.empty);
       final completer = Completer<ui.Image>();
       late ImageStreamListener listener;
       listener = ImageStreamListener((info, _) {
@@ -329,11 +434,12 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
       final loadedImage = await completer.future;
       if (mounted) setState(() => _currentTemplateUiImage = loadedImage);
     } catch (e) {
-      debugPrint('Error loading image: $e');
+      debugPrint('Error loading image from $fullUrl: $e');
       if (mounted) setState(() => _currentTemplateUiImage = null);
     }
   }
 
+  // MODIFIED: This function contains the fix for the error.
   Future<void> _loadHealthDetailsAndPage() async {
     setState(() => _isLoadingPrescription = true);
     try {
@@ -347,7 +453,17 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
       if (response != null) {
         _healthRecordId = response['id'] as String?;
         final rawGroups = response['prescription_data'] ?? [];
-        _allDrawingGroups = rawGroups.map<DrawingGroup>((json) => DrawingGroup.fromJson(json as Map<String, dynamic>)).toList();
+
+        // FIX: Explicitly loop and parse to prevent type errors.
+        final List<DrawingGroup> loadedGroups = [];
+        if (rawGroups is List) {
+          for (final groupData in rawGroups) {
+            if (groupData is Map<String, dynamic>) {
+              loadedGroups.add(DrawingGroup.fromJson(groupData));
+            }
+          }
+        }
+        _allDrawingGroups = loadedGroups;
 
         _currentGroup = _allDrawingGroups.firstWhere(
               (g) => g.id == widget.groupId,
@@ -357,7 +473,7 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
 
         DrawingPage currentPage = _pagesInCurrentGroup.firstWhere(
               (p) => p.id == widget.pageId,
-          orElse: () => throw Exception("The required page (ID: ${widget.pageId}) was not found in the group '${_currentGroup?.name}'."),
+          orElse: () => throw Exception("The required page (ID: ${widget.pageId}) was not found in the group '${_currentGroup?.groupName}'."),
         );
 
         String pagePrefix = currentPage.pageName.split(' - ')[0];
@@ -525,6 +641,7 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
 
   void _handleTextTap(Offset canvasPosition) {
     setState(() {
+      _commitTextChanges();
       final currentPage = _viewablePages[_currentPageIndex];
       DrawingText? tappedText;
 
@@ -607,6 +724,7 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
   void _togglePanDrawMode() {
     HapticFeedback.lightImpact();
     setState(() {
+      _commitTextChanges();
       _isPanMode = !_isPanMode;
       if (!_isPanMode) _selectedTool = DrawingTool.pen;
     });
@@ -615,6 +733,7 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
   void _togglePenOnlyMode() {
     HapticFeedback.lightImpact();
     setState(() {
+      _commitTextChanges();
       _isPenOnlyMode = !_isPenOnlyMode;
       _isPanMode = _isPenOnlyMode ? true : false;
     });
@@ -658,6 +777,7 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
 
   void _navigateToPage(int index) async {
     if (index >= 0 && index < _viewablePages.length) {
+      _commitTextChanges();
       _pageController.jumpToPage(index);
       setState(() {
         _currentPageIndex = index;
@@ -803,7 +923,9 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     if (_editingTextId == null) return const SizedBox.shrink();
 
     final currentPage = _viewablePages[_currentPageIndex];
-    final textToEdit = currentPage.texts.firstWhere((t) => t.id == _editingTextId);
+    final textToEdit = currentPage.texts.firstWhere((t) => t.id == _editingTextId, orElse: () => DrawingText(id: '', text: '', position: Offset.zero, colorValue: 0, fontSize: 0));
+    if(textToEdit.id.isEmpty) return const SizedBox.shrink();
+
 
     final matrix = _transformationController.value;
     final canvasOffset = textToEdit.position;
@@ -840,7 +962,6 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
   }
 
   Widget _buildDrawingToolbar() {
-    // FIXED: Removed Spacer and reorganized for proper scrolling layout
     return SingleChildScrollView(
       scrollDirection: Axis.horizontal,
       child: Row(
