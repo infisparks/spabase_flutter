@@ -255,11 +255,13 @@ class DrawingPage {
       lines: (json['lines'] as List<dynamic>?)
           ?.whereType<Map<String, dynamic>>()
           .map((lineJson) => DrawingLine.fromJson(lineJson))
-          .toList() ?? [],
+          .toList() ??
+          [],
       texts: (json['texts'] as List<dynamic>?)
           ?.whereType<Map<String, dynamic>>()
           .map((textJson) => DrawingText.fromJson(textJson))
-          .toList() ?? [],
+          .toList() ??
+          [],
     );
   }
 
@@ -307,7 +309,8 @@ class DrawingGroup {
       pages: (json['pages'] as List<dynamic>?)
           ?.whereType<Map<String, dynamic>>()
           .map((pageJson) => DrawingPage.fromJson(pageJson))
-          .toList() ?? [],
+          .toList() ??
+          [],
     );
   }
 
@@ -439,7 +442,6 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     }
   }
 
-  // MODIFIED: This function contains the fix for the error.
   Future<void> _loadHealthDetailsAndPage() async {
     setState(() => _isLoadingPrescription = true);
     try {
@@ -454,7 +456,6 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
         _healthRecordId = response['id'] as String?;
         final rawGroups = response['prescription_data'] ?? [];
 
-        // FIX: Explicitly loop and parse to prevent type errors.
         final List<DrawingGroup> loadedGroups = [];
         if (rawGroups is List) {
           for (final groupData in rawGroups) {
@@ -467,19 +468,20 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
 
         _currentGroup = _allDrawingGroups.firstWhere(
               (g) => g.id == widget.groupId,
-          orElse: () => throw Exception("The required group (ID: ${widget.groupId}) was not found in the patient's record."),
+          orElse: () => throw Exception("The required group (ID: ${widget.groupId}) was not found."),
         );
         _pagesInCurrentGroup = _currentGroup!.pages;
 
         DrawingPage currentPage = _pagesInCurrentGroup.firstWhere(
               (p) => p.id == widget.pageId,
-          orElse: () => throw Exception("The required page (ID: ${widget.pageId}) was not found in the group '${_currentGroup?.groupName}'."),
+          orElse: () => throw Exception("The required page (ID: ${widget.pageId}) was not found."),
         );
 
-        String pagePrefix = currentPage.pageName.split(' - ')[0];
-        if (pagePrefix == 'OT') pagePrefix = 'OT Form';
-
-        _viewablePages = _pagesInCurrentGroup.where((p) => p.pageName.startsWith(pagePrefix)).toList();
+        // **FIXED**: Use more robust logic to group pages like "Chart 1 (Front)" and "Chart 1 (Back)".
+        String pagePrefix = currentPage.pageName.split('(')[0].trim();
+        _viewablePages = _pagesInCurrentGroup
+            .where((p) => p.pageName.split('(')[0].trim() == pagePrefix)
+            .toList();
 
         int initialIndex = _viewablePages.indexWhere((p) => p.id == widget.pageId);
         if (initialIndex != -1) {
@@ -526,8 +528,6 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
           'prescription_data': groupsJson,
           'updated_at': DateTime.now().toIso8601String(),
         }).eq('id', _healthRecordId!);
-      } else {
-        // Handle insert case for a new health record
       }
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Prescription Saved!'), backgroundColor: Colors.green));
@@ -772,13 +772,18 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     final scale = min(viewportSize.width / canvasWidth, viewportSize.height / canvasHeight);
     final dx = (viewportSize.width - canvasWidth * scale) / 2;
     final dy = (viewportSize.height - canvasHeight * scale) / 2;
-    _transformationController.value = Matrix4.identity()..translate(dx, dy)..scale(scale);
+    _transformationController.value = Matrix4.identity()
+      ..translate(dx, dy)
+      ..scale(scale);
   }
 
   void _navigateToPage(int index) async {
     if (index >= 0 && index < _viewablePages.length) {
       _commitTextChanges();
-      _pageController.jumpToPage(index);
+
+      if (_pageController.hasClients) {
+        _pageController.jumpToPage(index);
+      }
       setState(() {
         _currentPageIndex = index;
         _isInitialZoomSet = false;
@@ -787,8 +792,93 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     }
   }
 
+  // --- 🎨 FIXED: Page Switching Logic ---
   Future<void> _showFolderPageSelector() async {
-    // This method should contain your page selection UI, e.g., a Dialog.
+    if (_pagesInCurrentGroup.isEmpty) return;
+
+    await showModalBottomSheet(
+      context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (BuildContext context) {
+        return Container(
+          padding: const EdgeInsets.only(top: 16.0, left: 16.0, right: 16.0),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                "Pages in '${_currentGroup?.groupName ?? 'Group'}'",
+                style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: darkText),
+              ),
+              const SizedBox(height: 10),
+              const Divider(),
+              Flexible(
+                child: ListView.builder(
+                  shrinkWrap: true,
+                  itemCount: _pagesInCurrentGroup.length,
+                  itemBuilder: (context, index) {
+                    final page = _pagesInCurrentGroup[index];
+                    final bool isSelected = page.id == _viewablePages[_currentPageIndex].id;
+
+                    return ListTile(
+                      leading: Icon(
+                        Icons.description_outlined,
+                        color: isSelected ? primaryBlue : mediumGreyText,
+                      ),
+                      title: Text(
+                        page.pageName,
+                        style: TextStyle(
+                          fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                          color: isSelected ? primaryBlue : darkText,
+                        ),
+                      ),
+                      selected: isSelected,
+                      selectedTileColor: primaryBlue.withOpacity(0.1),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                      onTap: () {
+                        Navigator.pop(context); // Close the bottom sheet
+                        final tappedPage = _pagesInCurrentGroup[index];
+
+                        if (tappedPage.id == _viewablePages[_currentPageIndex].id) {
+                          return; // Do nothing if the same page is tapped
+                        }
+
+                        // This logic correctly rebuilds the context for the new page set.
+                        final tappedPrefix = tappedPage.pageName.split('(')[0].trim();
+                        final newViewablePages = _pagesInCurrentGroup
+                            .where((p) => p.pageName.split('(')[0].trim() == tappedPrefix)
+                            .toList();
+
+                        final newPageIndex = newViewablePages.indexWhere((p) => p.id == tappedPage.id);
+
+                        if (newPageIndex != -1) {
+                          _commitTextChanges();
+
+                          setState(() {
+                            _viewablePages = newViewablePages;
+                            _currentPageIndex = newPageIndex;
+                            _isInitialZoomSet = false;
+                          });
+
+                          WidgetsBinding.instance.addPostFrameCallback((_) {
+                            if (_pageController.hasClients) {
+                              _pageController.jumpToPage(newPageIndex);
+                            }
+                            _loadTemplateUiImage(newViewablePages[newPageIndex].templateImageUrl);
+                          });
+                        }
+                      },
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
   }
 
   // --- Build Methods ---
@@ -801,13 +891,14 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     if (_viewablePages.isEmpty) {
       return Scaffold(
         appBar: AppBar(title: const Text("Error")),
-        body: const Center(child: Padding(
-          padding: EdgeInsets.all(16.0),
-          child: Text(
-            "Page data could not be loaded. Please go back and try again.",
-            textAlign: TextAlign.center,
-          ),
-        )),
+        body: const Center(
+            child: Padding(
+              padding: EdgeInsets.all(16.0),
+              child: Text(
+                "Page data could not be loaded. Please go back and try again.",
+                textAlign: TextAlign.center,
+              ),
+            )),
       );
     }
 
@@ -826,9 +917,16 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
             onPressed: _showFolderPageSelector,
           ),
           if (_viewablePages.length > 1)
-            TextButton(
-              onPressed: () => _navigateToPage((_currentPageIndex + 1) % _viewablePages.length),
-              child: Text("${_currentPageIndex + 1}/${_viewablePages.length}", style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+            Padding(
+              padding: const EdgeInsets.only(right: 8.0),
+              child: ActionChip(
+                onPressed: () => _navigateToPage((_currentPageIndex + 1) % _viewablePages.length),
+                avatar: const Icon(Icons.arrow_forward_ios, size: 14, color: primaryBlue),
+                label: Text("${_currentPageIndex + 1}/${_viewablePages.length}",
+                    style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: primaryBlue)),
+                backgroundColor: primaryBlue.withOpacity(0.15),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+              ),
             ),
           IconButton(
             icon: Icon(_isPenOnlyMode ? Icons.style_outlined : Icons.touch_app_outlined, color: primaryBlue),
@@ -924,8 +1022,7 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
 
     final currentPage = _viewablePages[_currentPageIndex];
     final textToEdit = currentPage.texts.firstWhere((t) => t.id == _editingTextId, orElse: () => DrawingText(id: '', text: '', position: Offset.zero, colorValue: 0, fontSize: 0));
-    if(textToEdit.id.isEmpty) return const SizedBox.shrink();
-
+    if (textToEdit.id.isEmpty) return const SizedBox.shrink();
 
     final matrix = _transformationController.value;
     final canvasOffset = textToEdit.position;
