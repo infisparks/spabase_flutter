@@ -153,7 +153,10 @@ class _PatientDocumentsPageState extends State<PatientDocumentsPage> {
   static const Color lightBackground = Color(0xFFF8FAFC);
   static const Color lightBlue = Color(0xFFE3F2FD);
 
-  late List<DocumentFolder> _folders;
+  // Split folders based on the new denormalized columns
+  List<DocumentFolder> _imagingFolders = []; // Stored in imaging_doc
+  List<DocumentFolder> _generalFolders = []; // Stored in bloodtestdoc
+
   bool _isLoading = true;
 
   final supabase = Supabase.instance.client;
@@ -164,31 +167,44 @@ class _PatientDocumentsPageState extends State<PatientDocumentsPage> {
     _loadDocumentsFromSupabase();
   }
 
+  // --- START: UPDATED DATA LOGIC ---
+
   Future<void> _loadDocumentsFromSupabase() async {
+    setState(() => _isLoading = true);
     try {
       final response = await supabase
           .from('user_health_details')
-          .select('bloodtestdoc')
+          .select('imaging_doc, bloodtestdoc') // Select both columns
           .eq('ipd_registration_id', widget.ipdId)
           .eq('patient_uhid', widget.uhid)
           .maybeSingle();
 
+      final dynamic imagingDoc = response?['imaging_doc'];
       final dynamic bloodTestDoc = response?['bloodtestdoc'];
-      final List<DocumentFolder> loadedFolders = [];
 
-      if (bloodTestDoc != null) {
-        for (final jsonFolder in bloodTestDoc) {
-          loadedFolders.add(DocumentFolder.fromJson(jsonFolder));
+      List<DocumentFolder> loadedImaging = [];
+      List<DocumentFolder> loadedGeneral = [];
+
+      if (imagingDoc != null) {
+        for (final jsonFolder in imagingDoc) {
+          loadedImaging.add(DocumentFolder.fromJson(jsonFolder));
         }
       }
 
-      if (loadedFolders.isEmpty) {
+      if (bloodTestDoc != null) {
+        for (final jsonFolder in bloodTestDoc) {
+          loadedGeneral.add(DocumentFolder.fromJson(jsonFolder));
+        }
+      }
+
+      if (loadedImaging.isEmpty && loadedGeneral.isEmpty) {
         _initializeFolders();
       } else {
-        _folders = loadedFolders;
+        _imagingFolders = loadedImaging;
+        _generalFolders = loadedGeneral;
       }
     } catch (e) {
-      print('Error loading documents: $e');
+      debugPrint('Error loading documents: $e');
       _initializeFolders();
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -197,20 +213,23 @@ class _PatientDocumentsPageState extends State<PatientDocumentsPage> {
       }
     } finally {
       if (mounted) {
-        setState(() {
-          _isLoading = false;
-        });
+        setState(() => _isLoading = false);
       }
     }
   }
 
   void _initializeFolders() {
-    _folders = [
+    // Initialize imaging folder separately
+    _imagingFolders = [
       DocumentFolder(
         name: 'X-Ray & Imaging',
         icon: Icons.monitor_heart_outlined,
         files: [],
       ),
+    ];
+
+    // Initialize general folders
+    _generalFolders = [
       DocumentFolder(
         name: 'Blood & Lab Tests',
         icon: Icons.biotech_outlined,
@@ -227,21 +246,29 @@ class _PatientDocumentsPageState extends State<PatientDocumentsPage> {
 
   Future<void> _saveDocumentsToSupabase() async {
     try {
-      final List<Map<String, dynamic>> jsonFolders = _folders.map((folder) => folder.toJson()).toList();
+      final List<Map<String, dynamic>> jsonImaging = _imagingFolders.map((folder) => folder.toJson()).toList();
+      final List<Map<String, dynamic>> jsonGeneral = _generalFolders.map((folder) => folder.toJson()).toList();
+
+      final Map<String, dynamic> dataToSave = {
+        'imaging_doc': jsonImaging,
+        'bloodtestdoc': jsonGeneral,
+      };
+
       await supabase
           .from('user_health_details')
-          .update({'bloodtestdoc': jsonFolders})
+          .update(dataToSave)
           .eq('ipd_registration_id', widget.ipdId)
           .eq('patient_uhid', widget.uhid);
+
     } on PostgrestException catch (e) {
-      if (e.code == '23503') { // Foreign key violation (record may not exist)
+      if (e.code == '23503' || e.code == '42P01') { // Foreign key violation or table/column not found (new DB record/column)
         await _insertInitialRecord();
         await _saveDocumentsToSupabase(); // Retry saving
       } else {
-        throw e;
+        rethrow;
       }
     } catch (e) {
-      print('Error saving documents: $e');
+      debugPrint('Error saving documents: $e');
       if(mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text("Failed to save documents: $e")),
@@ -251,12 +278,20 @@ class _PatientDocumentsPageState extends State<PatientDocumentsPage> {
   }
 
   Future<void> _insertInitialRecord() async {
+    // Create and insert a full record, which will include the default empty JSON arrays
+    final List<Map<String, dynamic>> jsonImaging = _imagingFolders.map((folder) => folder.toJson()).toList();
+    final List<Map<String, dynamic>> jsonGeneral = _generalFolders.map((folder) => folder.toJson()).toList();
+
     await supabase.from('user_health_details').insert({
       'ipd_registration_id': widget.ipdId,
       'patient_uhid': widget.uhid,
-      'bloodtestdoc': _folders.map((f) => f.toJson()).toList(),
+      'imaging_doc': jsonImaging,
+      'bloodtestdoc': jsonGeneral,
     });
   }
+
+  // --- END: UPDATED DATA LOGIC ---
+
 
   String _formatBytes(int bytes) {
     if (bytes <= 0) return "0 B";
@@ -277,7 +312,7 @@ class _PatientDocumentsPageState extends State<PatientDocumentsPage> {
   }
 
   Future<void> _pickAndAddFile({
-    DocumentFolder? folder,
+    required DocumentFolder folder, // Now required
     DocumentSubFolder? subFolder,
   }) async {
     final ImagePicker picker = ImagePicker();
@@ -291,8 +326,8 @@ class _PatientDocumentsPageState extends State<PatientDocumentsPage> {
       try {
         final String fileExtension = file.name.split('.').last;
         final String folderPath = subFolder != null
-            ? '${folder?.name}/${subFolder.name}'
-            : folder!.name;
+            ? '${folder.name}/${subFolder.name}'
+            : folder.name;
 
         final String timestamp = DateTime.now().microsecondsSinceEpoch.toString();
         final random = Random().nextInt(10000).toString();
@@ -320,11 +355,14 @@ class _PatientDocumentsPageState extends State<PatientDocumentsPage> {
           path: storagePath,
         );
 
-        if (subFolder != null) {
-          subFolder.files.add(newFile);
-        } else if (folder != null) {
-          folder.files.add(newFile);
-        }
+        // Update local state and save
+        setState(() {
+          if (subFolder != null) {
+            subFolder.files.add(newFile);
+          } else {
+            folder.files.add(newFile);
+          }
+        });
 
         await _saveDocumentsToSupabase();
 
@@ -338,7 +376,7 @@ class _PatientDocumentsPageState extends State<PatientDocumentsPage> {
         }
 
       } catch (e) {
-        print('Error uploading file: $e');
+        debugPrint('Error uploading file: $e');
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(content: Text('Failed to upload file: ${file.name}')),
@@ -443,7 +481,7 @@ class _PatientDocumentsPageState extends State<PatientDocumentsPage> {
     return baseName + extension;
   }
 
-  /// **[NEW]** Function to handle image deletion
+  /// Function to handle image deletion
   Future<void> _deleteFile({
     required DocumentFile fileToDelete,
     DocumentFolder? parentFolder,
@@ -486,11 +524,14 @@ class _PatientDocumentsPageState extends State<PatientDocumentsPage> {
         await supabase.storage.from('reports').remove(pathsToRemove);
 
         // 3. Remove from local state
-        if (parentSubFolder != null) {
-          parentSubFolder.files.removeWhere((file) => file.path == fileToDelete.path);
-        } else if (parentFolder != null) {
-          parentFolder.files.removeWhere((file) => file.path == fileToDelete.path);
-        }
+        setState(() {
+          if (parentSubFolder != null) {
+            parentSubFolder.files.removeWhere((file) => file.path == fileToDelete.path);
+          } else if (parentFolder != null) {
+            parentFolder.files.removeWhere((file) => file.path == fileToDelete.path);
+          }
+        });
+
 
         // 4. Save updated document structure to Supabase Database
         await _saveDocumentsToSupabase();
@@ -504,7 +545,7 @@ class _PatientDocumentsPageState extends State<PatientDocumentsPage> {
           );
         }
       } catch (e) {
-        print('Error deleting file: $e');
+        debugPrint('Error deleting file: $e');
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(content: Text('Failed to delete file: ${e.toString()}')),
@@ -525,6 +566,8 @@ class _PatientDocumentsPageState extends State<PatientDocumentsPage> {
   Widget build(BuildContext context) {
     final double screenWidth = MediaQuery.of(context).size.width;
     final double horizontalPadding = screenWidth > 600 ? 24.0 : 16.0;
+
+    final allFolders = [..._imagingFolders, ..._generalFolders];
 
     return Scaffold(
       backgroundColor: lightBackground,
@@ -594,7 +637,7 @@ class _PatientDocumentsPageState extends State<PatientDocumentsPage> {
           SliverList(
             delegate: SliverChildBuilderDelegate(
                   (context, folderIndex) {
-                final folder = _folders[folderIndex];
+                final folder = allFolders[folderIndex];
                 return Padding(
                   padding: EdgeInsets.symmetric(horizontal: horizontalPadding, vertical: 6.0),
                   child: Card(
@@ -650,7 +693,7 @@ class _PatientDocumentsPageState extends State<PatientDocumentsPage> {
                                       child: Text("No files in this sub-folder.", style: TextStyle(color: mediumGreyText, fontStyle: FontStyle.italic)),
                                     ),
                                   ...subFolder.files.map((file) {
-                                    return GestureDetector( // **[NEW]** GestureDetector for long press
+                                    return GestureDetector(
                                       onLongPress: () => _deleteFile(fileToDelete: file, parentFolder: folder, parentSubFolder: subFolder),
                                       child: ListTile(
                                         leading: Icon(file.icon, color: mediumGreyText, size: 20),
@@ -673,7 +716,7 @@ class _PatientDocumentsPageState extends State<PatientDocumentsPage> {
 
                           if (folder.files.isNotEmpty)
                             ...folder.files.map((file) {
-                              return GestureDetector( // **[NEW]** GestureDetector for long press
+                              return GestureDetector(
                                 onLongPress: () => _deleteFile(fileToDelete: file, parentFolder: folder),
                                 child: ListTile(
                                   leading: Icon(file.icon, color: mediumGreyText, size: 22),
@@ -698,7 +741,7 @@ class _PatientDocumentsPageState extends State<PatientDocumentsPage> {
                   ),
                 );
               },
-              childCount: _folders.length,
+              childCount: allFolders.length,
             ),
           ),
           const SliverToBoxAdapter(child: SizedBox(height: 16)),
@@ -749,7 +792,7 @@ class _PhotoViewerPageState extends State<PhotoViewerPage> {
           .createSignedUrl(path, 3600);
       return url;
     } catch (e) {
-      print('Error getting signed URL: $e');
+      debugPrint('Error getting signed URL: $e');
       rethrow;
     }
   }

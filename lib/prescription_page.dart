@@ -333,6 +333,7 @@ class PrescriptionPage extends StatefulWidget {
   final String uhid;
   final String groupId;
   final String pageId;
+  final String groupName; // ADDED: Required for denormalized saving
 
   const PrescriptionPage({
     super.key,
@@ -340,6 +341,7 @@ class PrescriptionPage extends StatefulWidget {
     required this.uhid,
     required this.groupId,
     required this.pageId,
+    required this.groupName, // ADDED: Required for denormalized saving
   });
 
   @override
@@ -350,10 +352,29 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
   final SupabaseClient supabase = SupabaseConfig.client;
   List<DrawingPage> _viewablePages = [];
   int _currentPageIndex = 0;
-  List<DrawingGroup> _allDrawingGroups = [];
   String? _healthRecordId;
   DrawingGroup? _currentGroup;
   List<DrawingPage> _pagesInCurrentGroup = [];
+
+  // 1. MAP GROUP NAME TO DATABASE COLUMN NAME
+  static const Map<String, String> _groupToColumnMap = {
+    'Indoor Patient Progress Digital': 'indoor_patient_progress_digital_data',
+    'Daily Drug Chart': 'daily_drug_chart_data',
+    'Dr Visit Form': 'dr_visit_form_data',
+    'Patient Charges Form': 'patient_charges_form_data',
+    'Glucose Monitoring Sheet': 'glucose_monitoring_sheet_data',
+    'Pt Admission Assessment (Nursing)': 'pt_admission_assessment_nursing_data',
+    'Clinical Notes': 'clinical_notes_data',
+    'Investigation Sheet': 'investigation_sheet_data',
+    'Progress Notes': 'progress_notes_data',
+    'Consent': 'consent_data',
+    'OT': 'ot_data',
+    'Nursing Notes': 'nursing_notes_data',
+    'TPR / Intake / Output': 'tpr_intake_output_data',
+    'Discharge / Dama': 'discharge_dama_data',
+    'Casualty Note': 'casualty_note_data',
+    'Indoor Patient File': 'indoor_patient_file_data',
+  };
 
   // --- Drawing State ---
   Color _currentColor = Colors.black;
@@ -445,39 +466,52 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
   Future<void> _loadHealthDetailsAndPage() async {
     setState(() => _isLoadingPrescription = true);
     try {
+      // Determine the column name to fetch
+      final columnName = _groupToColumnMap[widget.groupName] ?? 'custom_groups_data';
+      final columnsToSelect = ['id', columnName, 'custom_groups_data'].join(',');
+
       final response = await supabase
           .from('user_health_details')
-          .select('id, prescription_data')
+          .select(columnsToSelect)
           .eq('ipd_registration_id', widget.ipdId)
           .eq('patient_uhid', widget.uhid)
           .maybeSingle();
 
       if (response != null) {
         _healthRecordId = response['id'] as String?;
-        final rawGroups = response['prescription_data'] ?? [];
 
-        final List<DrawingGroup> loadedGroups = [];
-        if (rawGroups is List) {
-          for (final groupData in rawGroups) {
-            if (groupData is Map<String, dynamic>) {
-              loadedGroups.add(DrawingGroup.fromJson(groupData));
-            }
-          }
+        final List<DrawingPage> loadedPages = [];
+
+        if (columnName == 'custom_groups_data') {
+          // Load from custom_groups_data (list of DrawingGroup objects)
+          final rawCustomGroups = response['custom_groups_data'] ?? [];
+          final customGroups = (rawCustomGroups as List?)?.map((json) => DrawingGroup.fromJson(json as Map<String, dynamic>)).toList() ?? [];
+
+          _currentGroup = customGroups.firstWhere(
+                (g) => g.id == widget.groupId,
+            orElse: () => throw Exception("The required custom group was not found."),
+          );
+          _pagesInCurrentGroup = _currentGroup!.pages;
+
+        } else {
+          // Load from a dedicated column (list of DrawingPage objects)
+          final rawPages = response[columnName] ?? [];
+          _pagesInCurrentGroup = (rawPages as List?)?.map((json) => DrawingPage.fromJson(json as Map<String, dynamic>)).toList() ?? [];
+
+          // Recreate the minimal DrawingGroup object for local context/UI
+          _currentGroup = DrawingGroup(
+              id: widget.groupId,
+              groupName: widget.groupName,
+              pages: _pagesInCurrentGroup
+          );
         }
-        _allDrawingGroups = loadedGroups;
-
-        _currentGroup = _allDrawingGroups.firstWhere(
-              (g) => g.id == widget.groupId,
-          orElse: () => throw Exception("The required group (ID: ${widget.groupId}) was not found."),
-        );
-        _pagesInCurrentGroup = _currentGroup!.pages;
 
         DrawingPage currentPage = _pagesInCurrentGroup.firstWhere(
               (p) => p.id == widget.pageId,
-          orElse: () => throw Exception("The required page (ID: ${widget.pageId}) was not found."),
+          orElse: () => throw Exception("The required page (ID: ${widget.pageId}) was not found in the group pages."),
         );
 
-        // **FIXED**: Use more robust logic to group pages like "Chart 1 (Front)" and "Chart 1 (Back)".
+        // Group pages that belong together (e.g., 'Chart 1 (Front)' and 'Chart 1 (Back)')
         String pagePrefix = currentPage.pageName.split('(')[0].trim();
         _viewablePages = _pagesInCurrentGroup
             .where((p) => p.pageName.split('(')[0].trim() == pagePrefix)
@@ -505,30 +539,54 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
 
   Future<void> _savePrescriptionData() async {
     _commitTextChanges();
-    if (_viewablePages.isEmpty) return;
+    if (_pagesInCurrentGroup.isEmpty) return;
     setState(() => _isSaving = true);
-    try {
-      int groupIndex = _allDrawingGroups.indexWhere((g) => g.id == widget.groupId);
-      if (groupIndex == -1) throw Exception("Group not found");
 
-      final updatedGroupPages = List<DrawingPage>.from(_allDrawingGroups[groupIndex].pages);
-      for (var page in _viewablePages) {
-        int pageIndex = updatedGroupPages.indexWhere((p) => p.id == page.id);
-        if (pageIndex != -1) updatedGroupPages[pageIndex] = page;
+    try {
+      final updatedGroupPages = List<DrawingPage>.from(_pagesInCurrentGroup);
+
+      // 1. Update the pages in the local group list with the current page's viewable changes
+      for (var viewablePage in _viewablePages) {
+        int pageIndex = updatedGroupPages.indexWhere((p) => p.id == viewablePage.id);
+        if (pageIndex != -1) updatedGroupPages[pageIndex] = viewablePage;
       }
 
-      final updatedGroup = _allDrawingGroups[groupIndex].copyWith(pages: updatedGroupPages);
-      final finalGroupsToSave = List<DrawingGroup>.from(_allDrawingGroups);
-      finalGroupsToSave[groupIndex] = updatedGroup;
+      final columnName = _groupToColumnMap[widget.groupName];
+      final Map<String, dynamic> dataToSave = {};
 
-      final groupsJson = finalGroupsToSave.map((group) => group.toJson()).toList();
+      if (columnName != null) {
+        // --- Dedicated Column Save (Most Common) ---
+        // Save ONLY the list of DrawingPage objects to the specific column
+        dataToSave[columnName] = updatedGroupPages.map((page) => page.toJson()).toList();
+
+      } else {
+        // --- Custom/Uncategorized Group Save ---
+        // Must fetch all custom groups, find the one being edited, update it, and save the whole list back.
+        final response = await supabase.from('user_health_details').select('custom_groups_data').eq('id', _healthRecordId!).single();
+        final rawCustomGroups = response['custom_groups_data'] ?? [];
+
+        final List<DrawingGroup> customGroups = (rawCustomGroups as List?)?.map((json) => DrawingGroup.fromJson(json as Map<String, dynamic>)).toList() ?? [];
+
+        int groupIndex = customGroups.indexWhere((g) => g.id == widget.groupId);
+        if (groupIndex != -1) {
+          final updatedGroup = customGroups[groupIndex].copyWith(pages: updatedGroupPages);
+          customGroups[groupIndex] = updatedGroup;
+        } else {
+          // Should not happen if loading was successful, but handle defensively
+          throw Exception("Custom group not found for saving.");
+        }
+        dataToSave['custom_groups_data'] = customGroups.map((group) => group.toJson()).toList();
+      }
+
+      // Add metadata and perform update
+      dataToSave['updated_at'] = DateTime.now().toIso8601String();
 
       if (_healthRecordId != null) {
-        await supabase.from('user_health_details').update({
-          'prescription_data': groupsJson,
-          'updated_at': DateTime.now().toIso8601String(),
-        }).eq('id', _healthRecordId!);
+        await supabase.from('user_health_details').update(dataToSave).eq('id', _healthRecordId!);
+      } else {
+        throw Exception("Health Record ID is missing, cannot save.");
       }
+
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Prescription Saved!'), backgroundColor: Colors.green));
       }
@@ -541,6 +599,7 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
       if (mounted) setState(() => _isSaving = false);
     }
   }
+
 
   // --- Pointer and Interaction Handlers ---
 

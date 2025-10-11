@@ -5,7 +5,7 @@ import 'supabase_config.dart';
 import 'prescription_page.dart';
 import 'patient_documents_page.dart';
 import 'dart:math';
-import 'dart:convert'; // Added for JSON decoding
+import 'dart:convert';
 import 'dart:ui' show Offset, Color;
 
 // --- UNIFIED & HIGHLY COMPRESSED DATA MODELS ---
@@ -371,6 +371,39 @@ class _ManageIpdPatientPageState extends State<ManageIpdPatientPage> {
   static const Color mediumGreyText = Color(0xFF64748B);
   static const Color lightBackground = Color(0xFFF8FAFC);
 
+
+  // 1. MAP GROUP NAME TO DATABASE COLUMN NAME
+  static const Map<String, String> _groupToColumnMap = {
+    'Indoor Patient File': 'indoor_patient_file_data',
+    'Indoor Patient Progress Digital': 'indoor_patient_progress_digital_data',
+    'Daily Drug Chart': 'daily_drug_chart_data',
+    'Dr Visit Form': 'dr_visit_form_data',
+    'Patient Charges Form': 'patient_charges_form_data',
+    'Glucose Monitoring Sheet': 'glucose_monitoring_sheet_data',
+    'Pt Admission Assessment (Nursing)': 'pt_admission_assessment_nursing_data',
+    'Clinical Notes': 'clinical_notes_data',
+    'Investigation Sheet': 'investigation_sheet_data',
+    'Progress Notes': 'progress_notes_data',
+    'Consent': 'consent_data',
+    'OT': 'ot_data',
+    'Nursing Notes': 'nursing_notes_data',
+    'TPR / Intake / Output': 'tpr_intake_output_data',
+    'Discharge / Dama': 'discharge_dama_data',
+    'Casualty Note': 'casualty_note_data',
+
+  };
+
+  // 2. LIST OF ALL COLUMNS TO SELECT FROM THE DB (FIXED CONST ERROR)
+  static final List<String> _allDataColumns = [
+    'id',
+    'ipd_registration_id',
+    'patient_uhid',
+    'updated_at',
+    ..._groupToColumnMap.values, // .values is not const, so the list cannot be const
+    'custom_groups_data',
+  ];
+
+
   @override
   void initState() {
     super.initState();
@@ -400,25 +433,58 @@ class _ManageIpdPatientPageState extends State<ManageIpdPatientPage> {
       await supabase.from('template_images').select('id, name, url, 2url, isbook, book_img_url, tag');
       _availableTemplates = templateData.map((json) => SupabaseTemplateImage.fromJson(json)).toList();
 
+      // --- START: NEW LOADING LOGIC ---
       final response = await supabase
           .from('user_health_details')
-          .select('id, prescription_data, ipd_registration_id')
+          .select(_allDataColumns.join(','))
           .eq('ipd_registration_id', widget.ipdId)
           .eq('patient_uhid', widget.uhid)
           .maybeSingle();
 
+      final List<DrawingGroup> loadedGroups = [];
+
       if (response != null) {
         _healthRecordId = response['id'] as String;
-        final List<dynamic> rawGroups = response['prescription_data'] ?? [];
+
+        // 1. Load Default Groups from their specific columns
+        for (final entry in _groupToColumnMap.entries) {
+          final groupName = entry.key;
+          final columnName = entry.value;
+
+          final List<dynamic> rawPages = response[columnName] ?? [];
+          final pages = rawPages
+              .whereType<Map<String, dynamic>>()
+              .map((json) => DrawingPage.fromJson(json))
+              .toList();
+
+          // Pages loaded from individual columns don't contain the groupName property,
+          // so we map it back in the DrawingPage constructor if necessary, but
+          // here we ensure the DrawingGroup is correctly formed.
+          final pagesWithGroupName = pages.map((page) => page.copyWith(pageName: page.pageName, lines: page.lines)).toList();
+
+
+          loadedGroups.add(DrawingGroup(
+            id: generateUniqueId(),
+            groupName: groupName,
+            pages: pagesWithGroupName,
+          ));
+        }
+
+        // 2. Load Custom Groups
+        final List<dynamic> rawCustomGroups = response['custom_groups_data'] ?? [];
+        loadedGroups.addAll(
+            rawCustomGroups.whereType<Map<String, dynamic>>().map((json) => DrawingGroup.fromJson(json)).toList());
+
         setState(() {
-          _drawingGroups =
-              rawGroups.whereType<Map<String, dynamic>>().map((json) => DrawingGroup.fromJson(json)).toList();
+          _drawingGroups = loadedGroups;
         });
+
       } else {
         debugPrint('No existing health records found. Creating default groups.');
         await _createAndSaveDefaultGroups();
         debugPrint('Default groups created and saved.');
       }
+      // --- END: NEW LOADING LOGIC ---
     } on PostgrestException catch (e) {
       _showErrorSnackbar('Error loading data: ${e.message}');
     } catch (e) {
@@ -433,23 +499,7 @@ class _ManageIpdPatientPageState extends State<ManageIpdPatientPage> {
   }
 
   Future<void> _createAndSaveDefaultGroups() async {
-    final groupNames = [
-      'Indoor Patient Progress Digital',
-      'Daily Drug Chart',
-      'Dr Visit Form',
-      'Patient Charges Form',
-      'Glucose Monitoring Sheet',
-      'Pt Admission Assessment (Nursing)',
-      'Clinical Notes',
-      'Investigation Sheet',
-      'Progress Notes',
-      'Consent',
-      'Nursing Notes',
-      'TPR / Intake / Output',
-      'Discharge / Dama',
-      'Casualty Note',
-      'Indoor Patient File',
-    ];
+    final groupNames = _groupToColumnMap.keys.toList();
 
     final defaultGroups =
     groupNames.map((name) => DrawingGroup(id: generateUniqueId(), groupName: name, pages: [])).toList();
@@ -459,27 +509,61 @@ class _ManageIpdPatientPageState extends State<ManageIpdPatientPage> {
       _healthRecordId = null;
     });
 
+    // Save ALL details since this is the initial creation
     await _saveHealthDetails();
   }
 
-  Future<void> _saveHealthDetails() async {
+
+  // --- START: UPDATED SAVING LOGIC ---
+  Future<void> _saveHealthDetails({String? changedGroupName}) async {
     if (_isSaving) return;
 
     setState(() {
       _isSaving = true;
     });
     try {
-      final List<Map<String, dynamic>> groupsJson = _drawingGroups.map((group) => group.toJson()).toList();
+      final Map<String, dynamic> dataToSave = {};
+      final List<DrawingGroup> customGroups = [];
 
+      // 1. Separate Default and Custom Groups & prepare data map
+      for (final group in _drawingGroups) {
+        final columnName = _groupToColumnMap[group.groupName];
+
+        if (columnName != null) {
+          // Default group: Prepare pages for its dedicated column
+          // Only prepare the data if it's the changed group or if we are doing a full save (initial creation)
+          if (changedGroupName == null || group.groupName == changedGroupName) {
+            // Store only the pages array, NOT the full DrawingGroup object
+            final List<Map<String, dynamic>> pagesJson = group.pages.map((page) => page.toJson()).toList();
+            dataToSave[columnName] = pagesJson;
+          }
+        } else {
+          // Custom group: Collect to save in the 'custom_groups_data' column
+          customGroups.add(group);
+        }
+      }
+
+      // 2. Prepare Custom Groups for saving
+      // Save custom groups if a custom group was changed or if doing a full save
+      if (changedGroupName == null || (_groupToColumnMap[changedGroupName] == null && changedGroupName != null)) {
+        dataToSave['custom_groups_data'] = customGroups.map((group) => group.toJson()).toList();
+      } else if (changedGroupName == null) {
+        // Full save, including custom groups
+        dataToSave['custom_groups_data'] = customGroups.map((group) => group.toJson()).toList();
+      }
+
+      // 3. Add mandatory metadata
+      dataToSave['ipd_registration_id'] = widget.ipdId;
+      dataToSave['patient_uhid'] = widget.uhid;
+      dataToSave['updated_at'] = DateTime.now().toIso8601String();
+      if (_healthRecordId != null) {
+        dataToSave['id'] = _healthRecordId;
+      }
+
+      // 4. Perform Upsert
       final List<Map<String, dynamic>> response = await supabase
           .from('user_health_details')
-          .upsert({
-        'ipd_registration_id': widget.ipdId,
-        'patient_uhid': widget.uhid,
-        'prescription_data': groupsJson,
-        if (_healthRecordId != null) 'id': _healthRecordId,
-        'updated_at': DateTime.now().toIso8601String(),
-      }, onConflict: 'ipd_registration_id, patient_uhid').select('id');
+          .upsert(dataToSave, onConflict: 'ipd_registration_id, patient_uhid').select('id');
 
       if (response.isNotEmpty && response[0]['id'] != null) {
         if (mounted && _healthRecordId == null) {
@@ -500,6 +584,8 @@ class _ManageIpdPatientPageState extends State<ManageIpdPatientPage> {
       }
     }
   }
+  // --- END: UPDATED SAVING LOGIC ---
+
 
   void _createNewGroup() {
     TextEditingController groupNameController = TextEditingController();
@@ -532,14 +618,16 @@ class _ManageIpdPatientPageState extends State<ManageIpdPatientPage> {
               child: const Text("Create"),
               onPressed: () {
                 if (groupNameController.text.isNotEmpty) {
+                  final newGroupName = groupNameController.text;
                   setState(() {
                     _drawingGroups.add(DrawingGroup(
                       id: generateUniqueId(),
-                      groupName: groupNameController.text,
+                      groupName: newGroupName,
                       pages: [],
                     ));
                   });
-                  _saveHealthDetails();
+                  // Save all data since a new custom group was added
+                  _saveHealthDetails(changedGroupName: newGroupName);
                   Navigator.pop(context);
                 }
               },
@@ -564,6 +652,15 @@ class _ManageIpdPatientPageState extends State<ManageIpdPatientPage> {
       return _availableTemplates.firstWhere((t) => t.tag == tag);
     } catch (e) {
       _showErrorSnackbar('Required template with tag "$tag" not found.');
+      return null;
+    }
+  }
+
+  SupabaseTemplateImage? _findTemplateByName(String name) {
+    try {
+      return _availableTemplates.firstWhere((t) => t.name == name);
+    } catch (e) {
+      _showErrorSnackbar('Required template with name "$name" not found.');
       return null;
     }
   }
@@ -613,43 +710,56 @@ class _ManageIpdPatientPageState extends State<ManageIpdPatientPage> {
   }
 
   void _showConsentOptions(DrawingGroup group) async {
-    final consentTemplates = _availableTemplates.where((t) => t.tag == 't10').toList();
-    final isOtFormAdded = group.pages.any((p) => p.pageName.contains('OT Form'));
-    final options = consentTemplates.where((t) => t.name != 'OT Form' || !isOtFormAdded).toList();
+    final consentTemplates = _availableTemplates.where((t) => t.tag == 't10' && t.name != 'OT Form').toList();
 
-    if (options.isEmpty) {
-      _showErrorSnackbar("All available consent forms have been added.");
+    if (consentTemplates.isEmpty) {
+      _showErrorSnackbar("No relevant consent forms found.");
       return;
     }
 
-    final selectedTemplate = await _showTemplateSelectionDialog(options);
+    final selectedTemplate = await _showTemplateSelectionDialog(consentTemplates);
     if (selectedTemplate == null || !mounted) return;
 
-    if (selectedTemplate.isbook) {
-      final bookPages = <DrawingPage>[];
-      for (int i = 0; i < selectedTemplate.bookImgUrl.length; i++) {
-        bookPages.add(DrawingPage(
-            id: generateUniqueId(),
-            templateImageUrl: selectedTemplate.bookImgUrl[i],
-            pageNumber: group.pages.length + i + 1,
-            pageName: 'OT Form - Page ${i + 1}',
-            groupName: group.groupName));
-      }
-      _addPagesToGroup(group, bookPages);
-    } else {
-      // Prevent adding non-book consent forms more than once
-      if (group.pages.any((p) => p.pageName == selectedTemplate.name)) {
-        _showErrorSnackbar("'${selectedTemplate.name}' has already been added.");
-        return;
-      }
-      final newPage = DrawingPage(
-          id: generateUniqueId(),
-          templateImageUrl: selectedTemplate.url,
-          pageNumber: group.pages.length + 1,
-          pageName: selectedTemplate.name,
-          groupName: group.groupName);
-      _addPagesToGroup(group, [newPage]);
+    // Prevent adding non-book consent forms more than once by name
+    if (group.pages.any((p) => p.pageName == selectedTemplate.name)) {
+      _showErrorSnackbar("'${selectedTemplate.name}' has already been added.");
+      return;
     }
+
+    final newPageNumber = group.pages.length + 1;
+    final newPage = DrawingPage(
+        id: generateUniqueId(),
+        templateImageUrl: selectedTemplate.url,
+        pageNumber: newPageNumber,
+        pageName: selectedTemplate.name,
+        groupName: group.groupName);
+    _addPagesToGroup(group, [newPage]);
+  }
+
+  void _addOtFormPage(DrawingGroup group) {
+    final template = _findTemplateByName('OT Form');
+    if (template == null) return;
+
+    if (group.pages.isNotEmpty) {
+      _showErrorSnackbar("'${group.groupName}' already contains the OT Form.");
+      return;
+    }
+
+    if (!template.isbook || template.bookImgUrl.isEmpty) {
+      _showErrorSnackbar('The OT Form template is invalid or missing pages.');
+      return;
+    }
+
+    final bookPages = <DrawingPage>[];
+    for (int i = 0; i < template.bookImgUrl.length; i++) {
+      bookPages.add(DrawingPage(
+          id: generateUniqueId(),
+          templateImageUrl: template.bookImgUrl[i],
+          pageNumber: i + 1, // Reset page number for this single instance group
+          pageName: 'OT Form - Page ${i + 1}',
+          groupName: group.groupName));
+    }
+    _addPagesToGroup(group, bookPages);
   }
 
   void _showDischargeOptions(DrawingGroup group) async {
@@ -690,6 +800,7 @@ class _ManageIpdPatientPageState extends State<ManageIpdPatientPage> {
     }
   }
 
+  // UPDATED to call save with the specific group name
   void _addPagesToGroup(DrawingGroup group, List<DrawingPage> newPages) {
     if (newPages.isEmpty) return;
     setState(() {
@@ -700,7 +811,8 @@ class _ManageIpdPatientPageState extends State<ManageIpdPatientPage> {
         _drawingGroups[groupIndex] = updatedGroup;
       }
     });
-    _saveHealthDetails();
+    // Pass the name of the group that was changed
+    _saveHealthDetails(changedGroupName: group.groupName);
   }
 
   void _addNewPageToGroup(DrawingGroup group) {
@@ -745,6 +857,9 @@ class _ManageIpdPatientPageState extends State<ManageIpdPatientPage> {
       case 'Consent':
         _showConsentOptions(group);
         break;
+      case 'OT': // Dedicated OT group
+        _addOtFormPage(group);
+        break;
       case 'Discharge / Dama':
         _showDischargeOptions(group);
         break;
@@ -754,7 +869,10 @@ class _ManageIpdPatientPageState extends State<ManageIpdPatientPage> {
   }
 
   void _showCustomTemplateDialogForGroup(DrawingGroup group) async {
-    SupabaseTemplateImage? selectedTemplate = await _showTemplateSelectionDialog(_availableTemplates);
+    SupabaseTemplateImage? selectedTemplate = _availableTemplates.firstWhere((t) => t.name != 'OT Form', orElse: () => _availableTemplates.first);
+    if (selectedTemplate == null || !mounted) return;
+
+    selectedTemplate = await _showTemplateSelectionDialog(_availableTemplates.where((t) => t.name != 'OT Form').toList());
     if (selectedTemplate == null || !mounted) return;
 
     TextEditingController pageNameController =
@@ -777,7 +895,7 @@ class _ManageIpdPatientPageState extends State<ManageIpdPatientPage> {
                   if (pageNameController.text.isNotEmpty) {
                     final newPage = DrawingPage(
                         id: generateUniqueId(),
-                        templateImageUrl: selectedTemplate.url,
+                        templateImageUrl: selectedTemplate!.url,
                         pageNumber: group.pages.length + 1,
                         pageName: pageNameController.text,
                         groupName: group.groupName);
@@ -813,7 +931,7 @@ class _ManageIpdPatientPageState extends State<ManageIpdPatientPage> {
                       controller: searchController,
                       decoration: InputDecoration(
                         hintText: "Search templates...",
-                        prefixIcon: const Icon(Icons.search, size: 20),
+                        prefixIcon: const Icon(Icons.search, color: mediumGreyText, size: 20),
                         border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
                       ),
                       onChanged: (query) {
@@ -854,6 +972,7 @@ class _ManageIpdPatientPageState extends State<ManageIpdPatientPage> {
     );
   }
 
+  // FIXED: Added required 'groupName' parameter
   void _openPrescriptionPage(DrawingGroup group, DrawingPage page) async {
     await Navigator.of(context).push(
       MaterialPageRoute(
@@ -862,6 +981,7 @@ class _ManageIpdPatientPageState extends State<ManageIpdPatientPage> {
           uhid: widget.uhid,
           groupId: group.id,
           pageId: page.id,
+          groupName: group.groupName, // Pass the group name
         ),
       ),
     );
