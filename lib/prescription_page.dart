@@ -333,7 +333,7 @@ class PrescriptionPage extends StatefulWidget {
   final String uhid;
   final String groupId;
   final String pageId;
-  final String groupName; // ADDED: Required for denormalized saving
+  final String groupName;
 
   const PrescriptionPage({
     super.key,
@@ -341,7 +341,7 @@ class PrescriptionPage extends StatefulWidget {
     required this.uhid,
     required this.groupId,
     required this.pageId,
-    required this.groupName, // ADDED: Required for denormalized saving
+    required this.groupName,
   });
 
   @override
@@ -356,7 +356,6 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
   DrawingGroup? _currentGroup;
   List<DrawingPage> _pagesInCurrentGroup = [];
 
-  // 1. MAP GROUP NAME TO DATABASE COLUMN NAME
   static const Map<String, String> _groupToColumnMap = {
     'Indoor Patient Progress Digital': 'indoor_patient_progress_digital_data',
     'Daily Drug Chart': 'daily_drug_chart_data',
@@ -390,13 +389,14 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
   // --- Navigation & View State ---
   final PageController _pageController = PageController();
   final TransformationController _transformationController = TransformationController();
-  bool _isPanMode = false;
   ui.Image? _currentTemplateUiImage;
   bool _isLoadingPrescription = true;
   bool _isSaving = false;
   bool _isInitialZoomSet = false;
-  bool _isPenOnlyMode = false;
-  bool _isStylusInteraction = false;
+  bool _isStylusInteraction = false; // This now controls panning
+
+  // --- Pen-only mode is permanent ---
+  final bool _isPenOnlyMode = true;
 
   // --- Constants ---
   static const Color primaryBlue = Color(0xFF3B82F6);
@@ -426,11 +426,8 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
   String _getFullImageUrl(String relativePath) {
     if (relativePath.isEmpty) return '';
     if (relativePath.startsWith('http')) return relativePath;
-
     final baseUri = Uri.parse(kBaseImageUrl);
     final finalUri = baseUri.resolve(relativePath);
-
-    debugPrint("✅ Correctly formed URL: $finalUri");
     return finalUri.toString();
   }
 
@@ -438,7 +435,6 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
 
   Future<void> _loadTemplateUiImage(String relativePath) async {
     final String fullUrl = _getFullImageUrl(relativePath);
-
     if (fullUrl.isEmpty) {
       if (mounted) setState(() => _currentTemplateUiImage = null);
       return;
@@ -466,10 +462,8 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
   Future<void> _loadHealthDetailsAndPage() async {
     setState(() => _isLoadingPrescription = true);
     try {
-      // Determine the column name to fetch
       final columnName = _groupToColumnMap[widget.groupName] ?? 'custom_groups_data';
       final columnsToSelect = ['id', columnName, 'custom_groups_data'].join(',');
-
       final response = await supabase
           .from('user_health_details')
           .select(columnsToSelect)
@@ -479,31 +473,18 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
 
       if (response != null) {
         _healthRecordId = response['id'] as String?;
-
-        final List<DrawingPage> loadedPages = [];
-
         if (columnName == 'custom_groups_data') {
-          // Load from custom_groups_data (list of DrawingGroup objects)
           final rawCustomGroups = response['custom_groups_data'] ?? [];
           final customGroups = (rawCustomGroups as List?)?.map((json) => DrawingGroup.fromJson(json as Map<String, dynamic>)).toList() ?? [];
-
           _currentGroup = customGroups.firstWhere(
                 (g) => g.id == widget.groupId,
             orElse: () => throw Exception("The required custom group was not found."),
           );
           _pagesInCurrentGroup = _currentGroup!.pages;
-
         } else {
-          // Load from a dedicated column (list of DrawingPage objects)
           final rawPages = response[columnName] ?? [];
           _pagesInCurrentGroup = (rawPages as List?)?.map((json) => DrawingPage.fromJson(json as Map<String, dynamic>)).toList() ?? [];
-
-          // Recreate the minimal DrawingGroup object for local context/UI
-          _currentGroup = DrawingGroup(
-              id: widget.groupId,
-              groupName: widget.groupName,
-              pages: _pagesInCurrentGroup
-          );
+          _currentGroup = DrawingGroup(id: widget.groupId, groupName: widget.groupName, pages: _pagesInCurrentGroup);
         }
 
         DrawingPage currentPage = _pagesInCurrentGroup.firstWhere(
@@ -511,7 +492,6 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
           orElse: () => throw Exception("The required page (ID: ${widget.pageId}) was not found in the group pages."),
         );
 
-        // Group pages that belong together (e.g., 'Chart 1 (Front)' and 'Chart 1 (Back)')
         String pagePrefix = currentPage.pageName.split('(')[0].trim();
         _viewablePages = _pagesInCurrentGroup
             .where((p) => p.pageName.split('(')[0].trim() == pagePrefix)
@@ -544,8 +524,6 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
 
     try {
       final updatedGroupPages = List<DrawingPage>.from(_pagesInCurrentGroup);
-
-      // 1. Update the pages in the local group list with the current page's viewable changes
       for (var viewablePage in _viewablePages) {
         int pageIndex = updatedGroupPages.indexWhere((p) => p.id == viewablePage.id);
         if (pageIndex != -1) updatedGroupPages[pageIndex] = viewablePage;
@@ -555,38 +533,26 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
       final Map<String, dynamic> dataToSave = {};
 
       if (columnName != null) {
-        // --- Dedicated Column Save (Most Common) ---
-        // Save ONLY the list of DrawingPage objects to the specific column
         dataToSave[columnName] = updatedGroupPages.map((page) => page.toJson()).toList();
-
       } else {
-        // --- Custom/Uncategorized Group Save ---
-        // Must fetch all custom groups, find the one being edited, update it, and save the whole list back.
         final response = await supabase.from('user_health_details').select('custom_groups_data').eq('id', _healthRecordId!).single();
         final rawCustomGroups = response['custom_groups_data'] ?? [];
-
         final List<DrawingGroup> customGroups = (rawCustomGroups as List?)?.map((json) => DrawingGroup.fromJson(json as Map<String, dynamic>)).toList() ?? [];
-
         int groupIndex = customGroups.indexWhere((g) => g.id == widget.groupId);
         if (groupIndex != -1) {
           final updatedGroup = customGroups[groupIndex].copyWith(pages: updatedGroupPages);
           customGroups[groupIndex] = updatedGroup;
         } else {
-          // Should not happen if loading was successful, but handle defensively
           throw Exception("Custom group not found for saving.");
         }
         dataToSave['custom_groups_data'] = customGroups.map((group) => group.toJson()).toList();
       }
-
-      // Add metadata and perform update
       dataToSave['updated_at'] = DateTime.now().toIso8601String();
-
       if (_healthRecordId != null) {
         await supabase.from('user_health_details').update(dataToSave).eq('id', _healthRecordId!);
       } else {
         throw Exception("Health Record ID is missing, cannot save.");
       }
-
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Prescription Saved!'), backgroundColor: Colors.green));
       }
@@ -610,9 +576,8 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     });
 
     final bool isPenOnlyStylusDraw = _isPenOnlyMode && _isStylusInteraction;
-    final bool isNormalDraw = !_isPenOnlyMode && !_isPanMode;
 
-    if (!isPenOnlyStylusDraw && !isNormalDraw || _viewablePages.isEmpty) {
+    if (!isPenOnlyStylusDraw || _viewablePages.isEmpty) {
       return;
     }
 
@@ -636,9 +601,8 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
 
   void _handlePointerMove(PointerMoveEvent details) {
     final bool isPenOnlyStylusDraw = _isPenOnlyMode && _isStylusInteraction;
-    final bool isNormalDraw = !_isPenOnlyMode && !_isPanMode;
 
-    if (!isPenOnlyStylusDraw && !isNormalDraw || _viewablePages.isEmpty) return;
+    if (!isPenOnlyStylusDraw || _viewablePages.isEmpty) return;
 
     final transformedPosition = _transformToCanvasCoordinates(details.localPosition);
     if (!_isPointOnCanvas(transformedPosition)) return;
@@ -659,13 +623,16 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
   }
 
   void _handlePointerUp(PointerUpEvent details) {
-    setState(() => _isStylusInteraction = false);
+    // This is crucial to re-enable panning for fingers after the pen is lifted.
+    if (_isStylusInteraction) {
+      setState(() => _isStylusInteraction = false);
+    }
   }
 
   // --- Text Handling ---
 
   void _onTransformUpdated() {
-    setState(() {}); // Rebuild to update TextField position during pan/zoom
+    setState(() {});
   }
 
   void _onTextFocusChange() {
@@ -682,11 +649,9 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
       final textIndex = currentPage.texts.indexWhere((t) => t.id == _editingTextId);
       if (textIndex != -1) {
         if (_textController.text.trim().isEmpty) {
-          // Delete text if it's empty
           final updatedTexts = List<DrawingText>.from(currentPage.texts)..removeAt(textIndex);
           _viewablePages[_currentPageIndex] = currentPage.copyWith(texts: updatedTexts);
         } else {
-          // Update text content
           final updatedText = currentPage.texts[textIndex].copyWith(text: _textController.text);
           final updatedTexts = List<DrawingText>.from(currentPage.texts);
           updatedTexts[textIndex] = updatedText;
@@ -780,24 +745,6 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     }
   }
 
-  void _togglePanDrawMode() {
-    HapticFeedback.lightImpact();
-    setState(() {
-      _commitTextChanges();
-      _isPanMode = !_isPanMode;
-      if (!_isPanMode) _selectedTool = DrawingTool.pen;
-    });
-  }
-
-  void _togglePenOnlyMode() {
-    HapticFeedback.lightImpact();
-    setState(() {
-      _commitTextChanges();
-      _isPenOnlyMode = !_isPenOnlyMode;
-      _isPanMode = _isPenOnlyMode ? true : false;
-    });
-  }
-
   void _zoomByFactor(double factor) {
     HapticFeedback.lightImpact();
     final center = (context.findRenderObject() as RenderBox).size.center(Offset.zero);
@@ -839,7 +786,6 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
   void _navigateToPage(int index) async {
     if (index >= 0 && index < _viewablePages.length) {
       _commitTextChanges();
-
       if (_pageController.hasClients) {
         _pageController.jumpToPage(index);
       }
@@ -851,15 +797,11 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     }
   }
 
-  // --- 🎨 FIXED: Page Switching Logic ---
   Future<void> _showFolderPageSelector() async {
     if (_pagesInCurrentGroup.isEmpty) return;
-
     await showModalBottomSheet(
       context: context,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
       builder: (BuildContext context) {
         return Container(
           padding: const EdgeInsets.only(top: 16.0, left: 16.0, right: 16.0),
@@ -880,51 +822,31 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
                   itemBuilder: (context, index) {
                     final page = _pagesInCurrentGroup[index];
                     final bool isSelected = page.id == _viewablePages[_currentPageIndex].id;
-
                     return ListTile(
-                      leading: Icon(
-                        Icons.description_outlined,
-                        color: isSelected ? primaryBlue : mediumGreyText,
-                      ),
+                      leading: Icon(Icons.description_outlined, color: isSelected ? primaryBlue : mediumGreyText),
                       title: Text(
                         page.pageName,
-                        style: TextStyle(
-                          fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-                          color: isSelected ? primaryBlue : darkText,
-                        ),
+                        style: TextStyle(fontWeight: isSelected ? FontWeight.bold : FontWeight.normal, color: isSelected ? primaryBlue : darkText),
                       ),
                       selected: isSelected,
                       selectedTileColor: primaryBlue.withOpacity(0.1),
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                       onTap: () {
-                        Navigator.pop(context); // Close the bottom sheet
+                        Navigator.pop(context);
                         final tappedPage = _pagesInCurrentGroup[index];
-
-                        if (tappedPage.id == _viewablePages[_currentPageIndex].id) {
-                          return; // Do nothing if the same page is tapped
-                        }
-
-                        // This logic correctly rebuilds the context for the new page set.
+                        if (tappedPage.id == _viewablePages[_currentPageIndex].id) return;
                         final tappedPrefix = tappedPage.pageName.split('(')[0].trim();
-                        final newViewablePages = _pagesInCurrentGroup
-                            .where((p) => p.pageName.split('(')[0].trim() == tappedPrefix)
-                            .toList();
-
+                        final newViewablePages = _pagesInCurrentGroup.where((p) => p.pageName.split('(')[0].trim() == tappedPrefix).toList();
                         final newPageIndex = newViewablePages.indexWhere((p) => p.id == tappedPage.id);
-
                         if (newPageIndex != -1) {
                           _commitTextChanges();
-
                           setState(() {
                             _viewablePages = newViewablePages;
                             _currentPageIndex = newPageIndex;
                             _isInitialZoomSet = false;
                           });
-
                           WidgetsBinding.instance.addPostFrameCallback((_) {
-                            if (_pageController.hasClients) {
-                              _pageController.jumpToPage(newPageIndex);
-                            }
+                            if (_pageController.hasClients) _pageController.jumpToPage(newPageIndex);
                             _loadTemplateUiImage(newViewablePages[newPageIndex].templateImageUrl);
                           });
                         }
@@ -950,14 +872,7 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     if (_viewablePages.isEmpty) {
       return Scaffold(
         appBar: AppBar(title: const Text("Error")),
-        body: const Center(
-            child: Padding(
-              padding: EdgeInsets.all(16.0),
-              child: Text(
-                "Page data could not be loaded. Please go back and try again.",
-                textAlign: TextAlign.center,
-              ),
-            )),
+        body: const Center(child: Padding(padding: EdgeInsets.all(16.0), child: Text("Page data could not be loaded. Please go back and try again.", textAlign: TextAlign.center))),
       );
     }
 
@@ -981,22 +896,11 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
               child: ActionChip(
                 onPressed: () => _navigateToPage((_currentPageIndex + 1) % _viewablePages.length),
                 avatar: const Icon(Icons.arrow_forward_ios, size: 14, color: primaryBlue),
-                label: Text("${_currentPageIndex + 1}/${_viewablePages.length}",
-                    style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: primaryBlue)),
+                label: Text("${_currentPageIndex + 1}/${_viewablePages.length}", style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: primaryBlue)),
                 backgroundColor: primaryBlue.withOpacity(0.15),
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
               ),
             ),
-          IconButton(
-            icon: Icon(_isPenOnlyMode ? Icons.style_outlined : Icons.touch_app_outlined, color: primaryBlue),
-            tooltip: _isPenOnlyMode ? "Pen-Only Mode" : "Touch & Pen Mode",
-            onPressed: _togglePenOnlyMode,
-          ),
-          IconButton(
-            icon: Icon(_isPanMode ? Icons.pan_tool_alt_rounded : Icons.edit_note_rounded, color: primaryBlue),
-            tooltip: _isPanMode ? "Pan/Zoom Mode" : "Draw/Write Mode",
-            onPressed: _togglePanDrawMode,
-          ),
           IconButton(
             icon: _isSaving
                 ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: primaryBlue))
@@ -1011,7 +915,12 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
           child: Container(
             color: Colors.white,
             padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 4.0),
-            child: _isPanMode ? _buildPanToolbar() : _buildDrawingToolbar(),
+            child: Row(
+              children: [
+                Expanded(child: _buildDrawingToolbar()),
+                _buildPanToolbar(),
+              ],
+            ),
           ),
         ),
       ),
@@ -1047,8 +956,11 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
                   itemBuilder: (context, index) {
                     return InteractiveViewer(
                       transformationController: _transformationController,
-                      panEnabled: _isPanMode || _isPenOnlyMode,
-                      scaleEnabled: _isPanMode || _isPenOnlyMode,
+                      // --- THIS IS THE FIX ---
+                      // Panning is disabled when a stylus is detected.
+                      panEnabled: !_isStylusInteraction,
+                      scaleEnabled: !_isStylusInteraction,
+                      // --- END OF FIX ---
                       minScale: 0.1,
                       maxScale: 10.0,
                       constrained: false,
@@ -1086,7 +998,6 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     final matrix = _transformationController.value;
     final canvasOffset = textToEdit.position;
     final screenOffset = MatrixUtils.transformPoint(matrix, canvasOffset);
-
     final currentScale = matrix.getMaxScaleOnAxis();
     final scaledFontSize = textToEdit.fontSize * currentScale;
 
@@ -1101,15 +1012,8 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
             focusNode: _textFocusNode,
             autofocus: true,
             maxLines: null,
-            decoration: const InputDecoration(
-              border: InputBorder.none,
-              contentPadding: EdgeInsets.zero,
-              isDense: true,
-            ),
-            style: TextStyle(
-              fontSize: scaledFontSize,
-              color: Color(textToEdit.colorValue),
-            ),
+            decoration: const InputDecoration(border: InputBorder.none, contentPadding: EdgeInsets.zero, isDense: true),
+            style: TextStyle(fontSize: scaledFontSize, color: Color(textToEdit.colorValue)),
             onSubmitted: (_) => _commitTextChanges(),
           ),
         ),
@@ -1124,11 +1028,7 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
         mainAxisAlignment: MainAxisAlignment.start,
         children: [
           ToggleButtons(
-            isSelected: [
-              _selectedTool == DrawingTool.pen,
-              _selectedTool == DrawingTool.eraser,
-              _selectedTool == DrawingTool.text,
-            ],
+            isSelected: [_selectedTool == DrawingTool.pen, _selectedTool == DrawingTool.eraser, _selectedTool == DrawingTool.text],
             onPressed: (index) {
               HapticFeedback.selectionClick();
               setState(() {
@@ -1151,9 +1051,7 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
             ],
           ),
           const SizedBox(width: 16),
-          ...[Colors.black, Colors.blue, Colors.red, Colors.green]
-              .map((color) => _buildColorOption(color))
-              .toList(),
+          ...[Colors.black, Colors.blue, Colors.red, Colors.green].map((color) => _buildColorOption(color)).toList(),
           const SizedBox(width: 16),
           if (_selectedTool == DrawingTool.text)
             Row(
@@ -1173,16 +1071,8 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
               ],
             ),
           const SizedBox(width: 24),
-          IconButton(
-            icon: const Icon(Icons.undo_rounded, color: primaryBlue, size: 22),
-            onPressed: _undoLastAction,
-            tooltip: "Undo",
-          ),
-          IconButton(
-            icon: const Icon(Icons.delete_sweep_rounded, color: primaryBlue, size: 22),
-            onPressed: _clearAllDrawings,
-            tooltip: "Clear All",
-          ),
+          IconButton(icon: const Icon(Icons.undo_rounded, color: primaryBlue, size: 22), onPressed: _undoLastAction, tooltip: "Undo"),
+          IconButton(icon: const Icon(Icons.delete_sweep_rounded, color: primaryBlue, size: 22), onPressed: _clearAllDrawings, tooltip: "Clear All"),
         ],
       ),
     );
@@ -1190,13 +1080,11 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
 
   Widget _buildPanToolbar() {
     return Row(
-      mainAxisAlignment: MainAxisAlignment.center,
+      mainAxisAlignment: MainAxisAlignment.end,
       children: [
-        ElevatedButton.icon(onPressed: _zoomIn, icon: const Icon(Icons.zoom_in), label: const Text("Zoom In")),
-        const SizedBox(width: 12),
-        ElevatedButton.icon(onPressed: _zoomOut, icon: const Icon(Icons.zoom_out), label: const Text("Zoom Out")),
-        const SizedBox(width: 12),
-        ElevatedButton.icon(onPressed: _resetZoom, icon: const Icon(Icons.zoom_out_map), label: const Text("Reset Zoom")),
+        IconButton(onPressed: _zoomIn, icon: const Icon(Icons.zoom_in), tooltip: "Zoom In"),
+        IconButton(onPressed: _zoomOut, icon: const Icon(Icons.zoom_out), tooltip: "Zoom Out"),
+        IconButton(onPressed: _resetZoom, icon: const Icon(Icons.zoom_out_map), tooltip: "Reset Zoom"),
       ],
     );
   }
@@ -1215,9 +1103,7 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
             decoration: BoxDecoration(
               color: color,
               shape: BoxShape.circle,
-              border: isSelected
-                  ? Border.all(color: primaryBlue, width: 2.5)
-                  : Border.all(color: Colors.grey.shade300, width: 1),
+              border: isSelected ? Border.all(color: primaryBlue, width: 2.5) : Border.all(color: Colors.grey.shade300, width: 1),
             ),
             child: isSelected ? const Icon(Icons.check, color: Colors.white, size: 16) : null,
           ),
@@ -1241,13 +1127,7 @@ class PrescriptionPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     if (templateUiImage != null) {
-      paintImage(
-        canvas: canvas,
-        rect: Rect.fromLTWH(0, 0, size.width, size.height),
-        image: templateUiImage!,
-        fit: BoxFit.contain,
-        alignment: Alignment.center,
-      );
+      paintImage(canvas: canvas, rect: Rect.fromLTWH(0, 0, size.width, size.height), image: templateUiImage!, fit: BoxFit.contain, alignment: Alignment.center);
     } else {
       canvas.drawRect(Rect.fromLTWH(0, 0, size.width, size.height), Paint()..color = Colors.grey[200]!);
     }
@@ -1269,19 +1149,11 @@ class PrescriptionPainter extends CustomPainter {
 
     for (var text in drawingPage.texts) {
       if (text.id == editingTextId) continue;
-
       final textSpan = TextSpan(
         text: text.text,
-        style: TextStyle(
-          color: Color(text.colorValue),
-          fontSize: text.fontSize,
-          fontWeight: FontWeight.w500,
-        ),
+        style: TextStyle(color: Color(text.colorValue), fontSize: text.fontSize, fontWeight: FontWeight.w500),
       );
-      final textPainter = TextPainter(
-        text: textSpan,
-        textDirection: TextDirection.ltr,
-      );
+      final textPainter = TextPainter(text: textSpan, textDirection: TextDirection.ltr);
       textPainter.layout(minWidth: 0, maxWidth: canvasWidth - text.position.dx);
       textPainter.paint(canvas, text.position);
     }
@@ -1289,9 +1161,7 @@ class PrescriptionPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant PrescriptionPainter oldDelegate) {
-    return oldDelegate.drawingPage != drawingPage ||
-        oldDelegate.templateUiImage != templateUiImage ||
-        oldDelegate.editingTextId != editingTextId;
+    return oldDelegate.drawingPage != drawingPage || oldDelegate.templateUiImage != templateUiImage || oldDelegate.editingTextId != editingTextId;
   }
 }
 
