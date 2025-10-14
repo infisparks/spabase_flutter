@@ -328,6 +328,14 @@ class DrawingGroup {
 
 enum DrawingTool { pen, eraser, text }
 
+// Helper class for clipboard data
+class _CopiedPageData {
+  final List<DrawingLine> lines;
+  final List<DrawingText> texts;
+
+  _CopiedPageData({required this.lines, required this.texts});
+}
+
 class PrescriptionPage extends StatefulWidget {
   final int ipdId;
   final String uhid;
@@ -355,6 +363,9 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
   String? _healthRecordId;
   DrawingGroup? _currentGroup;
   List<DrawingPage> _pagesInCurrentGroup = [];
+
+  // This will hold the copied content
+  _CopiedPageData? _copiedPageData;
 
   static const Map<String, String> _groupToColumnMap = {
     'Indoor Patient Progress Digital': 'indoor_patient_progress_digital_data',
@@ -523,10 +534,13 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     setState(() => _isSaving = true);
 
     try {
+      // **THIS IS A CRITICAL STEP**: Ensure the master list is updated with any changes from the viewable list before saving.
       final updatedGroupPages = List<DrawingPage>.from(_pagesInCurrentGroup);
       for (var viewablePage in _viewablePages) {
         int pageIndex = updatedGroupPages.indexWhere((p) => p.id == viewablePage.id);
-        if (pageIndex != -1) updatedGroupPages[pageIndex] = viewablePage;
+        if (pageIndex != -1) {
+          updatedGroupPages[pageIndex] = viewablePage;
+        }
       }
 
       final columnName = _groupToColumnMap[widget.groupName];
@@ -706,6 +720,62 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
 
   // --- Utility & Action Methods ---
 
+  void _copyPageContent() {
+    if (_viewablePages.isEmpty) return;
+    final currentPage = _viewablePages[_currentPageIndex];
+    setState(() {
+      // Create deep copies to prevent reference issues
+      _copiedPageData = _CopiedPageData(
+        lines: currentPage.lines.map((line) => line.copyWith()).toList(),
+        texts: currentPage.texts.map((text) => text.copyWith()).toList(),
+      );
+    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Page content copied!'),
+        backgroundColor: Colors.green,
+        duration: Duration(seconds: 2),
+      ),
+    );
+  }
+
+  void _pastePageContent() {
+    if (_copiedPageData == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Nothing to paste. Copy content first.'),
+          backgroundColor: Colors.orange,
+          duration: Duration(seconds: 2),
+        ),
+      );
+      return;
+    }
+    if (_viewablePages.isEmpty) return;
+
+    setState(() {
+      final currentPage = _viewablePages[_currentPageIndex];
+
+      final pastedTextsWithNewIds = _copiedPageData!.texts.map((textToCopy) {
+        return textToCopy.copyWith(id: generateUniqueId());
+      }).toList();
+
+      final updatedLines = [...currentPage.lines, ..._copiedPageData!.lines];
+      final updatedTexts = [...currentPage.texts, ...pastedTextsWithNewIds];
+
+      _viewablePages[_currentPageIndex] = currentPage.copyWith(
+        lines: updatedLines,
+        texts: updatedTexts,
+      );
+    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Content pasted!'),
+        backgroundColor: Colors.blue,
+        duration: Duration(seconds: 2),
+      ),
+    );
+  }
+
   void _undoLastAction() {
     HapticFeedback.lightImpact();
     if (_viewablePages.isEmpty || _viewablePages[_currentPageIndex].lines.isEmpty) return;
@@ -862,6 +932,27 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     );
   }
 
+  // --- NEW: Method to handle back navigation ---
+  Future<bool> _handleBackButton() {
+    _commitTextChanges();
+
+    // Update the master list with the latest changes from the viewable list
+    // This ensures the data returned is fully up-to-date.
+    for (var viewablePage in _viewablePages) {
+      int pageIndex = _pagesInCurrentGroup.indexWhere((p) => p.id == viewablePage.id);
+      if (pageIndex != -1) {
+        _pagesInCurrentGroup[pageIndex] = viewablePage;
+      }
+    }
+
+    // Return the fully updated list of pages to the previous screen
+    Navigator.of(context).pop(_pagesInCurrentGroup);
+
+    // We handled the pop, so return false to prevent a double-pop by the system
+    return Future.value(false);
+  }
+
+
   // --- Build Methods ---
 
   @override
@@ -878,113 +969,153 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
 
     final currentPageData = _viewablePages[_currentPageIndex];
 
-    return Scaffold(
-      backgroundColor: lightBackground,
-      appBar: AppBar(
-        title: Text("${currentPageData.pageName} (${currentPageData.groupName})"),
-        backgroundColor: Colors.white,
-        elevation: 2,
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.list_alt, color: primaryBlue),
-            tooltip: 'Select Page',
-            onPressed: _showFolderPageSelector,
+    // --- NEW: Wrap Scaffold with WillPopScope ---
+    return WillPopScope(
+      onWillPop: _handleBackButton,
+      child: Scaffold(
+        backgroundColor: lightBackground,
+        appBar: AppBar(
+          // --- NEW: Custom back button to use our handler ---
+          leading: IconButton(
+            icon: const Icon(Icons.arrow_back),
+            onPressed: _handleBackButton,
+            tooltip: 'Back',
           ),
-          if (_viewablePages.length > 1)
-            Padding(
-              padding: const EdgeInsets.only(right: 8.0),
-              child: ActionChip(
-                onPressed: () => _navigateToPage((_currentPageIndex + 1) % _viewablePages.length),
-                avatar: const Icon(Icons.arrow_forward_ios, size: 14, color: primaryBlue),
-                label: Text("${_currentPageIndex + 1}/${_viewablePages.length}", style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: primaryBlue)),
-                backgroundColor: primaryBlue.withOpacity(0.15),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-              ),
+          title: Text("${currentPageData.pageName} (${currentPageData.groupName})"),
+          backgroundColor: Colors.white,
+          elevation: 2,
+          actions: [
+            IconButton(
+              icon: const Icon(Icons.list_alt, color: primaryBlue),
+              tooltip: 'Select Page',
+              onPressed: _showFolderPageSelector,
             ),
-          IconButton(
-            icon: _isSaving
-                ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: primaryBlue))
-                : const Icon(Icons.save_alt_rounded, color: primaryBlue),
-            tooltip: "Save Prescription",
-            onPressed: _isSaving ? null : _savePrescriptionData,
-          ),
-          const SizedBox(width: 8),
-        ],
-        bottom: PreferredSize(
-          preferredSize: const Size.fromHeight(48),
-          child: Container(
-            color: Colors.white,
-            padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 4.0),
-            child: Row(
-              children: [
-                Expanded(child: _buildDrawingToolbar()),
-                _buildPanToolbar(),
-              ],
+            if (_viewablePages.length > 1)
+              Padding(
+                padding: const EdgeInsets.only(right: 8.0),
+                child: ActionChip(
+                  onPressed: () => _navigateToPage((_currentPageIndex + 1) % _viewablePages.length),
+                  avatar: const Icon(Icons.arrow_forward_ios, size: 14, color: primaryBlue),
+                  label: Text("${_currentPageIndex + 1}/${_viewablePages.length}", style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: primaryBlue)),
+                  backgroundColor: primaryBlue.withOpacity(0.15),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                ),
+              ),
+            _buildCopyPasteMenu(),
+            IconButton(
+              icon: _isSaving
+                  ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: primaryBlue))
+                  : const Icon(Icons.save_alt_rounded, color: primaryBlue),
+              tooltip: "Save Prescription",
+              onPressed: _isSaving ? null : _savePrescriptionData,
+            ),
+            const SizedBox(width: 8),
+          ],
+          bottom: PreferredSize(
+            preferredSize: const Size.fromHeight(48),
+            child: Container(
+              color: Colors.white,
+              padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 4.0),
+              child: Row(
+                children: [
+                  Expanded(child: _buildDrawingToolbar()),
+                  _buildPanToolbar(),
+                ],
+              ),
             ),
           ),
         ),
-      ),
-      body: LayoutBuilder(
-        builder: (context, constraints) {
-          if (!_isInitialZoomSet) {
-            WidgetsBinding.instance.addPostFrameCallback((_) {
-              if (mounted) {
-                _setInitialZoom(constraints.biggest);
-                _isInitialZoomSet = true;
-              }
-            });
-          }
-          return Stack(
-            children: [
-              Listener(
-                onPointerDown: _handlePointerDown,
-                onPointerMove: _handlePointerMove,
-                onPointerUp: _handlePointerUp,
-                child: PageView.builder(
-                  controller: _pageController,
-                  itemCount: _viewablePages.length,
-                  onPageChanged: (index) async {
-                    _commitTextChanges();
-                    setState(() {
-                      _currentPageIndex = index;
-                      _isInitialZoomSet = false;
-                      _transformationController.value = Matrix4.identity();
-                    });
-                    await _loadTemplateUiImage(_viewablePages[index].templateImageUrl);
-                  },
-                  physics: const NeverScrollableScrollPhysics(),
-                  itemBuilder: (context, index) {
-                    return InteractiveViewer(
-                      transformationController: _transformationController,
-                      // --- THIS IS THE FIX ---
-                      // Panning is disabled when a stylus is detected.
-                      panEnabled: !_isStylusInteraction,
-                      scaleEnabled: !_isStylusInteraction,
-                      // --- END OF FIX ---
-                      minScale: 0.1,
-                      maxScale: 10.0,
-                      constrained: false,
-                      boundaryMargin: const EdgeInsets.all(double.infinity),
-                      child: CustomPaint(
-                        painter: PrescriptionPainter(
-                          drawingPage: _viewablePages[index],
-                          templateUiImage: _currentTemplateUiImage,
-                          editingTextId: _editingTextId,
+        body: LayoutBuilder(
+          builder: (context, constraints) {
+            if (!_isInitialZoomSet) {
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                if (mounted) {
+                  _setInitialZoom(constraints.biggest);
+                  _isInitialZoomSet = true;
+                }
+              });
+            }
+            return Stack(
+              children: [
+                Listener(
+                  onPointerDown: _handlePointerDown,
+                  onPointerMove: _handlePointerMove,
+                  onPointerUp: _handlePointerUp,
+                  child: PageView.builder(
+                    controller: _pageController,
+                    itemCount: _viewablePages.length,
+                    onPageChanged: (index) async {
+                      _commitTextChanges();
+                      setState(() {
+                        _currentPageIndex = index;
+                        _isInitialZoomSet = false;
+                        _transformationController.value = Matrix4.identity();
+                      });
+                      await _loadTemplateUiImage(_viewablePages[index].templateImageUrl);
+                    },
+                    physics: const NeverScrollableScrollPhysics(),
+                    itemBuilder: (context, index) {
+                      return InteractiveViewer(
+                        transformationController: _transformationController,
+                        panEnabled: !_isStylusInteraction,
+                        scaleEnabled: !_isStylusInteraction,
+                        minScale: 0.1,
+                        maxScale: 10.0,
+                        constrained: false,
+                        boundaryMargin: const EdgeInsets.all(double.infinity),
+                        child: CustomPaint(
+                          painter: PrescriptionPainter(
+                            drawingPage: _viewablePages[index],
+                            templateUiImage: _currentTemplateUiImage,
+                            editingTextId: _editingTextId,
+                          ),
+                          child: const SizedBox(
+                            width: canvasWidth,
+                            height: canvasHeight,
+                          ),
                         ),
-                        child: const SizedBox(
-                          width: canvasWidth,
-                          height: canvasHeight,
-                        ),
-                      ),
-                    );
-                  },
+                      );
+                    },
+                  ),
                 ),
-              ),
-              if (_editingTextId != null) _buildTextFieldOverlay(),
-            ],
-          );
-        },
+                if (_editingTextId != null) _buildTextFieldOverlay(),
+              ],
+            );
+          },
+        ),
       ),
+    );
+  }
+
+  Widget _buildCopyPasteMenu() {
+    return PopupMenuButton<String>(
+      onSelected: (String value) {
+        if (value == 'copy') {
+          _copyPageContent();
+        } else if (value == 'paste') {
+          _pastePageContent();
+        }
+      },
+      icon: const Icon(Icons.more_vert, color: primaryBlue),
+      tooltip: 'Page Actions',
+      itemBuilder: (BuildContext context) => <PopupMenuEntry<String>>[
+        const PopupMenuItem<String>(
+          value: 'copy',
+          child: ListTile(
+            leading: Icon(Icons.copy_all_rounded),
+            title: Text('Copy Page'),
+          ),
+        ),
+        // Only show the paste option if there is something in our clipboard
+        if (_copiedPageData != null)
+          const PopupMenuItem<String>(
+            value: 'paste',
+            child: ListTile(
+              leading: Icon(Icons.paste_rounded),
+              title: Text('Paste on Page'),
+            ),
+          ),
+      ],
     );
   }
 
@@ -1013,7 +1144,12 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
             autofocus: true,
             maxLines: null,
             decoration: const InputDecoration(border: InputBorder.none, contentPadding: EdgeInsets.zero, isDense: true),
-            style: TextStyle(fontSize: scaledFontSize, color: Color(textToEdit.colorValue)),
+            style: TextStyle(
+              fontSize: scaledFontSize,
+              color: Color(textToEdit.colorValue),
+              decoration: TextDecoration.none,
+              decorationThickness: 0,
+            ),
             onSubmitted: (_) => _commitTextChanges(),
           ),
         ),
@@ -1151,7 +1287,11 @@ class PrescriptionPainter extends CustomPainter {
       if (text.id == editingTextId) continue;
       final textSpan = TextSpan(
         text: text.text,
-        style: TextStyle(color: Color(text.colorValue), fontSize: text.fontSize, fontWeight: FontWeight.w500),
+        style: TextStyle(
+            color: Color(text.colorValue),
+            fontSize: text.fontSize,
+            fontWeight: FontWeight.w500,
+            decoration: TextDecoration.none),
       );
       final textPainter = TextPainter(text: textSpan, textDirection: TextDirection.ltr);
       textPainter.layout(minWidth: 0, maxWidth: canvasWidth - text.position.dx);
