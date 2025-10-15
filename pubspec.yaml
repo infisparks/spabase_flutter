@@ -18,6 +18,8 @@ dependencies:
   image_picker: ^1.2.0
 #  file_picker: ^10.3.3
 #  uuid: ^4.1.0
+  pdf: ^3.7.4  # Or the latest stable version
+  printing: ^5.0.0 # To save/share the PDF
   photo_view: ^0.15.0
 dev_dependencies:
   flutter_test:

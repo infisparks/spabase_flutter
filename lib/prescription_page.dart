@@ -4,14 +4,35 @@ import 'dart:ui' as ui;
 import 'dart:async';
 import 'dart:math';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:image_picker/image_picker.dart';
 import 'supabase_config.dart'; // Make sure you have this file configured
+
+// Extension for list safety
+extension IterableX<T> on Iterable<T> {
+  T? firstWhereOrNull(bool Function(T element) test) {
+    for (var element in this) {
+      if (test(element)) return element;
+    }
+    return null;
+  }
+}
 
 // --- Top-Level Constants ---
 const double canvasWidth = 1000;
 const double canvasHeight = 1414;
 const String kBaseImageUrl = 'https://apimmedford.infispark.in/';
+const String kSupabaseBucketName = 'pages'; // Assuming the bucket name for uploads
+const double kImageHandleSize = 40.0; // Size of the move/resize handle
+const double kImageResizeStep = 20.0; // Amount to resize image by
 
-// --- Unified & Highly Compressed Data Models ---
+// Application Colors (MOVED TO TOP-LEVEL TO FIX ERROR)
+const Color primaryBlue = Color(0xFF3B82F6);
+const Color darkText = Color(0xFF1E293B);
+const Color mediumGreyText = Color(0xFF64748B);
+const Color lightBackground = Color(0xFFF8FAFC);
+
+
+// --- Utility Classes & Functions ---
 
 String generateUniqueId() {
   return DateTime.now().microsecondsSinceEpoch.toString() + Random().nextInt(100000).toString();
@@ -53,6 +74,51 @@ List<Offset> simplify(List<Offset> points, double epsilon) {
   }
 }
 
+class Matrix4Utils {
+  static Offset transformPoint(Matrix4 matrix, Offset offset) {
+    final storage = matrix.storage;
+    final dx = offset.dx;
+    final dy = offset.dy;
+    final x = storage[0] * dx + storage[4] * dy + storage[12];
+    final y = storage[1] * dx + storage[5] * dy + storage[13];
+    final w = storage[3] * dx + storage[7] * dy + storage[15];
+    return w == 1.0 ? Offset(x / w, y / w) : Offset(x / w, y / w);
+  }
+}
+
+class ImageCacheManager {
+  static final Map<String, ui.Image> _cache = {};
+
+  static Future<ui.Image?> loadImage(String url) async {
+    if (_cache.containsKey(url)) {
+      return _cache[url];
+    }
+    try {
+      final stream = NetworkImage(url).resolve(ImageConfiguration.empty);
+      final completer = Completer<ui.Image>();
+      late ImageStreamListener listener;
+      listener = ImageStreamListener((info, _) {
+        completer.complete(info.image);
+        stream.removeListener(listener);
+      }, onError: (error, stackTrace) {
+        completer.completeError(error, stackTrace);
+        stream.removeListener(listener);
+      });
+      stream.addListener(listener);
+      final loadedImage = await completer.future;
+      _cache[url] = loadedImage;
+      return loadedImage;
+    } catch (e) {
+      debugPrint('Error loading cached image from $url: $e');
+      return null;
+    }
+  }
+
+  static void clear() => _cache.clear(); // Utility to clear cache
+}
+
+// --- Unified & Highly Compressed Data Models ---
+
 class DrawingLine {
   final List<Offset> points;
   final int colorValue;
@@ -72,7 +138,7 @@ class DrawingLine {
 
     if (pointsData is List && pointsData.isNotEmpty) {
       if (pointsData[0] is Map) {
-        // OLD UNCOMPRESSED FORMAT: [{'dx': 123.45, 'dy': 678.90}]
+        // OLD UNCOMPRESSED FORMAT
         for (var pointJson in pointsData) {
           if (pointJson is Map) {
             pointsList.add(Offset(
@@ -82,7 +148,7 @@ class DrawingLine {
           }
         }
       } else if (pointsData[0] is num) {
-        // NEW COMPRESSED FORMAT (Delta Encoded Integers): [x1, y1, dx2, dy2, ...]
+        // NEW COMPRESSED FORMAT (Delta Encoded Integers)
         if (pointsData.length >= 2) {
           double lastX = (pointsData[0] as num).toDouble() / 100.0;
           double lastY = (pointsData[1] as num).toDouble() / 100.0;
@@ -107,7 +173,7 @@ class DrawingLine {
       return {'points': [], 'colorValue': colorValue, 'strokeWidth': strokeWidth};
     }
 
-    // 1. Simplify the line first (highest impact). Epsilon = 1.0 is a good balance.
+    // 1. Simplify the line first (highest impact). Epsilon = 0.2
     final simplifiedPoints = simplify(points, 0.2);
     if (simplifiedPoints.isEmpty) {
       return {'points': [], 'colorValue': colorValue, 'strokeWidth': strokeWidth};
@@ -151,57 +217,60 @@ class DrawingLine {
   }
 }
 
-class DrawingText {
-  final String id;
-  final String text;
-  final Offset position;
-  final int colorValue;
-  final double fontSize;
+// NOTE: DrawingText class removed as per request.
 
-  DrawingText({
+class DrawingImage {
+  final String id;
+  final String imageUrl;
+  final Offset position;
+  final double width;
+  final double height;
+
+  DrawingImage({
     required this.id,
-    required this.text,
+    required this.imageUrl,
     required this.position,
-    required this.colorValue,
-    required this.fontSize,
+    required this.width,
+    required this.height,
   });
 
-  DrawingText copyWith({
+  DrawingImage copyWith({
     String? id,
-    String? text,
+    String? imageUrl,
     Offset? position,
-    int? colorValue,
-    double? fontSize,
+    double? width,
+    double? height,
   }) {
-    return DrawingText(
+    // Maintain aspect ratio if only one dimension is provided, but we are not doing that here.
+    return DrawingImage(
       id: id ?? this.id,
-      text: text ?? this.text,
+      imageUrl: imageUrl ?? this.imageUrl,
       position: position ?? this.position,
-      colorValue: colorValue ?? this.colorValue,
-      fontSize: fontSize ?? this.fontSize,
+      width: width ?? this.width,
+      height: height ?? this.height,
     );
   }
 
-  factory DrawingText.fromJson(Map<String, dynamic> json) {
-    return DrawingText(
-      id: (json['id'] as String?) ?? '',
-      text: (json['text'] as String?) ?? '',
+  factory DrawingImage.fromJson(Map<String, dynamic> json) {
+    return DrawingImage(
+      id: (json['id'] as String?) ?? generateUniqueId(),
+      imageUrl: (json['imageUrl'] as String?) ?? '',
       position: Offset(
         (json['position']?['dx'] as num?)?.toDouble() ?? 0.0,
         (json['position']?['dy'] as num?)?.toDouble() ?? 0.0,
       ),
-      colorValue: (json['colorValue'] as int?) ?? Colors.black.value,
-      fontSize: (json['fontSize'] as num?)?.toDouble() ?? 20.0,
+      width: (json['width'] as num?)?.toDouble() ?? 200.0,
+      height: (json['height'] as num?)?.toDouble() ?? 200.0,
     );
   }
 
   Map<String, dynamic> toJson() {
     return {
       'id': id,
-      'text': text,
+      'imageUrl': imageUrl,
       'position': {'dx': position.dx, 'dy': position.dy},
-      'colorValue': colorValue,
-      'fontSize': fontSize,
+      'width': width,
+      'height': height,
     };
   }
 }
@@ -213,7 +282,8 @@ class DrawingPage {
   final String groupName;
   final String templateImageUrl;
   final List<DrawingLine> lines;
-  final List<DrawingText> texts;
+  // final List<DrawingText> texts; // Removed
+  final List<DrawingImage> images;
 
   DrawingPage({
     required this.id,
@@ -222,7 +292,8 @@ class DrawingPage {
     required this.groupName,
     required this.templateImageUrl,
     this.lines = const [],
-    this.texts = const [],
+    // this.texts = const [], // Removed
+    this.images = const [],
   });
 
   DrawingPage copyWith({
@@ -232,7 +303,8 @@ class DrawingPage {
     String? groupName,
     String? templateImageUrl,
     List<DrawingLine>? lines,
-    List<DrawingText>? texts,
+    // List<DrawingText>? texts, // Removed
+    List<DrawingImage>? images,
   }) {
     return DrawingPage(
       id: id ?? this.id,
@@ -241,11 +313,13 @@ class DrawingPage {
       groupName: groupName ?? this.groupName,
       templateImageUrl: templateImageUrl ?? this.templateImageUrl,
       lines: lines ?? this.lines,
-      texts: texts ?? this.texts,
+      // texts: texts ?? this.texts, // Removed
+      images: images ?? this.images,
     );
   }
 
   factory DrawingPage.fromJson(Map<String, dynamic> json) {
+    // NOTE: Decoding of 'texts' is removed.
     return DrawingPage(
       id: (json['id'] as String?) ?? '',
       pageNumber: (json['pageNumber'] as int?) ?? 0,
@@ -257,15 +331,21 @@ class DrawingPage {
           .map((lineJson) => DrawingLine.fromJson(lineJson))
           .toList() ??
           [],
-      texts: (json['texts'] as List<dynamic>?)
+      // texts: (json['texts'] as List<dynamic>?) // Removed text parsing
+      //     ?.whereType<Map<String, dynamic>>()
+      //     .map((textJson) => DrawingText.fromJson(textJson))
+      //     .toList() ??
+      //     [],
+      images: (json['images'] as List<dynamic>?)
           ?.whereType<Map<String, dynamic>>()
-          .map((textJson) => DrawingText.fromJson(textJson))
+          .map((imageJson) => DrawingImage.fromJson(imageJson))
           .toList() ??
           [],
     );
   }
 
   Map<String, dynamic> toJson() {
+    // NOTE: Encoding of 'texts' is removed.
     return {
       'id': id,
       'pageNumber': pageNumber,
@@ -273,7 +353,8 @@ class DrawingPage {
       'groupName': groupName,
       'templateImageUrl': templateImageUrl,
       'lines': lines.map((line) => line.toJson()).toList(),
-      'texts': texts.map((text) => text.toJson()).toList(),
+      // 'texts': texts.map((text) => text.toJson()).toList(), // Removed text encoding
+      'images': images.map((image) => image.toJson()).toList(),
     };
   }
 }
@@ -324,13 +405,22 @@ class DrawingGroup {
 
 // --- End of Data Models ---
 
-enum DrawingTool { pen, eraser, text }
+enum DrawingTool { pen, eraser, image } // Removed text tool
 
 class _CopiedPageData {
   final List<DrawingLine> lines;
-  final List<DrawingText> texts;
-  _CopiedPageData({required this.lines, required this.texts});
+  // final List<DrawingText> texts; // Removed
+  final List<DrawingImage> images;
+  _CopiedPageData({required this.lines, required this.images}); // Removed texts
 }
+
+class UploadedImage { // Model for Supabase Storage files
+  final String name;
+  final String publicUrl;
+
+  UploadedImage({required this.name, required this.publicUrl});
+}
+
 
 class PrescriptionPage extends StatefulWidget {
   final int ipdId;
@@ -354,6 +444,7 @@ class PrescriptionPage extends StatefulWidget {
 
 class _PrescriptionPageState extends State<PrescriptionPage> {
   final SupabaseClient supabase = SupabaseConfig.client;
+  final ImagePicker _picker = ImagePicker();
 
   // --- Data State ---
   List<DrawingPage> _viewablePages = [];
@@ -362,6 +453,7 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
   DrawingGroup? _currentGroup;
   List<DrawingPage> _pagesInCurrentGroup = [];
   _CopiedPageData? _copiedPageData;
+  List<UploadedImage> _userUploadedImages = [];
 
   static const Map<String, String> _groupToColumnMap = {
     'Indoor Patient Progress Digital': 'indoor_patient_progress_digital_data',
@@ -385,13 +477,18 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
   // --- Drawing State ---
   Color _currentColor = Colors.black;
   double _strokeWidth = 2.0;
-  double _currentFontSize = 20.0;
+  // double _currentFontSize = 20.0; // Removed
   DrawingTool _selectedTool = DrawingTool.pen;
 
+  // --- Image Manipulation State ---
+  String? _selectedImageId;
+  Offset? _dragStartCanvasPosition; // Starting canvas position for image movement
+  bool _isMovingSelectedImage = false; // Flag to enable image movement
+
   // --- Text Editing State ---
-  final TextEditingController _textController = TextEditingController();
-  final FocusNode _textFocusNode = FocusNode();
-  String? _editingTextId;
+  // final TextEditingController _textController = TextEditingController(); // Removed
+  // final FocusNode _textFocusNode = FocusNode(); // Removed
+  // String? _editingTextId; // Removed
 
   // --- View State ---
   final PageController _pageController = PageController();
@@ -401,7 +498,8 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
   bool _isSaving = false;
   bool _isInitialZoomSet = false;
   bool _isStylusInteraction = false;
-  final bool _isPenOnlyMode = true;
+  final bool _isPenOnlyMode = true; // Kept this true to enforce stylus drawing
+  final ValueNotifier<int> _redrawNotifier = ValueNotifier(0);
 
   // --- Autosave & Realtime State ---
   Timer? _debounceTimer;
@@ -409,18 +507,13 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
   DateTime? _lastSuccessfulSaveTime;
   bool _isDisposed = false;
 
-  // --- Constants ---
-  static const Color primaryBlue = Color(0xFF3B82F6);
-  static const Color darkText = Color(0xFF1E293B);
-  static const Color mediumGreyText = Color(0xFF64748B);
-  static const Color lightBackground = Color(0xFFF8FAFC);
-
   @override
   void initState() {
     super.initState();
     _loadHealthDetailsAndPage();
+    _fetchUserUploadedImages();
     _transformationController.addListener(_onTransformUpdated);
-    _textFocusNode.addListener(_onTextFocusChange);
+    // _textFocusNode.addListener(_onTextFocusChange); // Removed
   }
 
   @override
@@ -433,9 +526,11 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     _transformationController.removeListener(_onTransformUpdated);
     _transformationController.dispose();
     _pageController.dispose();
-    _textController.dispose();
-    _textFocusNode.removeListener(_onTextFocusChange);
-    _textFocusNode.dispose();
+    // _textController.dispose(); // Removed
+    // _textFocusNode.removeListener(_onTextFocusChange); // Removed
+    // _textFocusNode.dispose(); // Removed
+    _redrawNotifier.dispose();
+    ImageCacheManager.clear();
     super.dispose();
   }
 
@@ -564,7 +659,7 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
               content: Text('Data was updated by another user. Refreshing...'),
-              backgroundColor: Colors.blue,
+              backgroundColor: primaryBlue,
               duration: Duration(seconds: 3),
             ),
           );
@@ -595,7 +690,7 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
 
   Future<void> _savePrescriptionData({bool isManualSave = false}) async {
     _debounceTimer?.cancel();
-    _commitTextChanges();
+    // _commitTextChanges(); // Removed
     if (!mounted) return;
     setState(() => _isSaving = true);
 
@@ -625,7 +720,6 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
         _lastSuccessfulSaveTime = DateTime.now();
 
         if (mounted && isManualSave) {
-          // Changed text:
           ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Saved! Refreshing to synchronize.'), backgroundColor: Colors.green));
           await _loadHealthDetailsAndPage();
         }
@@ -642,116 +736,326 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     }
   }
 
+  // --- Image Handling & Storage ---
+
+  Future<void> _fetchUserUploadedImages() async {
+    try {
+      // The path should be specific to the user, e.g., 'public/images/UHID/'
+      final storagePath = 'public/images/${widget.uhid}/';
+      final files = await supabase.storage.from(kSupabaseBucketName).list(path: storagePath);
+
+      _userUploadedImages = files.map((file) {
+        final publicUrl = supabase.storage.from(kSupabaseBucketName).getPublicUrl('$storagePath${file.name}');
+        return UploadedImage(name: file.name, publicUrl: publicUrl);
+      }).toList();
+
+      if (mounted) setState(() {});
+    } catch (e) {
+      debugPrint('Error fetching uploaded images: $e');
+    }
+  }
+
+  Future<void> _pickAndUploadImage(ImageSource source) async {
+    // _commitTextChanges(); // Removed
+    final XFile? pickedFile = await _picker.pickImage(source: source);
+
+    if (pickedFile != null) {
+      setState(() => _isSaving = true);
+      try {
+        final imageFile = await pickedFile.readAsBytes();
+        final fileName = '${generateUniqueId()}.${pickedFile.path.split('.').last}';
+        final storagePath = 'public/images/${widget.uhid}/$fileName';
+
+        // 1. Upload to Supabase Storage
+        await supabase.storage.from(kSupabaseBucketName).uploadBinary(
+          storagePath,
+          imageFile,
+          fileOptions: const FileOptions(cacheControl: '3600', upsert: false),
+        );
+
+        // 2. Get the public URL
+        final publicUrl = supabase.storage.from(kSupabaseBucketName).getPublicUrl(storagePath);
+
+        // 3. Add to DrawingPage data
+        _addImageToCanvas(publicUrl);
+
+        // 4. Refresh uploaded images list
+        await _fetchUserUploadedImages();
+
+        if(mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Image uploaded and added!'), backgroundColor: Colors.green));
+
+      } on StorageException catch (e) {
+        debugPrint('Supabase Storage Error: ${e.message}');
+        if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Image upload failed: ${e.message}'), backgroundColor: Colors.red));
+      } catch (e) {
+        debugPrint('General Image Error: $e');
+        if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Image handling failed: $e'), backgroundColor: Colors.red));
+      } finally {
+        if (mounted) setState(() => _isSaving = false);
+      }
+    }
+  }
+
+  void _addImageToCanvas(String publicUrl) {
+    const double defaultImageSize = 200.0;
+    final newImage = DrawingImage(
+      id: generateUniqueId(),
+      imageUrl: publicUrl,
+      // Center the image on the canvas
+      position: Offset(canvasWidth / 2 - defaultImageSize / 2, canvasHeight / 2 - defaultImageSize / 2),
+      width: defaultImageSize,
+      height: defaultImageSize,
+    );
+
+    final currentPage = _viewablePages[_currentPageIndex];
+    setState(() {
+      _viewablePages[_currentPageIndex] = currentPage.copyWith(images: [...currentPage.images, newImage]);
+      _selectedImageId = newImage.id; // Auto-select the new image
+      _isMovingSelectedImage = false;
+    });
+
+    _debouncedSave();
+  }
+
+  void _updateSelectedImage({Offset? newPosition, double? newWidth, double? newHeight}) {
+    if (_selectedImageId == null) return;
+
+    final currentPage = _viewablePages[_currentPageIndex];
+    final imageIndex = currentPage.images.indexWhere((img) => img.id == _selectedImageId);
+
+    if (imageIndex != -1) {
+      final oldImage = currentPage.images[imageIndex];
+      final updatedImages = List<DrawingImage>.from(currentPage.images);
+
+      updatedImages[imageIndex] = oldImage.copyWith(
+        position: newPosition,
+        width: newWidth,
+        height: newHeight,
+      );
+
+      setState(() {
+        _viewablePages[_currentPageIndex] = currentPage.copyWith(images: updatedImages);
+        _redrawNotifier.value = 1 - _redrawNotifier.value; // Force repaint
+      });
+      _debouncedSave();
+    }
+  }
+
+  void _resizeSelectedImage(double delta) {
+    if (_selectedImageId == null) return;
+    final currentPage = _viewablePages[_currentPageIndex];
+    final image = currentPage.images.firstWhere((img) => img.id == _selectedImageId);
+
+    // Simplistic resizing: change width and height by delta, minimum size of 50
+    double newWidth = max(50.0, image.width + delta);
+    double newHeight = max(50.0, image.height + delta); // Keep 1:1 ratio for simplicity
+
+    _updateSelectedImage(newWidth: newWidth, newHeight: newHeight);
+  }
+
+  Future<void> _showUploadedImagesSelector() async {
+    await _fetchUserUploadedImages(); // Ensure we have the latest list
+
+    if (_userUploadedImages.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('No uploaded images found for this patient. Use Camera or Gallery to upload one.'), backgroundColor: Colors.orange));
+      }
+      return;
+    }
+
+    await showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (BuildContext context) {
+        return Container(
+          height: MediaQuery.of(context).size.height * 0.8,
+          padding: const EdgeInsets.all(16.0),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text("Uploaded Images", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: darkText)),
+              const SizedBox(height: 10),
+              const Divider(),
+              Expanded(
+                child: GridView.builder(
+                  gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                    crossAxisCount: 3,
+                    crossAxisSpacing: 8,
+                    mainAxisSpacing: 8,
+                    childAspectRatio: 1.0,
+                  ),
+                  itemCount: _userUploadedImages.length,
+                  itemBuilder: (context, index) {
+                    final uploadedImage = _userUploadedImages[index];
+                    return InkWell(
+                      onTap: () {
+                        Navigator.pop(context);
+                        _addImageToCanvas(uploadedImage.publicUrl);
+                        if(mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Image added from uploaded files!'), backgroundColor: Colors.green));
+                      },
+                      child: Container(
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: mediumGreyText.withOpacity(0.5)),
+                        ),
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(8),
+                          child: Image.network(
+                            uploadedImage.publicUrl,
+                            fit: BoxFit.cover,
+                            loadingBuilder: (context, child, loadingProgress) {
+                              if (loadingProgress == null) return child;
+                              return Center(child: CircularProgressIndicator(value: loadingProgress.expectedTotalBytes != null ? loadingProgress.cumulativeBytesLoaded / loadingProgress.expectedTotalBytes! : null));
+                            },
+                            errorBuilder: (context, error, stackTrace) => const Center(child: Icon(Icons.broken_image, color: Colors.red)),
+                          ),
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
   // --- Pointer and Interaction Handlers ---
 
   void _handlePointerDown(PointerDownEvent details) {
-    _commitTextChanges();
-    setState(() => _isStylusInteraction = details.kind == ui.PointerDeviceKind.stylus);
-    if (!_isPenOnlyMode || !_isStylusInteraction) return;
+    // _commitTextChanges(); // Removed
     final transformedPosition = _transformToCanvasCoordinates(details.localPosition);
     if (!_isPointOnCanvas(transformedPosition)) return;
 
-    if (_selectedTool == DrawingTool.pen) {
-      setState(() {
-        final currentPage = _viewablePages[_currentPageIndex];
-        final newLine = DrawingLine(points: [transformedPosition], colorValue: _currentColor.value, strokeWidth: _strokeWidth);
-        _viewablePages[_currentPageIndex] = currentPage.copyWith(lines: [...currentPage.lines, newLine]);
-      });
-    } else if (_selectedTool == DrawingTool.text) {
-      _handleTextTap(transformedPosition);
+    final currentPage = _viewablePages[_currentPageIndex];
+    setState(() => _isStylusInteraction = details.kind == ui.PointerDeviceKind.stylus);
+
+
+    if (_selectedTool == DrawingTool.image) {
+      // 1. Check if the tap hits the currently selected image's move handle/body
+      final selectedImage = currentPage.images.firstWhereOrNull((img) => img.id == _selectedImageId);
+      bool hitSelectedImage = false;
+
+      if (selectedImage != null) {
+        final imageRect = Rect.fromLTWH(selectedImage.position.dx, selectedImage.position.dy, selectedImage.width, selectedImage.height).inflate(5);
+        if (imageRect.contains(transformedPosition)) {
+          hitSelectedImage = true;
+        }
+      }
+
+      if (hitSelectedImage) {
+        // Only start drag if `_isMovingSelectedImage` is true, otherwise treat it as selection
+        if (_isMovingSelectedImage) {
+          _dragStartCanvasPosition = transformedPosition - selectedImage!.position;
+        } else {
+          // If not in move mode, just a tap selects it and *might* enter move mode later if user presses move button
+          _handleCanvasTap(transformedPosition);
+        }
+        return;
+      } else {
+        // If it didn't hit the selected one, try to select a new image, which also handles deselection
+        _handleCanvasTap(transformedPosition);
+        return;
+      }
+    }
+
+
+    // Logic for Drawing/Erasing (Pen/Eraser)
+    // Only proceed if tool is pen/eraser AND it's a stylus interaction (Pen Only Mode)
+    if (_isPenOnlyMode && _isStylusInteraction) {
+      if (_selectedTool == DrawingTool.pen) {
+        setState(() {
+          final newLine = DrawingLine(points: [transformedPosition], colorValue: _currentColor.value, strokeWidth: _strokeWidth);
+          _viewablePages[_currentPageIndex] = currentPage.copyWith(lines: [...currentPage.lines, newLine]);
+        });
+      }
+      // Eraser logic is handled in _handlePointerMove, but setting _isStylusInteraction to true here is crucial
     }
   }
 
   void _handlePointerMove(PointerMoveEvent details) {
-    if (!_isPenOnlyMode || !_isStylusInteraction) return;
     final transformedPosition = _transformToCanvasCoordinates(details.localPosition);
     if (!_isPointOnCanvas(transformedPosition)) return;
 
-    if (_selectedTool == DrawingTool.pen) {
-      setState(() {
-        final currentPage = _viewablePages[_currentPageIndex];
-        if (currentPage.lines.isEmpty) return;
-        final lastLine = currentPage.lines.last;
-        final newPoints = [...lastLine.points, transformedPosition];
-        final updatedLines = List<DrawingLine>.from(currentPage.lines);
-        updatedLines.last = lastLine.copyWith(points: newPoints);
-        _viewablePages[_currentPageIndex] = currentPage.copyWith(lines: updatedLines);
-      });
-    } else if (_selectedTool == DrawingTool.eraser) {
-      _eraseLineAtPoint(transformedPosition);
+    // Image Movement Logic (works with finger or stylus if tool is image and move mode is active)
+    if (_selectedTool == DrawingTool.image && _isMovingSelectedImage && _selectedImageId != null && _dragStartCanvasPosition != null) {
+      // Logic for dragging/moving an image
+      final newImagePosition = transformedPosition - _dragStartCanvasPosition!;
+      _updateSelectedImage(newPosition: newImagePosition);
+      return;
+    }
+
+    // Drawing/Erasing Logic (only with stylus in Pen Only Mode)
+    if (_isPenOnlyMode && _isStylusInteraction) {
+      if (_selectedTool == DrawingTool.pen) {
+        setState(() {
+          final currentPage = _viewablePages[_currentPageIndex];
+          if (currentPage.lines.isEmpty) return;
+          final lastLine = currentPage.lines.last;
+          final newPoints = [...lastLine.points, transformedPosition];
+          final updatedLines = List<DrawingLine>.from(currentPage.lines);
+          updatedLines.last = lastLine.copyWith(points: newPoints);
+          _viewablePages[_currentPageIndex] = currentPage.copyWith(lines: updatedLines);
+        });
+      } else if (_selectedTool == DrawingTool.eraser) {
+        _eraseLineAtPoint(transformedPosition);
+      }
     }
   }
 
   void _handlePointerUp(PointerUpEvent details) {
+    if (_selectedTool == DrawingTool.image && _selectedImageId != null && _dragStartCanvasPosition != null) {
+      _dragStartCanvasPosition = null;
+      _debouncedSave(); // Save after image movement
+      // Note: _isMovingSelectedImage is NOT reset here, it is controlled by the lock icon.
+    }
+
     if (_isStylusInteraction) {
       _debouncedSave();
       setState(() => _isStylusInteraction = false);
     }
   }
 
-  // --- Text Handling ---
-
-  void _onTransformUpdated() => setState(() {});
-
-  void _onTextFocusChange() {
-    if (!_textFocusNode.hasFocus) _commitTextChanges();
-  }
-
-  void _commitTextChanges() {
-    if (_editingTextId == null) return;
-    String oldText = "";
-    setState(() {
-      final currentPage = _viewablePages[_currentPageIndex];
-      final textIndex = currentPage.texts.indexWhere((t) => t.id == _editingTextId);
-      if (textIndex != -1) {
-        oldText = currentPage.texts[textIndex].text;
-        final updatedTexts = List<DrawingText>.from(currentPage.texts);
-        if (_textController.text.trim().isEmpty) {
-          updatedTexts.removeAt(textIndex);
-        } else {
-          updatedTexts[textIndex] = updatedTexts[textIndex].copyWith(text: _textController.text);
-        }
-        _viewablePages[_currentPageIndex] = currentPage.copyWith(texts: updatedTexts);
-        if (oldText != _textController.text) {
-          _debouncedSave();
-        }
-      }
-      _editingTextId = null;
-      _textController.clear();
-    });
-  }
-
-  void _handleTextTap(Offset canvasPosition) {
-    _commitTextChanges();
+  void _handleCanvasTap(Offset canvasPosition) { // Taps when DrawingTool.image is active
     final currentPage = _viewablePages[_currentPageIndex];
-    DrawingText? tappedText;
+    String? newSelectedImageId;
 
-    for (final text in currentPage.texts) {
-      final textRect = Rect.fromLTWH(text.position.dx, text.position.dy - text.fontSize, text.fontSize * text.text.length * 0.6, text.fontSize * 2);
-      if (textRect.contains(canvasPosition)) {
-        tappedText = text;
+    // Check top-most image first
+    for (final image in currentPage.images.reversed) {
+      final imageRect = Rect.fromLTWH(image.position.dx, image.position.dy, image.width, image.height).inflate(5); // Slight tolerance
+      if (imageRect.contains(canvasPosition)) {
+        newSelectedImageId = image.id;
         break;
       }
     }
 
     setState(() {
-      if (tappedText != null) {
-        _editingTextId = tappedText.id;
-        _textController.text = tappedText.text;
-        _currentColor = Color(tappedText.colorValue);
-        _currentFontSize = tappedText.fontSize;
-        _textFocusNode.requestFocus();
+      if (newSelectedImageId != null) {
+        // If a new image is tapped, select it, but DON'T auto-enter move mode
+        // if the old image was already selected, a tap simply confirms the selection.
+        if (_selectedImageId != newSelectedImageId) {
+          _isMovingSelectedImage = false; // Reset move mode for new selection
+        }
+        _selectedImageId = newSelectedImageId;
+
       } else {
-        final newText = DrawingText(id: generateUniqueId(), text: "", position: canvasPosition, colorValue: _currentColor.value, fontSize: _currentFontSize);
-        _viewablePages[_currentPageIndex] = currentPage.copyWith(texts: [...currentPage.texts, newText]);
-        _editingTextId = newText.id;
-        _textController.clear();
-        _textFocusNode.requestFocus();
+        // If they tapped outside an image, deselect it and exit move mode
+        _selectedImageId = null;
+        _isMovingSelectedImage = false;
       }
+      _redrawNotifier.value = 1 - _redrawNotifier.value; // Force redraw to show/hide selection border
     });
   }
 
   // --- Utility & Action Methods ---
+
+  void _onTransformUpdated() => setState(() {});
+
+  // Text handling methods removed (e.g., _onTextFocusChange, _commitTextChanges, _handleTextTap)
 
   void _copyPageContent() {
     if (_viewablePages.isEmpty) return;
@@ -759,7 +1063,8 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     setState(() {
       _copiedPageData = _CopiedPageData(
         lines: currentPage.lines.map((line) => line.copyWith()).toList(),
-        texts: currentPage.texts.map((text) => text.copyWith()).toList(),
+        // texts: currentPage.texts.map((text) => text.copyWith()).toList(), // Removed
+        images: currentPage.images.map((image) => image.copyWith()).toList(),
       );
     });
     ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Page content copied!'), backgroundColor: Colors.green, duration: Duration(seconds: 2)));
@@ -773,23 +1078,41 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     if (_viewablePages.isEmpty) return;
     setState(() {
       final currentPage = _viewablePages[_currentPageIndex];
-      final pastedTextsWithNewIds = _copiedPageData!.texts.map((textToCopy) => textToCopy.copyWith(id: generateUniqueId())).toList();
+      // final pastedTextsWithNewIds = _copiedPageData!.texts.map((textToCopy) => textToCopy.copyWith(id: generateUniqueId())).toList(); // Removed
+      final pastedImagesWithNewIds = _copiedPageData!.images.map((imageToCopy) => imageToCopy.copyWith(id: generateUniqueId())).toList();
+
       _viewablePages[_currentPageIndex] = currentPage.copyWith(
         lines: [...currentPage.lines, ..._copiedPageData!.lines],
-        texts: [...currentPage.texts, ...pastedTextsWithNewIds],
+        // texts: [...currentPage.texts, ...pastedTextsWithNewIds], // Removed
+        images: [...currentPage.images, ...pastedImagesWithNewIds],
       );
     });
     _debouncedSave();
-    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Content pasted!'), backgroundColor: Colors.blue, duration: Duration(seconds: 2)));
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Content pasted!'), backgroundColor: primaryBlue, duration: Duration(seconds: 2)));
   }
 
   void _undoLastAction() {
     HapticFeedback.lightImpact();
-    if (_viewablePages.isEmpty || _viewablePages[_currentPageIndex].lines.isEmpty) return;
+    if (_viewablePages.isEmpty || (_viewablePages[_currentPageIndex].lines.isEmpty && _viewablePages[_currentPageIndex].images.isEmpty)) return; // Removed texts check
+
+    // Simple undo: remove the last added element (line or image)
     setState(() {
       final currentPage = _viewablePages[_currentPageIndex];
-      final newLines = List<DrawingLine>.from(currentPage.lines)..removeLast();
-      _viewablePages[_currentPageIndex] = currentPage.copyWith(lines: newLines);
+
+      final lines = currentPage.lines.toList();
+      final images = currentPage.images.toList();
+
+      // Prioritize removing drawing lines as they are the most frequent operation
+      if (lines.isNotEmpty) {
+        lines.removeLast();
+      } else if (images.isNotEmpty) {
+        images.removeLast();
+      }
+
+      _selectedImageId = null; // Deselect anything when undoing
+      _isMovingSelectedImage = false;
+
+      _viewablePages[_currentPageIndex] = currentPage.copyWith(lines: lines, images: images); // Removed texts
     });
     _debouncedSave();
   }
@@ -798,7 +1121,9 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     HapticFeedback.mediumImpact();
     if (_viewablePages.isEmpty) return;
     setState(() {
-      _viewablePages[_currentPageIndex] = _viewablePages[_currentPageIndex].copyWith(lines: [], texts: []);
+      _viewablePages[_currentPageIndex] = _viewablePages[_currentPageIndex].copyWith(lines: [], images: []); // Removed texts
+      _selectedImageId = null; // Deselect
+      _isMovingSelectedImage = false;
     });
     _debouncedSave();
   }
@@ -826,6 +1151,7 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
 
   void _zoomByFactor(double factor) {
     HapticFeedback.lightImpact();
+    // This is safe to call from a button outside the InteractiveViewer's direct control
     final center = (context.findRenderObject() as RenderBox).size.center(Offset.zero);
     final newMatrix = _transformationController.value.clone()
       ..translate(center.dx, center.dy)
@@ -860,11 +1186,13 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
 
   void _navigateToPage(int index) async {
     if (index >= 0 && index < _viewablePages.length) {
-      _commitTextChanges();
+      // _commitTextChanges(); // Removed
       if (_pageController.hasClients) _pageController.jumpToPage(index);
       setState(() {
         _currentPageIndex = index;
         _isInitialZoomSet = false;
+        _selectedImageId = null; // Deselect image on page change
+        _isMovingSelectedImage = false;
       });
       await _loadTemplateUiImage(_viewablePages[index].templateImageUrl);
     }
@@ -906,11 +1234,13 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
                         final newViewablePages = _pagesInCurrentGroup.where((p) => p.pageName.split('(')[0].trim() == tappedPrefix).toList();
                         final newPageIndex = newViewablePages.indexWhere((p) => p.id == tappedPage.id);
                         if (newPageIndex != -1) {
-                          _commitTextChanges();
+                          // _commitTextChanges(); // Removed
                           setState(() {
                             _viewablePages = newViewablePages;
                             _currentPageIndex = newPageIndex;
                             _isInitialZoomSet = false;
+                            _selectedImageId = null; // Deselect image on page change
+                            _isMovingSelectedImage = false;
                           });
                           WidgetsBinding.instance.addPostFrameCallback((_) {
                             if (_pageController.hasClients) _pageController.jumpToPage(newPageIndex);
@@ -930,7 +1260,7 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
   }
 
   Future<bool> _handleBackButton() async {
-    _commitTextChanges();
+    // _commitTextChanges(); // Removed
     _syncViewablePagesToMasterList();
     if (Navigator.canPop(context)) {
       Navigator.of(context).pop(_pagesInCurrentGroup);
@@ -954,6 +1284,12 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
 
     final currentPageData = _viewablePages[_currentPageIndex];
 
+    // Determine if InteractiveViewer should be pan-enabled.
+    // It should be disabled when the user is actively drawing (stylus interaction)
+    // or when the user is actively moving a selected image.
+    final bool panScaleEnabled = !_isStylusInteraction && !_isMovingSelectedImage;
+
+
     return WillPopScope(
       onWillPop: _handleBackButton,
       child: Scaffold(
@@ -976,7 +1312,7 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
                 ),
               ),
-            _buildCopyPasteMenu(),
+            _buildPageActionsMenu(),
             IconButton(
               icon: _isSaving
                   ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: primaryBlue))
@@ -1008,6 +1344,7 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
             return Stack(
               children: [
                 Listener(
+                  // Listener only for high-precision input (stylus) and image manipulation
                   onPointerDown: _handlePointerDown,
                   onPointerMove: _handlePointerMove,
                   onPointerUp: _handlePointerUp,
@@ -1015,11 +1352,13 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
                     controller: _pageController,
                     itemCount: _viewablePages.length,
                     onPageChanged: (index) async {
-                      _commitTextChanges();
+                      // _commitTextChanges(); // Removed
                       setState(() {
                         _currentPageIndex = index;
                         _isInitialZoomSet = false;
                         _transformationController.value = Matrix4.identity();
+                        _selectedImageId = null;
+                        _isMovingSelectedImage = false;
                       });
                       await _loadTemplateUiImage(_viewablePages[index].templateImageUrl);
                     },
@@ -1027,25 +1366,37 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
                     itemBuilder: (context, index) {
                       return InteractiveViewer(
                         transformationController: _transformationController,
-                        panEnabled: !_isStylusInteraction,
-                        scaleEnabled: !_isStylusInteraction,
+                        // Enable pan/scale only if NOT drawing/erasing AND NOT actively moving an image
+                        panEnabled: panScaleEnabled,
+                        scaleEnabled: panScaleEnabled,
                         minScale: 0.1,
                         maxScale: 10.0,
                         constrained: false,
                         boundaryMargin: const EdgeInsets.all(double.infinity),
-                        child: CustomPaint(
-                          painter: PrescriptionPainter(
-                            drawingPage: _viewablePages[index],
-                            templateUiImage: _currentTemplateUiImage,
-                            editingTextId: _editingTextId,
+                        child: GestureDetector( // Add GestureDetector for image selection (non-stylus taps)
+                          onTapUp: (details) {
+                            // If tool is image and not actively moving and not a stylus interaction (which is handled by Listener)
+                            if (_selectedTool == DrawingTool.image && !_isStylusInteraction && !_isMovingSelectedImage) {
+                              _handleCanvasTap(_transformToCanvasCoordinates(details.localPosition));
+                            }
+                          },
+                          child: CustomPaint(
+                            painter: PrescriptionPainter(
+                              drawingPage: _viewablePages[index],
+                              templateUiImage: _currentTemplateUiImage,
+                              // editingTextId: _editingTextId, // Removed
+                              selectedImageId: _selectedImageId,
+                              redrawNotifier: _redrawNotifier,
+                            ),
+                            child: const SizedBox(width: canvasWidth, height: canvasHeight),
                           ),
-                          child: const SizedBox(width: canvasWidth, height: canvasHeight),
                         ),
                       );
                     },
                   ),
                 ),
-                if (_editingTextId != null) _buildTextFieldOverlay(),
+                // if (_editingTextId != null) _buildTextFieldOverlay(), // Removed text overlay
+                if (_selectedImageId != null) _buildImageOverlayControls(), // Image manipulation controls
               ],
             );
           },
@@ -1054,11 +1405,113 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     );
   }
 
-  Widget _buildCopyPasteMenu() {
+  Widget _buildImageOverlayControls() {
+    if (_selectedImageId == null) return const SizedBox.shrink();
+
+    final currentPage = _viewablePages[_currentPageIndex];
+    final selectedImage = currentPage.images.firstWhere((img) => img.id == _selectedImageId);
+
+    final matrix = _transformationController.value;
+    final screenOffset = Matrix4Utils.transformPoint(matrix, selectedImage.position);
+    final currentScale = matrix.getMaxScaleOnAxis();
+
+    final scaledWidth = selectedImage.width * currentScale;
+    final scaledHeight = selectedImage.height * currentScale;
+
+    // The handles are placed around the image in screen coordinates.
+    // We use a small offset from the image boundary.
+
+    // 1. Resize Controls (Top Right corner)
+    final resizeControls = Positioned(
+      left: screenOffset.dx + scaledWidth,
+      top: screenOffset.dy,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _buildImageControlIcon(Icons.add, () => _resizeSelectedImage(kImageResizeStep), tooltip: 'Increase Size'),
+          const SizedBox(height: 4),
+          _buildImageControlIcon(Icons.remove, () => _resizeSelectedImage(-kImageResizeStep), tooltip: 'Decrease Size'),
+        ],
+      ),
+    );
+
+    // 2. Move Control (Top Left corner)
+    final moveControl = Positioned(
+      left: screenOffset.dx - kImageHandleSize,
+      top: screenOffset.dy - kImageHandleSize,
+      child: _buildImageControlIcon(
+        _isMovingSelectedImage ? Icons.lock_open_rounded : Icons.open_with,
+            () => setState(() {
+          _isMovingSelectedImage = !_isMovingSelectedImage;
+          _selectedTool = DrawingTool.image; // Ensure tool is set to image
+          if (!_isMovingSelectedImage) _dragStartCanvasPosition = null; // Reset drag state
+        }),
+        tooltip: _isMovingSelectedImage ? 'Exit Move Mode (Pan/Zoom Enabled)' : 'Enter Move Mode (Pan/Zoom Disabled)',
+        color: _isMovingSelectedImage ? Colors.red : primaryBlue,
+      ),
+    );
+
+    // 3. Delete Control (Bottom Left corner)
+    final deleteControl = Positioned(
+      left: screenOffset.dx - kImageHandleSize,
+      top: screenOffset.dy + scaledHeight,
+      child: _buildImageControlIcon(Icons.delete_forever, () {
+        setState(() {
+          _viewablePages[_currentPageIndex] = currentPage.copyWith(
+            images: currentPage.images.where((img) => img.id != _selectedImageId).toList(),
+          );
+          _selectedImageId = null;
+          _isMovingSelectedImage = false;
+        });
+        _debouncedSave();
+      }, tooltip: 'Delete Image', color: Colors.red),
+    );
+
+    return Stack(
+      children: [
+        resizeControls,
+        moveControl,
+        deleteControl,
+      ],
+    );
+  }
+
+  Widget _buildImageControlIcon(IconData icon, VoidCallback onPressed, {String tooltip = '', Color color = primaryBlue}) {
+    // Uses Transform.scale to compensate for global zoom effect on the small fixed-size buttons
+    final currentScale = _transformationController.value.getMaxScaleOnAxis();
+    final inverseScale = 1 / currentScale;
+
+    return Transform.scale(
+      scale: inverseScale,
+      child: Tooltip(
+        message: tooltip,
+        child: Container(
+          width: kImageHandleSize,
+          height: kImageHandleSize,
+          decoration: BoxDecoration(
+            color: Colors.white,
+            shape: BoxShape.circle,
+            border: Border.all(color: color, width: 2),
+            boxShadow: const [BoxShadow(color: Colors.black26, blurRadius: 4, offset: Offset(2, 2))],
+          ),
+          child: IconButton(
+            padding: EdgeInsets.zero,
+            icon: Icon(icon, color: color, size: 20),
+            onPressed: onPressed,
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildPageActionsMenu() {
     return PopupMenuButton<String>(
       onSelected: (String value) {
         if (value == 'copy') _copyPageContent();
         else if (value == 'paste') _pastePageContent();
+        else if (value == 'camera') _pickAndUploadImage(ImageSource.camera);
+        else if (value == 'gallery') _pickAndUploadImage(ImageSource.gallery);
+        else if (value == 'uploaded') _showUploadedImagesSelector();
       },
       icon: const Icon(Icons.more_vert, color: primaryBlue),
       tooltip: 'Page Actions',
@@ -1066,41 +1519,15 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
         const PopupMenuItem<String>(value: 'copy', child: ListTile(leading: Icon(Icons.copy_all_rounded), title: Text('Copy Page'))),
         if (_copiedPageData != null)
           const PopupMenuItem<String>(value: 'paste', child: ListTile(leading: Icon(Icons.paste_rounded), title: Text('Paste on Page'))),
+        const PopupMenuDivider(),
+        const PopupMenuItem<String>(value: 'camera', child: ListTile(leading: Icon(Icons.camera_alt_rounded), title: Text('Insert from Camera'))),
+        const PopupMenuItem<String>(value: 'gallery', child: ListTile(leading: Icon(Icons.photo_library_rounded), title: Text('Insert from Gallery'))),
+        const PopupMenuItem<String>(value: 'uploaded', child: ListTile(leading: Icon(Icons.cloud_upload_rounded), title: Text('Pick from Uploaded'))),
       ],
     );
   }
 
-  Widget _buildTextFieldOverlay() {
-    if (_editingTextId == null) return const SizedBox.shrink();
-    final currentPage = _viewablePages[_currentPageIndex];
-    final textToEdit = currentPage.texts.firstWhere((t) => t.id == _editingTextId, orElse: () => DrawingText(id: '', text: '', position: Offset.zero, colorValue: 0, fontSize: 0));
-    if (textToEdit.id.isEmpty) return const SizedBox.shrink();
-
-    final matrix = _transformationController.value;
-    final canvasOffset = textToEdit.position;
-    final screenOffset = MatrixUtils.transformPoint(matrix, canvasOffset);
-    final currentScale = matrix.getMaxScaleOnAxis();
-    final scaledFontSize = textToEdit.fontSize * currentScale;
-
-    return Positioned(
-      left: screenOffset.dx,
-      top: screenOffset.dy,
-      child: Container(
-        constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width - screenOffset.dx - 20),
-        child: IntrinsicWidth(
-          child: TextField(
-            controller: _textController,
-            focusNode: _textFocusNode,
-            autofocus: true,
-            maxLines: null,
-            decoration: const InputDecoration(border: InputBorder.none, contentPadding: EdgeInsets.zero, isDense: true),
-            style: TextStyle(fontSize: scaledFontSize, color: Color(textToEdit.colorValue), decoration: TextDecoration.none, decorationThickness: 0),
-            onSubmitted: (_) => _commitTextChanges(),
-          ),
-        ),
-      ),
-    );
-  }
+  // Widget _buildTextFieldOverlay() { ... } // Removed
 
   Widget _buildDrawingToolbar() {
     return SingleChildScrollView(
@@ -1109,14 +1536,16 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
         mainAxisAlignment: MainAxisAlignment.start,
         children: [
           ToggleButtons(
-            isSelected: [_selectedTool == DrawingTool.pen, _selectedTool == DrawingTool.eraser, _selectedTool == DrawingTool.text],
+            isSelected: [_selectedTool == DrawingTool.pen, _selectedTool == DrawingTool.eraser, _selectedTool == DrawingTool.image], // Removed text
             onPressed: (index) {
               HapticFeedback.selectionClick();
               setState(() {
-                _commitTextChanges();
+                // _commitTextChanges(); // Removed
+                _selectedImageId = null; // Deselect on tool change
+                _isMovingSelectedImage = false; // Exit move mode on tool change
                 if (index == 0) _selectedTool = DrawingTool.pen;
                 else if (index == 1) _selectedTool = DrawingTool.eraser;
-                else _selectedTool = DrawingTool.text;
+                else _selectedTool = DrawingTool.image; // Now index 2 is image
               });
             },
             borderRadius: BorderRadius.circular(8),
@@ -1128,29 +1557,51 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
             children: const [
               Tooltip(message: "Pen", child: Icon(Icons.edit, size: 20)),
               Tooltip(message: "Eraser", child: Icon(Icons.cleaning_services, size: 20)),
-              Tooltip(message: "Text", child: Icon(Icons.text_fields_rounded, size: 20)),
+              // Tooltip(message: "Text", child: Icon(Icons.text_fields_rounded, size: 20)), // Removed text tool
+              Tooltip(message: "Image Select/Move", child: Icon(Icons.photo_library_outlined, size: 20)),
             ],
           ),
           const SizedBox(width: 16),
-          ...[Colors.black, Colors.blue, Colors.red, Colors.green].map((color) => _buildColorOption(color)).toList(),
-          const SizedBox(width: 16),
-          if (_selectedTool == DrawingTool.text)
+          if (_selectedTool != DrawingTool.image)
+            ...[Colors.black, Colors.blue, Colors.red, Colors.green].map((color) => _buildColorOption(color)).toList(),
+
+          if (_selectedTool == DrawingTool.pen || _selectedTool == DrawingTool.eraser)
             Row(
               children: [
-                const Icon(Icons.format_size, size: 20, color: mediumGreyText),
+                const SizedBox(width: 16),
+                const Icon(Icons.line_weight, size: 20, color: mediumGreyText),
                 SizedBox(
-                  width: 120,
+                  width: 100,
                   child: Slider(
-                    value: _currentFontSize,
-                    min: 10.0,
-                    max: 60.0,
-                    divisions: 10,
-                    onChanged: (value) => setState(() => _currentFontSize = value),
+                    value: _strokeWidth,
+                    min: 1.0,
+                    max: 10.0,
+                    divisions: 9,
+                    onChanged: (value) => setState(() => _strokeWidth = value),
                     activeColor: primaryBlue,
                   ),
                 ),
               ],
             ),
+
+          // Text size slider removed
+          // if (_selectedTool == DrawingTool.text)
+          //   Row(
+          //     children: [
+          //       const Icon(Icons.format_size, size: 20, color: mediumGreyText),
+          //       SizedBox(
+          //         width: 120,
+          //         child: Slider(
+          //           value: _currentFontSize,
+          //           min: 10.0,
+          //           max: 60.0,
+          //           divisions: 10,
+          //           onChanged: (value) => setState(() => _currentFontSize = value),
+          //           activeColor: primaryBlue,
+          //         ),
+          //       ),
+          //     ],
+          //   ),
           const SizedBox(width: 24),
           IconButton(icon: const Icon(Icons.undo_rounded, color: primaryBlue, size: 22), onPressed: _undoLastAction, tooltip: "Undo"),
           IconButton(icon: const Icon(Icons.delete_sweep_rounded, color: primaryBlue, size: 22), onPressed: _clearAllDrawings, tooltip: "Clear All"),
@@ -1197,18 +1648,62 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
 class PrescriptionPainter extends CustomPainter {
   final DrawingPage drawingPage;
   final ui.Image? templateUiImage;
-  final String? editingTextId;
+  // final String? editingTextId; // Removed
+  final String? selectedImageId;
+  final ValueNotifier<int> redrawNotifier;
 
-  PrescriptionPainter({required this.drawingPage, this.templateUiImage, this.editingTextId});
+  PrescriptionPainter({required this.drawingPage, this.templateUiImage, required this.redrawNotifier, this.selectedImageId}) : super(repaint: redrawNotifier); // Removed editingTextId
 
   @override
   void paint(Canvas canvas, Size size) {
+    // 1. Draw Template/Background
     if (templateUiImage != null) {
       paintImage(canvas: canvas, rect: Rect.fromLTWH(0, 0, size.width, size.height), image: templateUiImage!, fit: BoxFit.contain, alignment: Alignment.center);
     } else {
       canvas.drawRect(Rect.fromLTWH(0, 0, size.width, size.height), Paint()..color = Colors.grey[200]!);
     }
 
+    // 2. Draw Images
+    for (var image in drawingPage.images) {
+      ImageCacheManager.loadImage(image.imageUrl).then((ui.Image? loadedImage) {
+        if (loadedImage != null) {
+          // Trigger repaint if image was loaded async
+          if (redrawNotifier.value == 0) redrawNotifier.value = 1; else redrawNotifier.value = 0;
+        }
+      });
+
+      final cachedImage = ImageCacheManager._cache[image.imageUrl];
+      final destRect = Rect.fromLTWH(image.position.dx, image.position.dy, image.width, image.height);
+
+      if (cachedImage != null) {
+        paintImage(
+            canvas: canvas,
+            rect: destRect,
+            image: cachedImage,
+            fit: BoxFit.contain,
+            alignment: Alignment.topLeft
+        );
+      } else {
+        // Draw a placeholder while loading
+        canvas.drawRect(destRect, Paint()..color = Colors.grey.withOpacity(0.5));
+        final textPainter = TextPainter(
+          text: const TextSpan(text: 'Loading...', style: TextStyle(color: Colors.black, fontSize: 14)),
+          textDirection: TextDirection.ltr,
+        )..layout();
+        textPainter.paint(canvas, image.position.translate(5, 5));
+      }
+
+      // Draw selection border if selected
+      if (image.id == selectedImageId) {
+        final borderPaint = Paint()
+          ..color = primaryBlue
+          ..strokeWidth = 4.0
+          ..style = PaintingStyle.stroke;
+        canvas.drawRect(destRect.inflate(2.0), borderPaint);
+      }
+    }
+
+    // 3. Draw Lines/Drawings
     for (var line in drawingPage.lines) {
       final paint = Paint()
         ..color = Color(line.colorValue)
@@ -1224,31 +1719,21 @@ class PrescriptionPainter extends CustomPainter {
       }
     }
 
-    for (var text in drawingPage.texts) {
-      if (text.id == editingTextId) continue;
-      final textSpan = TextSpan(
-        text: text.text,
-        style: TextStyle(color: Color(text.colorValue), fontSize: text.fontSize, fontWeight: FontWeight.w500),
-      );
-      final textPainter = TextPainter(text: textSpan, textDirection: TextDirection.ltr)..layout(minWidth: 0, maxWidth: canvasWidth - text.position.dx);
-      textPainter.paint(canvas, text.position);
-    }
+    // 4. Draw Texts - REMOVED
+    // for (var text in drawingPage.texts) {
+    //   if (text.id == editingTextId) continue;
+    //   final textSpan = TextSpan(
+    //     text: text.text,
+    //     style: TextStyle(color: Color(text.colorValue), fontSize: text.fontSize, fontWeight: FontWeight.w500),
+    //   );
+    //   final textPainter = TextPainter(text: textSpan, textDirection: TextDirection.ltr)..layout(minWidth: 0, maxWidth: canvasWidth - text.position.dx);
+    //   textPainter.paint(canvas, text.position);
+    // }
   }
 
   @override
   bool shouldRepaint(covariant PrescriptionPainter oldDelegate) {
-    return oldDelegate.drawingPage != drawingPage || oldDelegate.templateUiImage != templateUiImage || oldDelegate.editingTextId != editingTextId;
-  }
-}
-
-class Matrix4Utils {
-  static Offset transformPoint(Matrix4 matrix, Offset offset) {
-    final storage = matrix.storage;
-    final dx = offset.dx;
-    final dy = offset.dy;
-    final x = storage[0] * dx + storage[4] * dy + storage[12];
-    final y = storage[1] * dx + storage[5] * dy + storage[13];
-    final w = storage[3] * dx + storage[7] * dy + storage[15];
-    return w == 1.0 ? Offset(x, y) : Offset(x / w, y / w);
+    // Removed editingTextId from comparison
+    return oldDelegate.drawingPage != drawingPage || oldDelegate.templateUiImage != templateUiImage || oldDelegate.selectedImageId != selectedImageId;
   }
 }
