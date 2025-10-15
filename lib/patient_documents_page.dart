@@ -7,6 +7,7 @@ import 'package:image_picker/image_picker.dart';
 import 'dart:typed_data';
 import 'dart:math';
 import 'package:photo_view/photo_view.dart';
+import 'investigation_sheet_page.dart'; // Import the new investigation page
 
 // --- Data Models for Documents (No Changes Here) ---
 class DocumentFile {
@@ -167,7 +168,7 @@ class _PatientDocumentsPageState extends State<PatientDocumentsPage> {
     _loadDocumentsFromSupabase();
   }
 
-  // --- START: UPDATED DATA LOGIC ---
+  // --- START: DATA LOGIC ---
 
   Future<void> _loadDocumentsFromSupabase() async {
     setState(() => _isLoading = true);
@@ -290,7 +291,7 @@ class _PatientDocumentsPageState extends State<PatientDocumentsPage> {
     });
   }
 
-  // --- END: UPDATED DATA LOGIC ---
+  // --- END: DATA LOGIC ---
 
 
   String _formatBytes(int bytes) {
@@ -463,6 +464,18 @@ class _PatientDocumentsPageState extends State<PatientDocumentsPage> {
     }
   }
 
+  // --- NEW METHOD FOR INVESTIGATION PAGE ---
+  void _openInvestigationPage() {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => InvestigationSheetPage(
+          ipdId: widget.ipdId.toString(), // Pass IPD ID as string to match API logic
+        ),
+      ),
+    );
+  }
+  // --- END NEW METHOD ---
+
   String _truncateFileName(String fileName, {int maxLength = 8}) {
     final dotIndex = fileName.lastIndexOf('.');
     if (dotIndex == -1) {
@@ -615,6 +628,15 @@ class _PatientDocumentsPageState extends State<PatientDocumentsPage> {
                           const SizedBox(height: 6),
                           Row(
                             children: [
+                              const Icon(Icons.medical_information_outlined, color: primaryBlue, size: 18),
+                              const SizedBox(width: 6),
+                              // IPD ID DISPLAYED HERE
+                              Text("IPD ID: ${widget.ipdId}", style: const TextStyle(fontSize: 15, color: mediumGreyText)),
+                            ],
+                          ),
+                          const SizedBox(height: 6),
+                          Row(
+                            children: [
                               const Icon(Icons.credit_card_outlined, color: primaryBlue, size: 18),
                               const SizedBox(width: 6),
                               Text("UHID: ${widget.uhid}", style: const TextStyle(fontSize: 15, color: mediumGreyText)),
@@ -625,6 +647,23 @@ class _PatientDocumentsPageState extends State<PatientDocumentsPage> {
                     ),
                   ),
                   const SizedBox(height: 20),
+
+                  // --- NEW INVESTIGATION FOLDER BUTTON ---
+                  Card(
+                    elevation: 3,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    color: Colors.white,
+                    child: ListTile(
+                      leading: const Icon(Icons.class_outlined, color: primaryBlue, size: 28),
+                      title: const Text("Investigation (In-House)", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: darkText)),
+                      trailing: const Icon(Icons.arrow_forward_ios, size: 16, color: mediumGreyText),
+                      onTap: _openInvestigationPage,
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+                  // --- END NEW FOLDER ---
+
                   const Text(
                     "Document Folders",
                     style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: darkText),
