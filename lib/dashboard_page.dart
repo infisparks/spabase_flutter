@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:intl/intl.dart';
 import 'supabase_config.dart'; // Your Supabase configuration
-import 'ManageIpdPatientPage.dart'; // Import the next page
+import 'manage_ipd_patient_page.dart'; // Import the next page
 
 // --- Type Definitions ---
 class PatientDetail {

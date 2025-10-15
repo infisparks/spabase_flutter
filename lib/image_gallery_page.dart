@@ -4,7 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 // The import path below needs to match your project's structure
 import 'package:medford_app/supabase_config.dart'; // Ensure this path is correct
-import 'package:medford_app/ManageIpdPatientPage.dart' show DrawingPage;
+import 'package:medford_app/manage_ipd_patient_page.dart' show DrawingPage;
 
 class ImageGalleryPage extends StatefulWidget {
   final List<DrawingPage> images;

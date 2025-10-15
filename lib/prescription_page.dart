@@ -301,7 +301,6 @@ class DrawingGroup {
     );
   }
 
-  // MODIFIED: Handles both 'name' and 'groupName' for backward compatibility
   factory DrawingGroup.fromJson(Map<String, dynamic> json) {
     return DrawingGroup(
       id: (json['id'] as String?) ?? '',
@@ -314,7 +313,6 @@ class DrawingGroup {
     );
   }
 
-  // MODIFIED: Saves with the standardized 'groupName' key
   Map<String, dynamic> toJson() {
     return {
       'id': id,
@@ -328,11 +326,9 @@ class DrawingGroup {
 
 enum DrawingTool { pen, eraser, text }
 
-// Helper class for clipboard data
 class _CopiedPageData {
   final List<DrawingLine> lines;
   final List<DrawingText> texts;
-
   _CopiedPageData({required this.lines, required this.texts});
 }
 
@@ -358,13 +354,13 @@ class PrescriptionPage extends StatefulWidget {
 
 class _PrescriptionPageState extends State<PrescriptionPage> {
   final SupabaseClient supabase = SupabaseConfig.client;
+
+  // --- Data State ---
   List<DrawingPage> _viewablePages = [];
   int _currentPageIndex = 0;
   String? _healthRecordId;
   DrawingGroup? _currentGroup;
   List<DrawingPage> _pagesInCurrentGroup = [];
-
-  // This will hold the copied content
   _CopiedPageData? _copiedPageData;
 
   static const Map<String, String> _groupToColumnMap = {
@@ -397,17 +393,21 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
   final FocusNode _textFocusNode = FocusNode();
   String? _editingTextId;
 
-  // --- Navigation & View State ---
+  // --- View State ---
   final PageController _pageController = PageController();
   final TransformationController _transformationController = TransformationController();
   ui.Image? _currentTemplateUiImage;
   bool _isLoadingPrescription = true;
   bool _isSaving = false;
   bool _isInitialZoomSet = false;
-  bool _isStylusInteraction = false; // This now controls panning
-
-  // --- Pen-only mode is permanent ---
+  bool _isStylusInteraction = false;
   final bool _isPenOnlyMode = true;
+
+  // --- Autosave & Realtime State ---
+  Timer? _debounceTimer;
+  RealtimeChannel? _healthRecordChannel;
+  DateTime? _lastSuccessfulSaveTime;
+  bool _isDisposed = false;
 
   // --- Constants ---
   static const Color primaryBlue = Color(0xFF3B82F6);
@@ -425,6 +425,11 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
 
   @override
   void dispose() {
+    _isDisposed = true;
+    _debounceTimer?.cancel();
+    if (_healthRecordChannel != null) {
+      supabase.removeChannel(_healthRecordChannel!);
+    }
     _transformationController.removeListener(_onTransformUpdated);
     _transformationController.dispose();
     _pageController.dispose();
@@ -442,7 +447,7 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     return finalUri.toString();
   }
 
-  // --- Data Loading and Saving ---
+  // --- Data Loading, Saving, and Realtime ---
 
   Future<void> _loadTemplateUiImage(String relativePath) async {
     final String fullUrl = _getFullImageUrl(relativePath);
@@ -471,6 +476,8 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
   }
 
   Future<void> _loadHealthDetailsAndPage() async {
+    if (!mounted) return;
+    final String? currentPageIdBeforeRefresh = _viewablePages.isNotEmpty ? _viewablePages[_currentPageIndex].id : widget.pageId; // 1. Preserve ID
     setState(() => _isLoadingPrescription = true);
     try {
       final columnName = _groupToColumnMap[widget.groupName] ?? 'custom_groups_data';
@@ -487,10 +494,7 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
         if (columnName == 'custom_groups_data') {
           final rawCustomGroups = response['custom_groups_data'] ?? [];
           final customGroups = (rawCustomGroups as List?)?.map((json) => DrawingGroup.fromJson(json as Map<String, dynamic>)).toList() ?? [];
-          _currentGroup = customGroups.firstWhere(
-                (g) => g.id == widget.groupId,
-            orElse: () => throw Exception("The required custom group was not found."),
-          );
+          _currentGroup = customGroups.firstWhere((g) => g.id == widget.groupId, orElse: () => throw Exception("Custom group not found."));
           _pagesInCurrentGroup = _currentGroup!.pages;
         } else {
           final rawPages = response[columnName] ?? [];
@@ -498,25 +502,29 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
           _currentGroup = DrawingGroup(id: widget.groupId, groupName: widget.groupName, pages: _pagesInCurrentGroup);
         }
 
-        DrawingPage currentPage = _pagesInCurrentGroup.firstWhere(
-              (p) => p.id == widget.pageId,
-          orElse: () => throw Exception("The required page (ID: ${widget.pageId}) was not found in the group pages."),
-        );
+        // Find the page we are starting on or last saved
+        DrawingPage startPage = _pagesInCurrentGroup.firstWhere((p) => p.id == currentPageIdBeforeRefresh, orElse: () => throw Exception("Start page not found in new data."));
+        String pagePrefix = startPage.pageName.split('(')[0].trim();
+        _viewablePages = _pagesInCurrentGroup.where((p) => p.pageName.split('(')[0].trim() == pagePrefix).toList();
 
-        String pagePrefix = currentPage.pageName.split('(')[0].trim();
-        _viewablePages = _pagesInCurrentGroup
-            .where((p) => p.pageName.split('(')[0].trim() == pagePrefix)
-            .toList();
+        // 2. Restore Index: Use the preserved ID to find the new index
+        int initialIndex = _viewablePages.indexWhere((p) => p.id == currentPageIdBeforeRefresh);
 
-        int initialIndex = _viewablePages.indexWhere((p) => p.id == widget.pageId);
         if (initialIndex != -1) {
           _currentPageIndex = initialIndex;
+          // 3. Inform PageController
+          if (_pageController.hasClients) {
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              _pageController.jumpToPage(_currentPageIndex);
+            });
+          }
           await _loadTemplateUiImage(_viewablePages[_currentPageIndex].templateImageUrl);
         } else {
-          throw Exception("The starting page could not be located in the viewable pages list.");
+          throw Exception("Starting page could not be located after refresh.");
         }
+        _setupRealtimeSubscription();
       } else {
-        throw Exception("No health record found for this patient.");
+        throw Exception("No health record found.");
       }
     } catch (e) {
       debugPrint('Error loading health details: $e');
@@ -528,47 +536,101 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     }
   }
 
-  Future<void> _savePrescriptionData() async {
+  void _setupRealtimeSubscription() {
+    if (_healthRecordId == null || _healthRecordChannel != null) return;
+    _healthRecordChannel = supabase
+        .channel('public:user_health_details:id=eq.$_healthRecordId')
+        .onPostgresChanges(
+      event: PostgresChangeEvent.update,
+      schema: 'public',
+      table: 'user_health_details',
+      filter: PostgresChangeFilter(type: PostgresChangeFilterType.eq, column: 'id', value: _healthRecordId!),
+      callback: (payload) async { // Make callback async
+        if (_isDisposed) return;
+        final newRecord = payload.newRecord;
+        if (newRecord == null) return;
+        final updatedAtString = newRecord['updated_at'] as String?;
+        if (updatedAtString == null) return;
+        final remoteUpdateTime = DateTime.parse(updatedAtString);
+
+        if (_lastSuccessfulSaveTime != null && remoteUpdateTime.difference(_lastSuccessfulSaveTime!).inSeconds.abs() < 5) {
+          debugPrint('Ignoring self-initiated realtime update.');
+          return;
+        }
+
+        // --- AUTO-REFRESH LOGIC ---
+        if (mounted) {
+          debugPrint("External update detected. Auto-refreshing...");
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Data was updated by another user. Refreshing...'),
+              backgroundColor: Colors.blue,
+              duration: Duration(seconds: 3),
+            ),
+          );
+          await _loadHealthDetailsAndPage(); // Auto-refresh the page
+        }
+      },
+    )
+        .subscribe();
+  }
+
+  void _debouncedSave() {
+    if (_debounceTimer?.isActive ?? false) _debounceTimer!.cancel();
+    _debounceTimer = Timer(const Duration(seconds: 3), () {
+      if (!_isSaving) {
+        _savePrescriptionData();
+      }
+    });
+  }
+
+  void _syncViewablePagesToMasterList() {
+    for (var viewablePage in _viewablePages) {
+      int pageIndex = _pagesInCurrentGroup.indexWhere((p) => p.id == viewablePage.id);
+      if (pageIndex != -1) {
+        _pagesInCurrentGroup[pageIndex] = viewablePage;
+      }
+    }
+  }
+
+  Future<void> _savePrescriptionData({bool isManualSave = false}) async {
+    _debounceTimer?.cancel();
     _commitTextChanges();
-    if (_pagesInCurrentGroup.isEmpty) return;
+    if (!mounted) return;
     setState(() => _isSaving = true);
 
     try {
-      // **THIS IS A CRITICAL STEP**: Ensure the master list is updated with any changes from the viewable list before saving.
-      final updatedGroupPages = List<DrawingPage>.from(_pagesInCurrentGroup);
-      for (var viewablePage in _viewablePages) {
-        int pageIndex = updatedGroupPages.indexWhere((p) => p.id == viewablePage.id);
-        if (pageIndex != -1) {
-          updatedGroupPages[pageIndex] = viewablePage;
-        }
-      }
-
+      _syncViewablePagesToMasterList();
       final columnName = _groupToColumnMap[widget.groupName];
       final Map<String, dynamic> dataToSave = {};
 
       if (columnName != null) {
-        dataToSave[columnName] = updatedGroupPages.map((page) => page.toJson()).toList();
+        dataToSave[columnName] = _pagesInCurrentGroup.map((page) => page.toJson()).toList();
       } else {
         final response = await supabase.from('user_health_details').select('custom_groups_data').eq('id', _healthRecordId!).single();
         final rawCustomGroups = response['custom_groups_data'] ?? [];
         final List<DrawingGroup> customGroups = (rawCustomGroups as List?)?.map((json) => DrawingGroup.fromJson(json as Map<String, dynamic>)).toList() ?? [];
         int groupIndex = customGroups.indexWhere((g) => g.id == widget.groupId);
         if (groupIndex != -1) {
-          final updatedGroup = customGroups[groupIndex].copyWith(pages: updatedGroupPages);
-          customGroups[groupIndex] = updatedGroup;
+          customGroups[groupIndex] = customGroups[groupIndex].copyWith(pages: _pagesInCurrentGroup);
         } else {
           throw Exception("Custom group not found for saving.");
         }
         dataToSave['custom_groups_data'] = customGroups.map((group) => group.toJson()).toList();
       }
       dataToSave['updated_at'] = DateTime.now().toIso8601String();
+
       if (_healthRecordId != null) {
         await supabase.from('user_health_details').update(dataToSave).eq('id', _healthRecordId!);
+        _lastSuccessfulSaveTime = DateTime.now();
+
+        if (mounted && isManualSave) {
+          // Changed text:
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Saved! Refreshing to synchronize.'), backgroundColor: Colors.green));
+          await _loadHealthDetailsAndPage();
+        }
       } else {
-        throw Exception("Health Record ID is missing, cannot save.");
-      }
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Prescription Saved!'), backgroundColor: Colors.green));
+        throw Exception("Health Record ID is missing.");
       }
     } catch (e) {
       debugPrint('Error saving: $e');
@@ -580,32 +642,19 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     }
   }
 
-
   // --- Pointer and Interaction Handlers ---
 
   void _handlePointerDown(PointerDownEvent details) {
     _commitTextChanges();
-    setState(() {
-      _isStylusInteraction = details.kind == ui.PointerDeviceKind.stylus;
-    });
-
-    final bool isPenOnlyStylusDraw = _isPenOnlyMode && _isStylusInteraction;
-
-    if (!isPenOnlyStylusDraw || _viewablePages.isEmpty) {
-      return;
-    }
-
+    setState(() => _isStylusInteraction = details.kind == ui.PointerDeviceKind.stylus);
+    if (!_isPenOnlyMode || !_isStylusInteraction) return;
     final transformedPosition = _transformToCanvasCoordinates(details.localPosition);
     if (!_isPointOnCanvas(transformedPosition)) return;
 
     if (_selectedTool == DrawingTool.pen) {
       setState(() {
         final currentPage = _viewablePages[_currentPageIndex];
-        final newLine = DrawingLine(
-          points: [transformedPosition],
-          colorValue: _currentColor.value,
-          strokeWidth: _strokeWidth,
-        );
+        final newLine = DrawingLine(points: [transformedPosition], colorValue: _currentColor.value, strokeWidth: _strokeWidth);
         _viewablePages[_currentPageIndex] = currentPage.copyWith(lines: [...currentPage.lines, newLine]);
       });
     } else if (_selectedTool == DrawingTool.text) {
@@ -614,10 +663,7 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
   }
 
   void _handlePointerMove(PointerMoveEvent details) {
-    final bool isPenOnlyStylusDraw = _isPenOnlyMode && _isStylusInteraction;
-
-    if (!isPenOnlyStylusDraw || _viewablePages.isEmpty) return;
-
+    if (!_isPenOnlyMode || !_isStylusInteraction) return;
     final transformedPosition = _transformToCanvasCoordinates(details.localPosition);
     if (!_isPointOnCanvas(transformedPosition)) return;
 
@@ -628,7 +674,7 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
         final lastLine = currentPage.lines.last;
         final newPoints = [...lastLine.points, transformedPosition];
         final updatedLines = List<DrawingLine>.from(currentPage.lines);
-        updatedLines[updatedLines.length - 1] = lastLine.copyWith(points: newPoints);
+        updatedLines.last = lastLine.copyWith(points: newPoints);
         _viewablePages[_currentPageIndex] = currentPage.copyWith(lines: updatedLines);
       });
     } else if (_selectedTool == DrawingTool.eraser) {
@@ -637,39 +683,37 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
   }
 
   void _handlePointerUp(PointerUpEvent details) {
-    // This is crucial to re-enable panning for fingers after the pen is lifted.
     if (_isStylusInteraction) {
+      _debouncedSave();
       setState(() => _isStylusInteraction = false);
     }
   }
 
   // --- Text Handling ---
 
-  void _onTransformUpdated() {
-    setState(() {});
-  }
+  void _onTransformUpdated() => setState(() {});
 
   void _onTextFocusChange() {
-    if (!_textFocusNode.hasFocus) {
-      _commitTextChanges();
-    }
+    if (!_textFocusNode.hasFocus) _commitTextChanges();
   }
 
   void _commitTextChanges() {
     if (_editingTextId == null) return;
-
+    String oldText = "";
     setState(() {
       final currentPage = _viewablePages[_currentPageIndex];
       final textIndex = currentPage.texts.indexWhere((t) => t.id == _editingTextId);
       if (textIndex != -1) {
+        oldText = currentPage.texts[textIndex].text;
+        final updatedTexts = List<DrawingText>.from(currentPage.texts);
         if (_textController.text.trim().isEmpty) {
-          final updatedTexts = List<DrawingText>.from(currentPage.texts)..removeAt(textIndex);
-          _viewablePages[_currentPageIndex] = currentPage.copyWith(texts: updatedTexts);
+          updatedTexts.removeAt(textIndex);
         } else {
-          final updatedText = currentPage.texts[textIndex].copyWith(text: _textController.text);
-          final updatedTexts = List<DrawingText>.from(currentPage.texts);
-          updatedTexts[textIndex] = updatedText;
-          _viewablePages[_currentPageIndex] = currentPage.copyWith(texts: updatedTexts);
+          updatedTexts[textIndex] = updatedTexts[textIndex].copyWith(text: _textController.text);
+        }
+        _viewablePages[_currentPageIndex] = currentPage.copyWith(texts: updatedTexts);
+        if (oldText != _textController.text) {
+          _debouncedSave();
         }
       }
       _editingTextId = null;
@@ -678,24 +722,19 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
   }
 
   void _handleTextTap(Offset canvasPosition) {
-    setState(() {
-      _commitTextChanges();
-      final currentPage = _viewablePages[_currentPageIndex];
-      DrawingText? tappedText;
+    _commitTextChanges();
+    final currentPage = _viewablePages[_currentPageIndex];
+    DrawingText? tappedText;
 
-      for (final text in currentPage.texts) {
-        final textRect = Rect.fromLTWH(
-          text.position.dx,
-          text.position.dy - text.fontSize,
-          text.fontSize * text.text.length * 0.6,
-          text.fontSize * 2,
-        );
-        if (textRect.contains(canvasPosition)) {
-          tappedText = text;
-          break;
-        }
+    for (final text in currentPage.texts) {
+      final textRect = Rect.fromLTWH(text.position.dx, text.position.dy - text.fontSize, text.fontSize * text.text.length * 0.6, text.fontSize * 2);
+      if (textRect.contains(canvasPosition)) {
+        tappedText = text;
+        break;
       }
+    }
 
+    setState(() {
       if (tappedText != null) {
         _editingTextId = tappedText.id;
         _textController.text = tappedText.text;
@@ -703,13 +742,7 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
         _currentFontSize = tappedText.fontSize;
         _textFocusNode.requestFocus();
       } else {
-        final newText = DrawingText(
-          id: generateUniqueId(),
-          text: "",
-          position: canvasPosition,
-          colorValue: _currentColor.value,
-          fontSize: _currentFontSize,
-        );
+        final newText = DrawingText(id: generateUniqueId(), text: "", position: canvasPosition, colorValue: _currentColor.value, fontSize: _currentFontSize);
         _viewablePages[_currentPageIndex] = currentPage.copyWith(texts: [...currentPage.texts, newText]);
         _editingTextId = newText.id;
         _textController.clear();
@@ -724,56 +757,30 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     if (_viewablePages.isEmpty) return;
     final currentPage = _viewablePages[_currentPageIndex];
     setState(() {
-      // Create deep copies to prevent reference issues
       _copiedPageData = _CopiedPageData(
         lines: currentPage.lines.map((line) => line.copyWith()).toList(),
         texts: currentPage.texts.map((text) => text.copyWith()).toList(),
       );
     });
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Page content copied!'),
-        backgroundColor: Colors.green,
-        duration: Duration(seconds: 2),
-      ),
-    );
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Page content copied!'), backgroundColor: Colors.green, duration: Duration(seconds: 2)));
   }
 
   void _pastePageContent() {
     if (_copiedPageData == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Nothing to paste. Copy content first.'),
-          backgroundColor: Colors.orange,
-          duration: Duration(seconds: 2),
-        ),
-      );
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Nothing to paste.'), backgroundColor: Colors.orange, duration: Duration(seconds: 2)));
       return;
     }
     if (_viewablePages.isEmpty) return;
-
     setState(() {
       final currentPage = _viewablePages[_currentPageIndex];
-
-      final pastedTextsWithNewIds = _copiedPageData!.texts.map((textToCopy) {
-        return textToCopy.copyWith(id: generateUniqueId());
-      }).toList();
-
-      final updatedLines = [...currentPage.lines, ..._copiedPageData!.lines];
-      final updatedTexts = [...currentPage.texts, ...pastedTextsWithNewIds];
-
+      final pastedTextsWithNewIds = _copiedPageData!.texts.map((textToCopy) => textToCopy.copyWith(id: generateUniqueId())).toList();
       _viewablePages[_currentPageIndex] = currentPage.copyWith(
-        lines: updatedLines,
-        texts: updatedTexts,
+        lines: [...currentPage.lines, ..._copiedPageData!.lines],
+        texts: [...currentPage.texts, ...pastedTextsWithNewIds],
       );
     });
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Content pasted!'),
-        backgroundColor: Colors.blue,
-        duration: Duration(seconds: 2),
-      ),
-    );
+    _debouncedSave();
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Content pasted!'), backgroundColor: Colors.blue, duration: Duration(seconds: 2)));
   }
 
   void _undoLastAction() {
@@ -784,6 +791,7 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
       final newLines = List<DrawingLine>.from(currentPage.lines)..removeLast();
       _viewablePages[_currentPageIndex] = currentPage.copyWith(lines: newLines);
     });
+    _debouncedSave();
   }
 
   void _clearAllDrawings() {
@@ -792,6 +800,7 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     setState(() {
       _viewablePages[_currentPageIndex] = _viewablePages[_currentPageIndex].copyWith(lines: [], texts: []);
     });
+    _debouncedSave();
   }
 
   void _eraseLineAtPoint(Offset point) {
@@ -829,9 +838,7 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
   void _zoomOut() => _zoomByFactor(1 / 1.2);
   void _resetZoom() {
     final size = context.size;
-    if (size != null) {
-      _setInitialZoom(size);
-    }
+    if (size != null) _setInitialZoom(size);
   }
 
   Offset _transformToCanvasCoordinates(Offset localPosition) {
@@ -848,17 +855,13 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     final scale = min(viewportSize.width / canvasWidth, viewportSize.height / canvasHeight);
     final dx = (viewportSize.width - canvasWidth * scale) / 2;
     final dy = (viewportSize.height - canvasHeight * scale) / 2;
-    _transformationController.value = Matrix4.identity()
-      ..translate(dx, dy)
-      ..scale(scale);
+    _transformationController.value = Matrix4.identity()..translate(dx, dy)..scale(scale);
   }
 
   void _navigateToPage(int index) async {
     if (index >= 0 && index < _viewablePages.length) {
       _commitTextChanges();
-      if (_pageController.hasClients) {
-        _pageController.jumpToPage(index);
-      }
+      if (_pageController.hasClients) _pageController.jumpToPage(index);
       setState(() {
         _currentPageIndex = index;
         _isInitialZoomSet = false;
@@ -874,15 +877,12 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
       shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
       builder: (BuildContext context) {
         return Container(
-          padding: const EdgeInsets.only(top: 16.0, left: 16.0, right: 16.0),
+          padding: const EdgeInsets.all(16.0),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
-                "Pages in '${_currentGroup?.groupName ?? 'Group'}'",
-                style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: darkText),
-              ),
+              Text("Pages in '${_currentGroup?.groupName ?? 'Group'}'", style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: darkText)),
               const SizedBox(height: 10),
               const Divider(),
               Flexible(
@@ -894,10 +894,7 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
                     final bool isSelected = page.id == _viewablePages[_currentPageIndex].id;
                     return ListTile(
                       leading: Icon(Icons.description_outlined, color: isSelected ? primaryBlue : mediumGreyText),
-                      title: Text(
-                        page.pageName,
-                        style: TextStyle(fontWeight: isSelected ? FontWeight.bold : FontWeight.normal, color: isSelected ? primaryBlue : darkText),
-                      ),
+                      title: Text(page.pageName, style: TextStyle(fontWeight: isSelected ? FontWeight.bold : FontWeight.normal, color: isSelected ? primaryBlue : darkText)),
                       selected: isSelected,
                       selectedTileColor: primaryBlue.withOpacity(0.1),
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
@@ -932,26 +929,14 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     );
   }
 
-  // --- NEW: Method to handle back navigation ---
-  Future<bool> _handleBackButton() {
+  Future<bool> _handleBackButton() async {
     _commitTextChanges();
-
-    // Update the master list with the latest changes from the viewable list
-    // This ensures the data returned is fully up-to-date.
-    for (var viewablePage in _viewablePages) {
-      int pageIndex = _pagesInCurrentGroup.indexWhere((p) => p.id == viewablePage.id);
-      if (pageIndex != -1) {
-        _pagesInCurrentGroup[pageIndex] = viewablePage;
-      }
+    _syncViewablePagesToMasterList();
+    if (Navigator.canPop(context)) {
+      Navigator.of(context).pop(_pagesInCurrentGroup);
     }
-
-    // Return the fully updated list of pages to the previous screen
-    Navigator.of(context).pop(_pagesInCurrentGroup);
-
-    // We handled the pop, so return false to prevent a double-pop by the system
-    return Future.value(false);
+    return false;
   }
-
 
   // --- Build Methods ---
 
@@ -963,33 +948,23 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     if (_viewablePages.isEmpty) {
       return Scaffold(
         appBar: AppBar(title: const Text("Error")),
-        body: const Center(child: Padding(padding: EdgeInsets.all(16.0), child: Text("Page data could not be loaded. Please go back and try again.", textAlign: TextAlign.center))),
+        body: const Center(child: Padding(padding: EdgeInsets.all(16.0), child: Text("Page data could not be loaded.", textAlign: TextAlign.center))),
       );
     }
 
     final currentPageData = _viewablePages[_currentPageIndex];
 
-    // --- NEW: Wrap Scaffold with WillPopScope ---
     return WillPopScope(
       onWillPop: _handleBackButton,
       child: Scaffold(
         backgroundColor: lightBackground,
         appBar: AppBar(
-          // --- NEW: Custom back button to use our handler ---
-          leading: IconButton(
-            icon: const Icon(Icons.arrow_back),
-            onPressed: _handleBackButton,
-            tooltip: 'Back',
-          ),
+          leading: IconButton(icon: const Icon(Icons.arrow_back), onPressed: _handleBackButton, tooltip: 'Back'),
           title: Text("${currentPageData.pageName} (${currentPageData.groupName})"),
           backgroundColor: Colors.white,
           elevation: 2,
           actions: [
-            IconButton(
-              icon: const Icon(Icons.list_alt, color: primaryBlue),
-              tooltip: 'Select Page',
-              onPressed: _showFolderPageSelector,
-            ),
+            IconButton(icon: const Icon(Icons.list_alt, color: primaryBlue), tooltip: 'Select Page', onPressed: _showFolderPageSelector),
             if (_viewablePages.length > 1)
               Padding(
                 padding: const EdgeInsets.only(right: 8.0),
@@ -1006,8 +981,8 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
               icon: _isSaving
                   ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: primaryBlue))
                   : const Icon(Icons.save_alt_rounded, color: primaryBlue),
-              tooltip: "Save Prescription",
-              onPressed: _isSaving ? null : _savePrescriptionData,
+              tooltip: "Save and Refresh",
+              onPressed: _isSaving ? null : () => _savePrescriptionData(isManualSave: true),
             ),
             const SizedBox(width: 8),
           ],
@@ -1016,12 +991,7 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
             child: Container(
               color: Colors.white,
               padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 4.0),
-              child: Row(
-                children: [
-                  Expanded(child: _buildDrawingToolbar()),
-                  _buildPanToolbar(),
-                ],
-              ),
+              child: Row(children: [Expanded(child: _buildDrawingToolbar()), _buildPanToolbar()]),
             ),
           ),
         ),
@@ -1069,10 +1039,7 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
                             templateUiImage: _currentTemplateUiImage,
                             editingTextId: _editingTextId,
                           ),
-                          child: const SizedBox(
-                            width: canvasWidth,
-                            height: canvasHeight,
-                          ),
+                          child: const SizedBox(width: canvasWidth, height: canvasHeight),
                         ),
                       );
                     },
@@ -1090,38 +1057,21 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
   Widget _buildCopyPasteMenu() {
     return PopupMenuButton<String>(
       onSelected: (String value) {
-        if (value == 'copy') {
-          _copyPageContent();
-        } else if (value == 'paste') {
-          _pastePageContent();
-        }
+        if (value == 'copy') _copyPageContent();
+        else if (value == 'paste') _pastePageContent();
       },
       icon: const Icon(Icons.more_vert, color: primaryBlue),
       tooltip: 'Page Actions',
       itemBuilder: (BuildContext context) => <PopupMenuEntry<String>>[
-        const PopupMenuItem<String>(
-          value: 'copy',
-          child: ListTile(
-            leading: Icon(Icons.copy_all_rounded),
-            title: Text('Copy Page'),
-          ),
-        ),
-        // Only show the paste option if there is something in our clipboard
+        const PopupMenuItem<String>(value: 'copy', child: ListTile(leading: Icon(Icons.copy_all_rounded), title: Text('Copy Page'))),
         if (_copiedPageData != null)
-          const PopupMenuItem<String>(
-            value: 'paste',
-            child: ListTile(
-              leading: Icon(Icons.paste_rounded),
-              title: Text('Paste on Page'),
-            ),
-          ),
+          const PopupMenuItem<String>(value: 'paste', child: ListTile(leading: Icon(Icons.paste_rounded), title: Text('Paste on Page'))),
       ],
     );
   }
 
   Widget _buildTextFieldOverlay() {
     if (_editingTextId == null) return const SizedBox.shrink();
-
     final currentPage = _viewablePages[_currentPageIndex];
     final textToEdit = currentPage.texts.firstWhere((t) => t.id == _editingTextId, orElse: () => DrawingText(id: '', text: '', position: Offset.zero, colorValue: 0, fontSize: 0));
     if (textToEdit.id.isEmpty) return const SizedBox.shrink();
@@ -1144,12 +1094,7 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
             autofocus: true,
             maxLines: null,
             decoration: const InputDecoration(border: InputBorder.none, contentPadding: EdgeInsets.zero, isDense: true),
-            style: TextStyle(
-              fontSize: scaledFontSize,
-              color: Color(textToEdit.colorValue),
-              decoration: TextDecoration.none,
-              decorationThickness: 0,
-            ),
+            style: TextStyle(fontSize: scaledFontSize, color: Color(textToEdit.colorValue), decoration: TextDecoration.none, decorationThickness: 0),
             onSubmitted: (_) => _commitTextChanges(),
           ),
         ),
@@ -1254,11 +1199,7 @@ class PrescriptionPainter extends CustomPainter {
   final ui.Image? templateUiImage;
   final String? editingTextId;
 
-  PrescriptionPainter({
-    required this.drawingPage,
-    required this.templateUiImage,
-    this.editingTextId,
-  });
+  PrescriptionPainter({required this.drawingPage, this.templateUiImage, this.editingTextId});
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -1287,14 +1228,9 @@ class PrescriptionPainter extends CustomPainter {
       if (text.id == editingTextId) continue;
       final textSpan = TextSpan(
         text: text.text,
-        style: TextStyle(
-            color: Color(text.colorValue),
-            fontSize: text.fontSize,
-            fontWeight: FontWeight.w500,
-            decoration: TextDecoration.none),
+        style: TextStyle(color: Color(text.colorValue), fontSize: text.fontSize, fontWeight: FontWeight.w500),
       );
-      final textPainter = TextPainter(text: textSpan, textDirection: TextDirection.ltr);
-      textPainter.layout(minWidth: 0, maxWidth: canvasWidth - text.position.dx);
+      final textPainter = TextPainter(text: textSpan, textDirection: TextDirection.ltr)..layout(minWidth: 0, maxWidth: canvasWidth - text.position.dx);
       textPainter.paint(canvas, text.position);
     }
   }
@@ -1305,7 +1241,6 @@ class PrescriptionPainter extends CustomPainter {
   }
 }
 
-// --- Helper Class ---
 class Matrix4Utils {
   static Offset transformPoint(Matrix4 matrix, Offset offset) {
     final storage = matrix.storage;
@@ -1314,9 +1249,6 @@ class Matrix4Utils {
     final x = storage[0] * dx + storage[4] * dy + storage[12];
     final y = storage[1] * dx + storage[5] * dy + storage[13];
     final w = storage[3] * dx + storage[7] * dy + storage[15];
-    if (w != 1.0 && w != 0.0) {
-      return Offset(x / w, y / w);
-    }
-    return Offset(x, y);
+    return w == 1.0 ? Offset(x, y) : Offset(x / w, y / w);
   }
 }
