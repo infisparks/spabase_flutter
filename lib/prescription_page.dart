@@ -6,8 +6,9 @@ import 'dart:math';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:image_picker/image_picker.dart';
 import 'supabase_config.dart'; // Make sure you have this file configured
-// Import the new helper file
+// Import the new helper files
 import 'image_manipulation_helpers.dart';
+import 'patient_info_header_card.dart';
 
 
 // Extension for list safety
@@ -25,7 +26,6 @@ const double canvasWidth = 1000;
 const double canvasHeight = 1414;
 const String kBaseImageUrl = 'https://apimmedford.infispark.in/';
 const String kSupabaseBucketName = 'pages'; // Assuming the bucket name for uploads
-// Removed kImageHandleSize and kImageResizeStep as they are now in image_manipulation_helpers.dart
 
 // Application Colors (MOVED TO TOP-LEVEL TO FIX ERROR)
 const Color primaryBlue = Color(0xFF3B82F6);
@@ -416,6 +416,10 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
   List<DrawingPage> _pagesInCurrentGroup = [];
   _CopiedPageData? _copiedPageData;
   List<UploadedImage> _userUploadedImages = [];
+  String _patientName = 'Loading Patient Name...';
+  Map<String, dynamic> _patientDetails = {}; // NEW: To store data from patient_detail table
+  Map<String, dynamic> _ipdRegistrationDetails = {}; // NEW: To store data from ipd_registration table
+  Map<String, dynamic> _bedDetails = {};
 
   static const Map<String, String> _groupToColumnMap = {
     'Indoor Patient Progress Digital': 'indoor_patient_progress_digital_data',
@@ -521,13 +525,19 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     }
   }
 
+// ... (lines 304 - 312 of _PrescriptionPageState)
+
   Future<void> _loadHealthDetailsAndPage() async {
     if (!mounted) return;
     final String? currentPageIdBeforeRefresh = _viewablePages.isNotEmpty ? _viewablePages[_currentPageIndex].id : widget.pageId; // 1. Preserve ID
     setState(() => _isLoadingPrescription = true);
     try {
       final columnName = _groupToColumnMap[widget.groupName] ?? 'custom_groups_data';
+
+      // FIX: Removed 'patient_name' from this select statement, as it likely doesn't exist
+      // directly on user_health_details. We will get the name from the joined query below.
       final columnsToSelect = ['id', columnName, 'custom_groups_data'].join(',');
+
       final response = await supabase
           .from('user_health_details')
           .select(columnsToSelect)
@@ -537,6 +547,31 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
 
       if (response != null) {
         _healthRecordId = response['id'] as String?;
+        // Set a temporary name until the full join query finishes
+        _patientName = 'N/A';
+
+        // Fetch detailed IPD, Patient, and Bed information
+        final ipdResponse = await supabase
+            .from('ipd_registration')
+            .select('*, patient_detail(*), bed_management(*)') // Select IPD, join patient_detail and bed_management
+            .eq('uhid', widget.uhid)
+            .eq('ipd_id', widget.ipdId)
+            .maybeSingle();
+
+        if (ipdResponse != null) {
+          // Flatten the results into state maps
+          _ipdRegistrationDetails = ipdResponse;
+          // The patient_detail is a joined object fetched via FK
+          _patientDetails = ipdResponse['patient_detail'] as Map<String, dynamic>? ?? {};
+          // The bed_management is a joined object fetched via FK
+          _bedDetails = ipdResponse['bed_management'] as Map<String, dynamic>? ?? {};
+
+          // FINAL NAME ASSIGNMENT: Update patient name from the dedicated patient_detail object
+          _patientName = _patientDetails['name'] as String? ?? 'N/A';
+        }
+
+
+
         if (columnName == 'custom_groups_data') {
           final rawCustomGroups = response['custom_groups_data'] ?? [];
           final customGroups = (rawCustomGroups as List?)?.map((json) => DrawingGroup.fromJson(json as Map<String, dynamic>)).toList() ?? [];
@@ -1029,7 +1064,29 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
 
   void _onTransformUpdated() => setState(() {});
 
-  // Text handling methods removed (e.g., _onTextFocusChange, _commitTextChanges, _handleTextTap)
+  // NEW: Method to display the patient details modal
+  // --- Update the existing _showPatientDetailsModal method in _PrescriptionPageState ---
+
+  // NEW: Method to display the patient details modal
+  void _showPatientDetailsModal() {
+    if (_isLoadingPrescription) return;
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
+      builder: (context) {
+        return PatientInfoModal(
+          // FIX: Pass only the Supabase client and the required IDs.
+          supabase: supabase, // REQUIRED: Passes the client instance for fetching
+          ipdId: widget.ipdId, // REQUIRED
+          uhid: widget.uhid, // REQUIRED
+          healthRecordId: _healthRecordId, // Optional
+        );
+      },
+    );
+  }
 
   void _copyPageContent() {
     if (_viewablePages.isEmpty) return;
@@ -1275,6 +1332,12 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
           backgroundColor: Colors.white,
           elevation: 2,
           actions: [
+            // NEW: Patient Info Icon
+            IconButton(
+              icon: const Icon(Icons.info_outline, color: primaryBlue),
+              tooltip: 'Patient Details',
+              onPressed: _showPatientDetailsModal,
+            ),
             IconButton(icon: const Icon(Icons.list_alt, color: primaryBlue), tooltip: 'Select Page', onPressed: _showFolderPageSelector),
             if (_viewablePages.length > 1)
               Padding(
