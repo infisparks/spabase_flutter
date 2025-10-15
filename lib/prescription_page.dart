@@ -6,6 +6,9 @@ import 'dart:math';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:image_picker/image_picker.dart';
 import 'supabase_config.dart'; // Make sure you have this file configured
+// Import the new helper file
+import 'image_manipulation_helpers.dart';
+
 
 // Extension for list safety
 extension IterableX<T> on Iterable<T> {
@@ -22,8 +25,7 @@ const double canvasWidth = 1000;
 const double canvasHeight = 1414;
 const String kBaseImageUrl = 'https://apimmedford.infispark.in/';
 const String kSupabaseBucketName = 'pages'; // Assuming the bucket name for uploads
-const double kImageHandleSize = 40.0; // Size of the move/resize handle
-const double kImageResizeStep = 20.0; // Amount to resize image by
+// Removed kImageHandleSize and kImageResizeStep as they are now in image_manipulation_helpers.dart
 
 // Application Colors (MOVED TO TOP-LEVEL TO FIX ERROR)
 const Color primaryBlue = Color(0xFF3B82F6);
@@ -74,48 +76,8 @@ List<Offset> simplify(List<Offset> points, double epsilon) {
   }
 }
 
-class Matrix4Utils {
-  static Offset transformPoint(Matrix4 matrix, Offset offset) {
-    final storage = matrix.storage;
-    final dx = offset.dx;
-    final dy = offset.dy;
-    final x = storage[0] * dx + storage[4] * dy + storage[12];
-    final y = storage[1] * dx + storage[5] * dy + storage[13];
-    final w = storage[3] * dx + storage[7] * dy + storage[15];
-    return w == 1.0 ? Offset(x / w, y / w) : Offset(x / w, y / w);
-  }
-}
-
-class ImageCacheManager {
-  static final Map<String, ui.Image> _cache = {};
-
-  static Future<ui.Image?> loadImage(String url) async {
-    if (_cache.containsKey(url)) {
-      return _cache[url];
-    }
-    try {
-      final stream = NetworkImage(url).resolve(ImageConfiguration.empty);
-      final completer = Completer<ui.Image>();
-      late ImageStreamListener listener;
-      listener = ImageStreamListener((info, _) {
-        completer.complete(info.image);
-        stream.removeListener(listener);
-      }, onError: (error, stackTrace) {
-        completer.completeError(error, stackTrace);
-        stream.removeListener(listener);
-      });
-      stream.addListener(listener);
-      final loadedImage = await completer.future;
-      _cache[url] = loadedImage;
-      return loadedImage;
-    } catch (e) {
-      debugPrint('Error loading cached image from $url: $e');
-      return null;
-    }
-  }
-
-  static void clear() => _cache.clear(); // Utility to clear cache
-}
+// Matrix4Utils removed and moved to image_manipulation_helpers.dart
+// ImageCacheManager removed and moved to image_manipulation_helpers.dart
 
 // --- Unified & Highly Compressed Data Models ---
 
@@ -388,7 +350,7 @@ class DrawingGroup {
       groupName: json['groupName'] as String? ?? json['name'] as String? ?? 'Unnamed Group',
       pages: (json['pages'] as List<dynamic>?)
           ?.whereType<Map<String, dynamic>>()
-          .map((pageJson) => DrawingPage.fromJson(pageJson))
+          .map((pageJson) => DrawingPage.fromJson(pageJson as Map<String, dynamic>))
           .toList() ??
           [],
     );
@@ -551,18 +513,7 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
       return;
     }
     try {
-      final stream = NetworkImage(fullUrl).resolve(ImageConfiguration.empty);
-      final completer = Completer<ui.Image>();
-      late ImageStreamListener listener;
-      listener = ImageStreamListener((info, _) {
-        completer.complete(info.image);
-        stream.removeListener(listener);
-      }, onError: (error, stackTrace) {
-        completer.completeError(error, stackTrace);
-        stream.removeListener(listener);
-      });
-      stream.addListener(listener);
-      final loadedImage = await completer.future;
+      final loadedImage = await ImageCacheManager.loadImage(fullUrl);
       if (mounted) setState(() => _currentTemplateUiImage = loadedImage);
     } catch (e) {
       debugPrint('Error loading image from $fullUrl: $e');
@@ -852,6 +803,29 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
 
     _updateSelectedImage(newWidth: newWidth, newHeight: newHeight);
   }
+
+  void _deleteSelectedImage() {
+    if (_selectedImageId == null) return;
+    final currentPage = _viewablePages[_currentPageIndex];
+    setState(() {
+      _viewablePages[_currentPageIndex] = currentPage.copyWith(
+        images: currentPage.images.where((img) => img.id != _selectedImageId).toList(),
+      );
+      _selectedImageId = null;
+      _isMovingSelectedImage = false;
+    });
+    _debouncedSave();
+  }
+
+  void _toggleImageMoveMode() {
+    if (_selectedImageId == null) return;
+    setState(() {
+      _isMovingSelectedImage = !_isMovingSelectedImage;
+      _selectedTool = DrawingTool.image; // Ensure tool is set to image
+      if (!_isMovingSelectedImage) _dragStartCanvasPosition = null; // Reset drag state
+    });
+  }
+
 
   Future<void> _showUploadedImagesSelector() async {
     await _fetchUserUploadedImages(); // Ensure we have the latest list
@@ -1169,6 +1143,7 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
 
   Offset _transformToCanvasCoordinates(Offset localPosition) {
     final inverseMatrix = Matrix4.inverted(_transformationController.value);
+    // Uses the utility function from the helper file
     return Matrix4Utils.transformPoint(inverseMatrix, localPosition);
   }
 
@@ -1405,104 +1380,28 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     );
   }
 
+  // Refactored method to use the new ImageOverlayControls widget
   Widget _buildImageOverlayControls() {
     if (_selectedImageId == null) return const SizedBox.shrink();
 
     final currentPage = _viewablePages[_currentPageIndex];
-    final selectedImage = currentPage.images.firstWhere((img) => img.id == _selectedImageId);
+    final selectedImage = currentPage.images.firstWhereOrNull((img) => img.id == _selectedImageId);
 
-    final matrix = _transformationController.value;
-    final screenOffset = Matrix4Utils.transformPoint(matrix, selectedImage.position);
-    final currentScale = matrix.getMaxScaleOnAxis();
+    if (selectedImage == null) return const SizedBox.shrink();
 
-    final scaledWidth = selectedImage.width * currentScale;
-    final scaledHeight = selectedImage.height * currentScale;
-
-    // The handles are placed around the image in screen coordinates.
-    // We use a small offset from the image boundary.
-
-    // 1. Resize Controls (Top Right corner)
-    final resizeControls = Positioned(
-      left: screenOffset.dx + scaledWidth,
-      top: screenOffset.dy,
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          _buildImageControlIcon(Icons.add, () => _resizeSelectedImage(kImageResizeStep), tooltip: 'Increase Size'),
-          const SizedBox(height: 4),
-          _buildImageControlIcon(Icons.remove, () => _resizeSelectedImage(-kImageResizeStep), tooltip: 'Decrease Size'),
-        ],
-      ),
-    );
-
-    // 2. Move Control (Top Left corner)
-    final moveControl = Positioned(
-      left: screenOffset.dx - kImageHandleSize,
-      top: screenOffset.dy - kImageHandleSize,
-      child: _buildImageControlIcon(
-        _isMovingSelectedImage ? Icons.lock_open_rounded : Icons.open_with,
-            () => setState(() {
-          _isMovingSelectedImage = !_isMovingSelectedImage;
-          _selectedTool = DrawingTool.image; // Ensure tool is set to image
-          if (!_isMovingSelectedImage) _dragStartCanvasPosition = null; // Reset drag state
-        }),
-        tooltip: _isMovingSelectedImage ? 'Exit Move Mode (Pan/Zoom Enabled)' : 'Enter Move Mode (Pan/Zoom Disabled)',
-        color: _isMovingSelectedImage ? Colors.red : primaryBlue,
-      ),
-    );
-
-    // 3. Delete Control (Bottom Left corner)
-    final deleteControl = Positioned(
-      left: screenOffset.dx - kImageHandleSize,
-      top: screenOffset.dy + scaledHeight,
-      child: _buildImageControlIcon(Icons.delete_forever, () {
-        setState(() {
-          _viewablePages[_currentPageIndex] = currentPage.copyWith(
-            images: currentPage.images.where((img) => img.id != _selectedImageId).toList(),
-          );
-          _selectedImageId = null;
-          _isMovingSelectedImage = false;
-        });
-        _debouncedSave();
-      }, tooltip: 'Delete Image', color: Colors.red),
-    );
-
-    return Stack(
-      children: [
-        resizeControls,
-        moveControl,
-        deleteControl,
-      ],
+    return ImageOverlayControls(
+      imagePosition: selectedImage.position,
+      imageWidth: selectedImage.width,
+      imageHeight: selectedImage.height,
+      transformMatrix: _transformationController.value,
+      isMovingSelectedImage: _isMovingSelectedImage,
+      onResize: _resizeSelectedImage,
+      onDelete: _deleteSelectedImage,
+      onToggleMoveMode: _toggleImageMoveMode,
     );
   }
 
-  Widget _buildImageControlIcon(IconData icon, VoidCallback onPressed, {String tooltip = '', Color color = primaryBlue}) {
-    // Uses Transform.scale to compensate for global zoom effect on the small fixed-size buttons
-    final currentScale = _transformationController.value.getMaxScaleOnAxis();
-    final inverseScale = 1 / currentScale;
-
-    return Transform.scale(
-      scale: inverseScale,
-      child: Tooltip(
-        message: tooltip,
-        child: Container(
-          width: kImageHandleSize,
-          height: kImageHandleSize,
-          decoration: BoxDecoration(
-            color: Colors.white,
-            shape: BoxShape.circle,
-            border: Border.all(color: color, width: 2),
-            boxShadow: const [BoxShadow(color: Colors.black26, blurRadius: 4, offset: Offset(2, 2))],
-          ),
-          child: IconButton(
-            padding: EdgeInsets.zero,
-            icon: Icon(icon, color: color, size: 20),
-            onPressed: onPressed,
-          ),
-        ),
-      ),
-    );
-  }
+  // Removed _buildImageControlIcon as it's now a top-level function in the helper file
 
   Widget _buildPageActionsMenu() {
     return PopupMenuButton<String>(
@@ -1665,14 +1564,19 @@ class PrescriptionPainter extends CustomPainter {
 
     // 2. Draw Images
     for (var image in drawingPage.images) {
-      ImageCacheManager.loadImage(image.imageUrl).then((ui.Image? loadedImage) {
-        if (loadedImage != null) {
-          // Trigger repaint if image was loaded async
-          if (redrawNotifier.value == 0) redrawNotifier.value = 1; else redrawNotifier.value = 0;
-        }
-      });
+      // Use the utility function from the helper file
+      final cachedImage = ImageCacheManager.getCachedImage(image.imageUrl);
 
-      final cachedImage = ImageCacheManager._cache[image.imageUrl];
+      if (cachedImage == null) {
+        // Asynchronously load the image
+        ImageCacheManager.loadImage(image.imageUrl).then((ui.Image? loadedImage) {
+          if (loadedImage != null) {
+            // Trigger repaint if image was loaded async
+            if (redrawNotifier.value == 0) redrawNotifier.value = 1; else redrawNotifier.value = 0;
+          }
+        });
+      }
+
       final destRect = Rect.fromLTWH(image.position.dx, image.position.dy, image.width, image.height);
 
       if (cachedImage != null) {
@@ -1720,15 +1624,6 @@ class PrescriptionPainter extends CustomPainter {
     }
 
     // 4. Draw Texts - REMOVED
-    // for (var text in drawingPage.texts) {
-    //   if (text.id == editingTextId) continue;
-    //   final textSpan = TextSpan(
-    //     text: text.text,
-    //     style: TextStyle(color: Color(text.colorValue), fontSize: text.fontSize, fontWeight: FontWeight.w500),
-    //   );
-    //   final textPainter = TextPainter(text: textSpan, textDirection: TextDirection.ltr)..layout(minWidth: 0, maxWidth: canvasWidth - text.position.dx);
-    //   textPainter.paint(canvas, text.position);
-    // }
   }
 
   @override
