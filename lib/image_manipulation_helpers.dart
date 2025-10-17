@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'dart:ui' as ui;
 import 'dart:async';
-import 'dart:math';
 
 // Constants used in image manipulation
 const double kImageHandleSize = 40.0;
@@ -57,16 +56,17 @@ class ImageCacheManager {
 
   static void clear() => _cache.clear(); // Utility to clear cache
 
-  static ui.Image? getCachedImage(String url) => _cache[url]; // Utility to get cached image
+  static ui.Image? getCachedImage(String url) =>
+      _cache[url]; // Utility to get cached image
 }
 
 // --- Image Overlay Widget ---
 
-typedef UpdateImageCallback = void Function({Offset? newPosition, double? newWidth, double? newHeight});
+typedef UpdateImageCallback = void Function(
+    {Offset? newPosition, double? newWidth, double? newHeight});
 typedef ResizeImageCallback = void Function(double delta);
 typedef DeleteImageCallback = void Function();
 typedef ToggleMoveModeCallback = void Function();
-
 
 /// Builds the circular control icon used for moving, resizing, and deleting.
 Widget buildImageControlIcon(
@@ -91,7 +91,10 @@ Widget buildImageControlIcon(
           color: Colors.white,
           shape: BoxShape.circle,
           border: Border.all(color: color, width: 2),
-          boxShadow: const [BoxShadow(color: Colors.black26, blurRadius: 4, offset: Offset(2, 2))],
+          boxShadow: const [
+            BoxShadow(
+                color: Colors.black26, blurRadius: 4, offset: Offset(2, 2))
+          ],
         ),
         child: IconButton(
           padding: EdgeInsets.zero,
@@ -102,7 +105,6 @@ Widget buildImageControlIcon(
     ),
   );
 }
-
 
 /// Overlay controls for the currently selected image, displayed in screen coordinates.
 class ImageOverlayControls extends StatelessWidget {
@@ -142,9 +144,13 @@ class ImageOverlayControls extends StatelessWidget {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          buildImageControlIcon(Icons.add, () => onResize(kImageResizeStep), transformMatrix, tooltip: 'Increase Size'),
+          buildImageControlIcon(Icons.add, () => onResize(kImageResizeStep),
+              transformMatrix,
+              tooltip: 'Increase Size'),
           const SizedBox(height: 4),
-          buildImageControlIcon(Icons.remove, () => onResize(-kImageResizeStep), transformMatrix, tooltip: 'Decrease Size'),
+          buildImageControlIcon(Icons.remove, () => onResize(-kImageResizeStep),
+              transformMatrix,
+              tooltip: 'Decrease Size'),
         ],
       ),
     );
@@ -157,7 +163,9 @@ class ImageOverlayControls extends StatelessWidget {
         isMovingSelectedImage ? Icons.lock_open_rounded : Icons.open_with,
         onToggleMoveMode,
         transformMatrix,
-        tooltip: isMovingSelectedImage ? 'Exit Move Mode (Pan/Zoom Enabled)' : 'Enter Move Mode (Pan/Zoom Disabled)',
+        tooltip: isMovingSelectedImage
+            ? 'Exit Move Mode (Pan/Zoom Enabled)'
+            : 'Enter Move Mode (Pan/Zoom Disabled)',
         color: isMovingSelectedImage ? Colors.red : primaryBlue,
       ),
     );
@@ -166,7 +174,9 @@ class ImageOverlayControls extends StatelessWidget {
     final deleteControl = Positioned(
       left: screenOffset.dx - kImageHandleSize,
       top: screenOffset.dy + scaledHeight,
-      child: buildImageControlIcon(Icons.delete_forever, onDelete, transformMatrix, tooltip: 'Delete Image', color: Colors.red),
+      child: buildImageControlIcon(
+          Icons.delete_forever, onDelete, transformMatrix,
+          tooltip: 'Delete Image', color: Colors.red),
     );
 
     return Stack(

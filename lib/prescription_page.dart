@@ -2,14 +2,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'dart:ui' as ui;
 import 'dart:async';
-import 'dart:math';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:image_picker/image_picker.dart';
-import 'supabase_config.dart'; // Make sure you have this file configured
-// Import the new helper files
+
+import 'supabase_config.dart';
 import 'image_manipulation_helpers.dart';
 import 'patient_info_header_card.dart';
-
+import 'drawing_models.dart';
+import 'pdf_generator.dart';
 
 // Extension for list safety
 extension IterableX<T> on Iterable<T> {
@@ -25,364 +25,27 @@ extension IterableX<T> on Iterable<T> {
 const double canvasWidth = 1000;
 const double canvasHeight = 1414;
 const String kBaseImageUrl = 'https://apimmedford.infispark.in/';
-const String kSupabaseBucketName = 'pages'; // Assuming the bucket name for uploads
+const String kSupabaseBucketName = 'pages';
 
-// Application Colors (MOVED TO TOP-LEVEL TO FIX ERROR)
+// Application Colors
 const Color primaryBlue = Color(0xFF3B82F6);
 const Color darkText = Color(0xFF1E293B);
 const Color mediumGreyText = Color(0xFF64748B);
 const Color lightBackground = Color(0xFFF8FAFC);
 
-
-// --- Utility Classes & Functions ---
-
-String generateUniqueId() {
-  return DateTime.now().microsecondsSinceEpoch.toString() + Random().nextInt(100000).toString();
-}
-
-/// A more robust implementation of the Ramer-Douglas-Peucker algorithm.
-List<Offset> simplify(List<Offset> points, double epsilon) {
-  if (points.length < 3) {
-    return points;
-  }
-
-  double findPerpendicularDistance(Offset point, Offset lineStart, Offset lineEnd) {
-    double dx = lineEnd.dx - lineStart.dx;
-    double dy = lineEnd.dy - lineStart.dy;
-    if (dx == 0 && dy == 0) return (point - lineStart).distance;
-    double t = ((point.dx - lineStart.dx) * dx + (point.dy - lineStart.dy) * dy) / (dx * dx + dy * dy);
-    t = max(0, min(1, t));
-    double closestX = lineStart.dx + t * dx;
-    double closestY = lineStart.dy + t * dy;
-    return sqrt(pow(point.dx - closestX, 2) + pow(point.dy - closestY, 2));
-  }
-
-  double dMax = 0;
-  int index = 0;
-  for (int i = 1; i < points.length - 1; i++) {
-    double d = findPerpendicularDistance(points[i], points.first, points.last);
-    if (d > dMax) {
-      index = i;
-      dMax = d;
-    }
-  }
-
-  if (dMax > epsilon) {
-    var recResults1 = simplify(points.sublist(0, index + 1), epsilon);
-    var recResults2 = simplify(points.sublist(index, points.length), epsilon);
-    return recResults1.sublist(0, recResults1.length - 1) + recResults2;
-  } else {
-    return [points.first, points.last];
-  }
-}
-
-// Matrix4Utils removed and moved to image_manipulation_helpers.dart
-// ImageCacheManager removed and moved to image_manipulation_helpers.dart
-
-// --- Unified & Highly Compressed Data Models ---
-
-class DrawingLine {
-  final List<Offset> points;
-  final int colorValue;
-  final double strokeWidth;
-
-  DrawingLine({
-    required this.points,
-    required this.colorValue,
-    required this.strokeWidth,
-  });
-
-  factory DrawingLine.fromJson(Map<String, dynamic> json) {
-    final pointsList = <Offset>[];
-    final pointsData = json['points'];
-    final color = (json['colorValue'] as num?)?.toInt() ?? Colors.black.value;
-    final width = (json['strokeWidth'] as num?)?.toDouble() ?? 2.0;
-
-    if (pointsData is List && pointsData.isNotEmpty) {
-      if (pointsData[0] is Map) {
-        // OLD UNCOMPRESSED FORMAT
-        for (var pointJson in pointsData) {
-          if (pointJson is Map) {
-            pointsList.add(Offset(
-              (pointJson['dx'] as num?)?.toDouble() ?? 0.0,
-              (pointJson['dy'] as num?)?.toDouble() ?? 0.0,
-            ));
-          }
-        }
-      } else if (pointsData[0] is num) {
-        // NEW COMPRESSED FORMAT (Delta Encoded Integers)
-        if (pointsData.length >= 2) {
-          double lastX = (pointsData[0] as num).toDouble() / 100.0;
-          double lastY = (pointsData[1] as num).toDouble() / 100.0;
-          pointsList.add(Offset(lastX, lastY));
-
-          for (int i = 2; i < pointsData.length; i += 2) {
-            if (i + 1 < pointsData.length) {
-              lastX += (pointsData[i] as num).toDouble() / 100.0;
-              lastY += (pointsData[i + 1] as num).toDouble() / 100.0;
-              pointsList.add(Offset(lastX, lastY));
-            }
-          }
-        }
-      }
-    }
-
-    return DrawingLine(points: pointsList, colorValue: color, strokeWidth: width);
-  }
-
-  Map<String, dynamic> toJson() {
-    if (points.isEmpty) {
-      return {'points': [], 'colorValue': colorValue, 'strokeWidth': strokeWidth};
-    }
-
-    // 1. Simplify the line first (highest impact). Epsilon = 0.2
-    final simplifiedPoints = simplify(points, 0.2);
-    if (simplifiedPoints.isEmpty) {
-      return {'points': [], 'colorValue': colorValue, 'strokeWidth': strokeWidth};
-    }
-
-    final compressedPoints = <int>[];
-
-    // 2. Add the first point as absolute coordinates (multiplied by 100).
-    int lastX = (simplifiedPoints.first.dx * 100).round();
-    int lastY = (simplifiedPoints.first.dy * 100).round();
-    compressedPoints.add(lastX);
-    compressedPoints.add(lastY);
-
-    // 3. Add subsequent points as delta (differences).
-    for (int i = 1; i < simplifiedPoints.length; i++) {
-      int currentX = (simplifiedPoints[i].dx * 100).round();
-      int currentY = (simplifiedPoints[i].dy * 100).round();
-      compressedPoints.add(currentX - lastX); // Add delta X
-      compressedPoints.add(currentY - lastY); // Add delta Y
-      lastX = currentX;
-      lastY = currentY;
-    }
-
-    return {
-      'points': compressedPoints,
-      'colorValue': colorValue,
-      'strokeWidth': strokeWidth,
-    };
-  }
-
-  DrawingLine copyWith({
-    List<Offset>? points,
-    int? colorValue,
-    double? strokeWidth,
-  }) {
-    return DrawingLine(
-      points: points ?? this.points,
-      colorValue: colorValue ?? this.colorValue,
-      strokeWidth: strokeWidth ?? this.strokeWidth,
-    );
-  }
-}
-
-// NOTE: DrawingText class removed as per request.
-
-class DrawingImage {
-  final String id;
-  final String imageUrl;
-  final Offset position;
-  final double width;
-  final double height;
-
-  DrawingImage({
-    required this.id,
-    required this.imageUrl,
-    required this.position,
-    required this.width,
-    required this.height,
-  });
-
-  DrawingImage copyWith({
-    String? id,
-    String? imageUrl,
-    Offset? position,
-    double? width,
-    double? height,
-  }) {
-    // Maintain aspect ratio if only one dimension is provided, but we are not doing that here.
-    return DrawingImage(
-      id: id ?? this.id,
-      imageUrl: imageUrl ?? this.imageUrl,
-      position: position ?? this.position,
-      width: width ?? this.width,
-      height: height ?? this.height,
-    );
-  }
-
-  factory DrawingImage.fromJson(Map<String, dynamic> json) {
-    return DrawingImage(
-      id: (json['id'] as String?) ?? generateUniqueId(),
-      imageUrl: (json['imageUrl'] as String?) ?? '',
-      position: Offset(
-        (json['position']?['dx'] as num?)?.toDouble() ?? 0.0,
-        (json['position']?['dy'] as num?)?.toDouble() ?? 0.0,
-      ),
-      width: (json['width'] as num?)?.toDouble() ?? 200.0,
-      height: (json['height'] as num?)?.toDouble() ?? 200.0,
-    );
-  }
-
-  Map<String, dynamic> toJson() {
-    return {
-      'id': id,
-      'imageUrl': imageUrl,
-      'position': {'dx': position.dx, 'dy': position.dy},
-      'width': width,
-      'height': height,
-    };
-  }
-}
-
-class DrawingPage {
-  final String id;
-  final int pageNumber;
-  final String pageName;
-  final String groupName;
-  final String templateImageUrl;
-  final List<DrawingLine> lines;
-  // final List<DrawingText> texts; // Removed
-  final List<DrawingImage> images;
-
-  DrawingPage({
-    required this.id,
-    required this.pageNumber,
-    required this.pageName,
-    required this.groupName,
-    required this.templateImageUrl,
-    this.lines = const [],
-    // this.texts = const [], // Removed
-    this.images = const [],
-  });
-
-  DrawingPage copyWith({
-    String? id,
-    int? pageNumber,
-    String? pageName,
-    String? groupName,
-    String? templateImageUrl,
-    List<DrawingLine>? lines,
-    // List<DrawingText>? texts, // Removed
-    List<DrawingImage>? images,
-  }) {
-    return DrawingPage(
-      id: id ?? this.id,
-      pageNumber: pageNumber ?? this.pageNumber,
-      pageName: pageName ?? this.pageName,
-      groupName: groupName ?? this.groupName,
-      templateImageUrl: templateImageUrl ?? this.templateImageUrl,
-      lines: lines ?? this.lines,
-      // texts: texts ?? this.texts, // Removed
-      images: images ?? this.images,
-    );
-  }
-
-  factory DrawingPage.fromJson(Map<String, dynamic> json) {
-    // NOTE: Decoding of 'texts' is removed.
-    return DrawingPage(
-      id: (json['id'] as String?) ?? '',
-      pageNumber: (json['pageNumber'] as int?) ?? 0,
-      pageName: json['pageName'] as String? ?? 'Unnamed Page',
-      groupName: json['groupName'] as String? ?? 'Unnamed Group',
-      templateImageUrl: (json['templateImageUrl'] as String?) ?? '',
-      lines: (json['lines'] as List<dynamic>?)
-          ?.whereType<Map<String, dynamic>>()
-          .map((lineJson) => DrawingLine.fromJson(lineJson))
-          .toList() ??
-          [],
-      // texts: (json['texts'] as List<dynamic>?) // Removed text parsing
-      //     ?.whereType<Map<String, dynamic>>()
-      //     .map((textJson) => DrawingText.fromJson(textJson))
-      //     .toList() ??
-      //     [],
-      images: (json['images'] as List<dynamic>?)
-          ?.whereType<Map<String, dynamic>>()
-          .map((imageJson) => DrawingImage.fromJson(imageJson))
-          .toList() ??
-          [],
-    );
-  }
-
-  Map<String, dynamic> toJson() {
-    // NOTE: Encoding of 'texts' is removed.
-    return {
-      'id': id,
-      'pageNumber': pageNumber,
-      'pageName': pageName,
-      'groupName': groupName,
-      'templateImageUrl': templateImageUrl,
-      'lines': lines.map((line) => line.toJson()).toList(),
-      // 'texts': texts.map((text) => text.toJson()).toList(), // Removed text encoding
-      'images': images.map((image) => image.toJson()).toList(),
-    };
-  }
-}
-
-class DrawingGroup {
-  final String id;
-  final String groupName; // Standardized to groupName
-  final List<DrawingPage> pages;
-
-  DrawingGroup({
-    required this.id,
-    required this.groupName,
-    this.pages = const [],
-  });
-
-  DrawingGroup copyWith({
-    String? id,
-    String? groupName,
-    List<DrawingPage>? pages,
-  }) {
-    return DrawingGroup(
-      id: id ?? this.id,
-      groupName: groupName ?? this.groupName,
-      pages: pages ?? this.pages,
-    );
-  }
-
-  factory DrawingGroup.fromJson(Map<String, dynamic> json) {
-    return DrawingGroup(
-      id: (json['id'] as String?) ?? '',
-      groupName: json['groupName'] as String? ?? json['name'] as String? ?? 'Unnamed Group',
-      pages: (json['pages'] as List<dynamic>?)
-          ?.whereType<Map<String, dynamic>>()
-          .map((pageJson) => DrawingPage.fromJson(pageJson as Map<String, dynamic>))
-          .toList() ??
-          [],
-    );
-  }
-
-  Map<String, dynamic> toJson() {
-    return {
-      'id': id,
-      'groupName': groupName,
-      'pages': pages.map((page) => page.toJson()).toList(),
-    };
-  }
-}
-
-// --- End of Data Models ---
-
-enum DrawingTool { pen, eraser, image } // Removed text tool
+enum DrawingTool { pen, eraser, image }
 
 class _CopiedPageData {
   final List<DrawingLine> lines;
-  // final List<DrawingText> texts; // Removed
   final List<DrawingImage> images;
-  _CopiedPageData({required this.lines, required this.images}); // Removed texts
+  _CopiedPageData({required this.lines, required this.images});
 }
 
-class UploadedImage { // Model for Supabase Storage files
+class UploadedImage {
   final String name;
   final String publicUrl;
-
   UploadedImage({required this.name, required this.publicUrl});
 }
-
 
 class PrescriptionPage extends StatefulWidget {
   final int ipdId;
@@ -416,9 +79,10 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
   List<DrawingPage> _pagesInCurrentGroup = [];
   _CopiedPageData? _copiedPageData;
   List<UploadedImage> _userUploadedImages = [];
+  List<StampImage> _stamps = []; // ADDED: For stamps
   String _patientName = 'Loading Patient Name...';
-  Map<String, dynamic> _patientDetails = {}; // NEW: To store data from patient_detail table
-  Map<String, dynamic> _ipdRegistrationDetails = {}; // NEW: To store data from ipd_registration table
+  Map<String, dynamic> _patientDetails = {};
+  Map<String, dynamic> _ipdRegistrationDetails = {};
   Map<String, dynamic> _bedDetails = {};
 
   static const Map<String, String> _groupToColumnMap = {
@@ -443,18 +107,12 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
   // --- Drawing State ---
   Color _currentColor = Colors.black;
   double _strokeWidth = 2.0;
-  // double _currentFontSize = 20.0; // Removed
   DrawingTool _selectedTool = DrawingTool.pen;
 
   // --- Image Manipulation State ---
   String? _selectedImageId;
-  Offset? _dragStartCanvasPosition; // Starting canvas position for image movement
-  bool _isMovingSelectedImage = false; // Flag to enable image movement
-
-  // --- Text Editing State ---
-  // final TextEditingController _textController = TextEditingController(); // Removed
-  // final FocusNode _textFocusNode = FocusNode(); // Removed
-  // String? _editingTextId; // Removed
+  Offset? _dragStartCanvasPosition;
+  bool _isMovingSelectedImage = false;
 
   // --- View State ---
   final PageController _pageController = PageController();
@@ -462,9 +120,10 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
   ui.Image? _currentTemplateUiImage;
   bool _isLoadingPrescription = true;
   bool _isSaving = false;
+  bool _isLoadingStamps = false; // ADDED: For stamps
   bool _isInitialZoomSet = false;
   bool _isStylusInteraction = false;
-  final bool _isPenOnlyMode = true; // Kept this true to enforce stylus drawing
+  final bool _isPenOnlyMode = true;
   final ValueNotifier<int> _redrawNotifier = ValueNotifier(0);
 
   // --- Autosave & Realtime State ---
@@ -478,8 +137,8 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     super.initState();
     _loadHealthDetailsAndPage();
     _fetchUserUploadedImages();
+    _fetchStamps(); // ADDED: Fetch stamps on init
     _transformationController.addListener(_onTransformUpdated);
-    // _textFocusNode.addListener(_onTextFocusChange); // Removed
   }
 
   @override
@@ -492,9 +151,6 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     _transformationController.removeListener(_onTransformUpdated);
     _transformationController.dispose();
     _pageController.dispose();
-    // _textController.dispose(); // Removed
-    // _textFocusNode.removeListener(_onTextFocusChange); // Removed
-    // _textFocusNode.dispose(); // Removed
     _redrawNotifier.dispose();
     ImageCacheManager.clear();
     super.dispose();
@@ -525,17 +181,14 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     }
   }
 
-// ... (lines 304 - 312 of _PrescriptionPageState)
-
   Future<void> _loadHealthDetailsAndPage() async {
     if (!mounted) return;
-    final String? currentPageIdBeforeRefresh = _viewablePages.isNotEmpty ? _viewablePages[_currentPageIndex].id : widget.pageId; // 1. Preserve ID
+    final String? currentPageIdBeforeRefresh =
+    _viewablePages.isNotEmpty ? _viewablePages[_currentPageIndex].id : widget.pageId;
     setState(() => _isLoadingPrescription = true);
     try {
-      final columnName = _groupToColumnMap[widget.groupName] ?? 'custom_groups_data';
-
-      // FIX: Removed 'patient_name' from this select statement, as it likely doesn't exist
-      // directly on user_health_details. We will get the name from the joined query below.
+      final columnName =
+          _groupToColumnMap[widget.groupName] ?? 'custom_groups_data';
       final columnsToSelect = ['id', columnName, 'custom_groups_data'].join(',');
 
       final response = await supabase
@@ -547,59 +200,66 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
 
       if (response != null) {
         _healthRecordId = response['id'] as String?;
-        // Set a temporary name until the full join query finishes
-        _patientName = 'N/A';
 
-        // Fetch detailed IPD, Patient, and Bed information
         final ipdResponse = await supabase
             .from('ipd_registration')
-            .select('*, patient_detail(*), bed_management(*)') // Select IPD, join patient_detail and bed_management
+            .select('*, patient_detail(*), bed_management(*)')
             .eq('uhid', widget.uhid)
             .eq('ipd_id', widget.ipdId)
             .maybeSingle();
 
         if (ipdResponse != null) {
-          // Flatten the results into state maps
           _ipdRegistrationDetails = ipdResponse;
-          // The patient_detail is a joined object fetched via FK
           _patientDetails = ipdResponse['patient_detail'] as Map<String, dynamic>? ?? {};
-          // The bed_management is a joined object fetched via FK
           _bedDetails = ipdResponse['bed_management'] as Map<String, dynamic>? ?? {};
-
-          // FINAL NAME ASSIGNMENT: Update patient name from the dedicated patient_detail object
-          _patientName = _patientDetails['name'] as String? ?? 'N/A';
+          setState(() {
+            _patientName = _patientDetails['name'] as String? ?? 'Patient Name N/A';
+          });
         }
-
-
 
         if (columnName == 'custom_groups_data') {
           final rawCustomGroups = response['custom_groups_data'] ?? [];
-          final customGroups = (rawCustomGroups as List?)?.map((json) => DrawingGroup.fromJson(json as Map<String, dynamic>)).toList() ?? [];
-          _currentGroup = customGroups.firstWhere((g) => g.id == widget.groupId, orElse: () => throw Exception("Custom group not found."));
+          final customGroups = (rawCustomGroups as List?)
+              ?.map((json) =>
+              DrawingGroup.fromJson(json as Map<String, dynamic>))
+              .toList() ??
+              [];
+          _currentGroup = customGroups.firstWhere((g) => g.id == widget.groupId,
+              orElse: () => throw Exception("Custom group not found."));
           _pagesInCurrentGroup = _currentGroup!.pages;
         } else {
           final rawPages = response[columnName] ?? [];
-          _pagesInCurrentGroup = (rawPages as List?)?.map((json) => DrawingPage.fromJson(json as Map<String, dynamic>)).toList() ?? [];
-          _currentGroup = DrawingGroup(id: widget.groupId, groupName: widget.groupName, pages: _pagesInCurrentGroup);
+          _pagesInCurrentGroup = (rawPages as List?)
+              ?.map((json) =>
+              DrawingPage.fromJson(json as Map<String, dynamic>))
+              .toList() ??
+              [];
+          _currentGroup = DrawingGroup(
+              id: widget.groupId,
+              groupName: widget.groupName,
+              pages: _pagesInCurrentGroup);
         }
 
-        // Find the page we are starting on or last saved
-        DrawingPage startPage = _pagesInCurrentGroup.firstWhere((p) => p.id == currentPageIdBeforeRefresh, orElse: () => throw Exception("Start page not found in new data."));
+        DrawingPage startPage = _pagesInCurrentGroup.firstWhere(
+                (p) => p.id == currentPageIdBeforeRefresh,
+            orElse: () => throw Exception("Start page not found in new data."));
         String pagePrefix = startPage.pageName.split('(')[0].trim();
-        _viewablePages = _pagesInCurrentGroup.where((p) => p.pageName.split('(')[0].trim() == pagePrefix).toList();
+        _viewablePages = _pagesInCurrentGroup
+            .where((p) => p.pageName.split('(')[0].trim() == pagePrefix)
+            .toList();
 
-        // 2. Restore Index: Use the preserved ID to find the new index
-        int initialIndex = _viewablePages.indexWhere((p) => p.id == currentPageIdBeforeRefresh);
+        int initialIndex =
+        _viewablePages.indexWhere((p) => p.id == currentPageIdBeforeRefresh);
 
         if (initialIndex != -1) {
           _currentPageIndex = initialIndex;
-          // 3. Inform PageController
           if (_pageController.hasClients) {
             WidgetsBinding.instance.addPostFrameCallback((_) {
-              _pageController.jumpToPage(_currentPageIndex);
+              if (mounted) _pageController.jumpToPage(_currentPageIndex);
             });
           }
-          await _loadTemplateUiImage(_viewablePages[_currentPageIndex].templateImageUrl);
+          await _loadTemplateUiImage(
+              _viewablePages[_currentPageIndex].templateImageUrl);
         } else {
           throw Exception("Starting page could not be located after refresh.");
         }
@@ -610,7 +270,9 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     } catch (e) {
       debugPrint('Error loading health details: $e');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed to load details: ${e.toString()}'), backgroundColor: Colors.red));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text('Failed to load details: ${e.toString()}'),
+            backgroundColor: Colors.red));
       }
     } finally {
       if (mounted) setState(() => _isLoadingPrescription = false);
@@ -625,8 +287,11 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
       event: PostgresChangeEvent.update,
       schema: 'public',
       table: 'user_health_details',
-      filter: PostgresChangeFilter(type: PostgresChangeFilterType.eq, column: 'id', value: _healthRecordId!),
-      callback: (payload) async { // Make callback async
+      filter: PostgresChangeFilter(
+          type: PostgresChangeFilterType.eq,
+          column: 'id',
+          value: _healthRecordId!),
+      callback: (payload) async {
         if (_isDisposed) return;
         final newRecord = payload.newRecord;
         if (newRecord == null) return;
@@ -634,12 +299,12 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
         if (updatedAtString == null) return;
         final remoteUpdateTime = DateTime.parse(updatedAtString);
 
-        if (_lastSuccessfulSaveTime != null && remoteUpdateTime.difference(_lastSuccessfulSaveTime!).inSeconds.abs() < 5) {
+        if (_lastSuccessfulSaveTime != null &&
+            remoteUpdateTime.difference(_lastSuccessfulSaveTime!).inSeconds.abs() < 5) {
           debugPrint('Ignoring self-initiated realtime update.');
           return;
         }
 
-        // --- AUTO-REFRESH LOGIC ---
         if (mounted) {
           debugPrint("External update detected. Auto-refreshing...");
           ScaffoldMessenger.of(context).showSnackBar(
@@ -649,7 +314,7 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
               duration: Duration(seconds: 3),
             ),
           );
-          await _loadHealthDetailsAndPage(); // Auto-refresh the page
+          await _loadHealthDetailsAndPage();
         }
       },
     )
@@ -667,7 +332,8 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
 
   void _syncViewablePagesToMasterList() {
     for (var viewablePage in _viewablePages) {
-      int pageIndex = _pagesInCurrentGroup.indexWhere((p) => p.id == viewablePage.id);
+      int pageIndex =
+      _pagesInCurrentGroup.indexWhere((p) => p.id == viewablePage.id);
       if (pageIndex != -1) {
         _pagesInCurrentGroup[pageIndex] = viewablePage;
       }
@@ -676,7 +342,6 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
 
   Future<void> _savePrescriptionData({bool isManualSave = false}) async {
     _debounceTimer?.cancel();
-    // _commitTextChanges(); // Removed
     if (!mounted) return;
     setState(() => _isSaving = true);
 
@@ -686,27 +351,43 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
       final Map<String, dynamic> dataToSave = {};
 
       if (columnName != null) {
-        dataToSave[columnName] = _pagesInCurrentGroup.map((page) => page.toJson()).toList();
+        dataToSave[columnName] =
+            _pagesInCurrentGroup.map((page) => page.toJson()).toList();
       } else {
-        final response = await supabase.from('user_health_details').select('custom_groups_data').eq('id', _healthRecordId!).single();
+        final response = await supabase
+            .from('user_health_details')
+            .select('custom_groups_data')
+            .eq('id', _healthRecordId!)
+            .single();
         final rawCustomGroups = response['custom_groups_data'] ?? [];
-        final List<DrawingGroup> customGroups = (rawCustomGroups as List?)?.map((json) => DrawingGroup.fromJson(json as Map<String, dynamic>)).toList() ?? [];
+        final List<DrawingGroup> customGroups = (rawCustomGroups as List?)
+            ?.map((json) =>
+            DrawingGroup.fromJson(json as Map<String, dynamic>))
+            .toList() ??
+            [];
         int groupIndex = customGroups.indexWhere((g) => g.id == widget.groupId);
         if (groupIndex != -1) {
-          customGroups[groupIndex] = customGroups[groupIndex].copyWith(pages: _pagesInCurrentGroup);
+          customGroups[groupIndex] =
+              customGroups[groupIndex].copyWith(pages: _pagesInCurrentGroup);
         } else {
           throw Exception("Custom group not found for saving.");
         }
-        dataToSave['custom_groups_data'] = customGroups.map((group) => group.toJson()).toList();
+        dataToSave['custom_groups_data'] =
+            customGroups.map((group) => group.toJson()).toList();
       }
       dataToSave['updated_at'] = DateTime.now().toIso8601String();
 
       if (_healthRecordId != null) {
-        await supabase.from('user_health_details').update(dataToSave).eq('id', _healthRecordId!);
+        await supabase
+            .from('user_health_details')
+            .update(dataToSave)
+            .eq('id', _healthRecordId!);
         _lastSuccessfulSaveTime = DateTime.now();
 
         if (mounted && isManualSave) {
-          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Saved! Refreshing to synchronize.'), backgroundColor: Colors.green));
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+              content: Text('Saved! Refreshing to synchronize.'),
+              backgroundColor: Colors.green));
           await _loadHealthDetailsAndPage();
         }
       } else {
@@ -715,23 +396,161 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     } catch (e) {
       debugPrint('Error saving: $e');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Save failed: $e'), backgroundColor: Colors.red));
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Save failed: $e'), backgroundColor: Colors.red));
       }
     } finally {
       if (mounted) setState(() => _isSaving = false);
     }
   }
 
+  // --- PDF Download Functionality (Refactored) ---
+  Future<void> _downloadGroupAsPdf() async {
+    setState(() => _isSaving = true);
+    await PdfGenerator.downloadGroupAsPdf(
+      context: context,
+      supabase: supabase,
+      healthRecordId: _healthRecordId,
+      groupName: widget.groupName,
+      groupId: widget.groupId,
+      groupToColumnMap: _groupToColumnMap,
+    );
+    if (mounted) setState(() => _isSaving = false);
+  }
+
+  // --- Stamp Functionality (NEW) ---
+
+  Future<void> _fetchStamps() async {
+    if (!mounted) return;
+    setState(() => _isLoadingStamps = true);
+    try {
+      final response = await supabase.from('stamp_image').select();
+      if (response.isNotEmpty) {
+        _stamps = (response as List)
+            .map((data) => StampImage.fromJson(data as Map<String, dynamic>))
+            .toList();
+      }
+    } catch (e) {
+      debugPrint('Error fetching stamps: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+              content: Text('Failed to load stamps: $e'),
+              backgroundColor: Colors.red),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isLoadingStamps = false);
+    }
+  }
+
+  Future<void> _showStampSelectorModal() async {
+    if (_isLoadingStamps) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Loading stamps...')));
+      }
+      return;
+    }
+    if (_stamps.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text('No stamps found.'), backgroundColor: Colors.orange));
+      }
+      return;
+    }
+
+    await showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (BuildContext context) {
+        return Container(
+          height: MediaQuery.of(context).size.height * 0.8,
+          padding: const EdgeInsets.all(16.0),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text("Select a Stamp",
+                  style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                      color: darkText)),
+              const SizedBox(height: 10),
+              const Divider(),
+              Expanded(
+                child: GridView.builder(
+                  gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                    crossAxisCount: 3,
+                    crossAxisSpacing: 8,
+                    mainAxisSpacing: 8,
+                    childAspectRatio: 1.0,
+                  ),
+                  itemCount: _stamps.length,
+                  itemBuilder: (context, index) {
+                    final stamp = _stamps[index];
+                    return InkWell(
+                      onTap: () {
+                        Navigator.pop(context);
+                        _addImageToCanvas(stamp.stampUrl);
+                        if (mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                  content: Text('Stamp added!'),
+                                  backgroundColor: Colors.green));
+                        }
+                      },
+                      child: Container(
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: mediumGreyText.withOpacity(0.5)),
+                        ),
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(8),
+                          child: Image.network(
+                            stamp.stampUrl,
+                            fit: BoxFit.contain,
+                            loadingBuilder: (context, child, loadingProgress) {
+                              if (loadingProgress == null) return child;
+                              return Center(
+                                  child: CircularProgressIndicator(
+                                      value: loadingProgress.expectedTotalBytes != null
+                                          ? loadingProgress.cumulativeBytesLoaded /
+                                          loadingProgress.expectedTotalBytes!
+                                          : null));
+                            },
+                            errorBuilder: (context, error, stackTrace) =>
+                            const Center(
+                                child: Icon(Icons.broken_image,
+                                    color: Colors.red)),
+                          ),
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
   // --- Image Handling & Storage ---
 
   Future<void> _fetchUserUploadedImages() async {
     try {
-      // The path should be specific to the user, e.g., 'public/images/UHID/'
       final storagePath = 'public/images/${widget.uhid}/';
-      final files = await supabase.storage.from(kSupabaseBucketName).list(path: storagePath);
+      final files =
+      await supabase.storage.from(kSupabaseBucketName).list(path: storagePath);
 
       _userUploadedImages = files.map((file) {
-        final publicUrl = supabase.storage.from(kSupabaseBucketName).getPublicUrl('$storagePath${file.name}');
+        final publicUrl = supabase.storage
+            .from(kSupabaseBucketName)
+            .getPublicUrl('$storagePath${file.name}');
         return UploadedImage(name: file.name, publicUrl: publicUrl);
       }).toList();
 
@@ -742,40 +561,47 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
   }
 
   Future<void> _pickAndUploadImage(ImageSource source) async {
-    // _commitTextChanges(); // Removed
     final XFile? pickedFile = await _picker.pickImage(source: source);
 
     if (pickedFile != null) {
       setState(() => _isSaving = true);
       try {
         final imageFile = await pickedFile.readAsBytes();
-        final fileName = '${generateUniqueId()}.${pickedFile.path.split('.').last}';
+        final fileName =
+            '${generateUniqueId()}.${pickedFile.path.split('.').last}';
         final storagePath = 'public/images/${widget.uhid}/$fileName';
 
-        // 1. Upload to Supabase Storage
         await supabase.storage.from(kSupabaseBucketName).uploadBinary(
           storagePath,
           imageFile,
           fileOptions: const FileOptions(cacheControl: '3600', upsert: false),
         );
 
-        // 2. Get the public URL
-        final publicUrl = supabase.storage.from(kSupabaseBucketName).getPublicUrl(storagePath);
+        final publicUrl =
+        supabase.storage.from(kSupabaseBucketName).getPublicUrl(storagePath);
 
-        // 3. Add to DrawingPage data
         _addImageToCanvas(publicUrl);
-
-        // 4. Refresh uploaded images list
         await _fetchUserUploadedImages();
 
-        if(mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Image uploaded and added!'), backgroundColor: Colors.green));
-
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+              content: Text('Image uploaded and added!'),
+              backgroundColor: Colors.green));
+        }
       } on StorageException catch (e) {
         debugPrint('Supabase Storage Error: ${e.message}');
-        if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Image upload failed: ${e.message}'), backgroundColor: Colors.red));
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+              content: Text('Image upload failed: ${e.message}'),
+              backgroundColor: Colors.red));
+        }
       } catch (e) {
         debugPrint('General Image Error: $e');
-        if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Image handling failed: $e'), backgroundColor: Colors.red));
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+              content: Text('Image handling failed: $e'),
+              backgroundColor: Colors.red));
+        }
       } finally {
         if (mounted) setState(() => _isSaving = false);
       }
@@ -787,27 +613,30 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     final newImage = DrawingImage(
       id: generateUniqueId(),
       imageUrl: publicUrl,
-      // Center the image on the canvas
-      position: Offset(canvasWidth / 2 - defaultImageSize / 2, canvasHeight / 2 - defaultImageSize / 2),
+      position: Offset(canvasWidth / 2 - defaultImageSize / 2,
+          canvasHeight / 2 - defaultImageSize / 2),
       width: defaultImageSize,
       height: defaultImageSize,
     );
 
     final currentPage = _viewablePages[_currentPageIndex];
     setState(() {
-      _viewablePages[_currentPageIndex] = currentPage.copyWith(images: [...currentPage.images, newImage]);
-      _selectedImageId = newImage.id; // Auto-select the new image
+      _viewablePages[_currentPageIndex] =
+          currentPage.copyWith(images: [...currentPage.images, newImage]);
+      _selectedImageId = newImage.id;
       _isMovingSelectedImage = false;
     });
 
     _debouncedSave();
   }
 
-  void _updateSelectedImage({Offset? newPosition, double? newWidth, double? newHeight}) {
+  void _updateSelectedImage(
+      {Offset? newPosition, double? newWidth, double? newHeight}) {
     if (_selectedImageId == null) return;
 
     final currentPage = _viewablePages[_currentPageIndex];
-    final imageIndex = currentPage.images.indexWhere((img) => img.id == _selectedImageId);
+    final imageIndex =
+    currentPage.images.indexWhere((img) => img.id == _selectedImageId);
 
     if (imageIndex != -1) {
       final oldImage = currentPage.images[imageIndex];
@@ -820,8 +649,9 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
       );
 
       setState(() {
-        _viewablePages[_currentPageIndex] = currentPage.copyWith(images: updatedImages);
-        _redrawNotifier.value = 1 - _redrawNotifier.value; // Force repaint
+        _viewablePages[_currentPageIndex] =
+            currentPage.copyWith(images: updatedImages);
+        _redrawNotifier.value = 1 - _redrawNotifier.value;
       });
       _debouncedSave();
     }
@@ -830,11 +660,11 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
   void _resizeSelectedImage(double delta) {
     if (_selectedImageId == null) return;
     final currentPage = _viewablePages[_currentPageIndex];
-    final image = currentPage.images.firstWhere((img) => img.id == _selectedImageId);
+    final image =
+    currentPage.images.firstWhere((img) => img.id == _selectedImageId);
 
-    // Simplistic resizing: change width and height by delta, minimum size of 50
-    double newWidth = max(50.0, image.width + delta);
-    double newHeight = max(50.0, image.height + delta); // Keep 1:1 ratio for simplicity
+    double newWidth = (image.width + delta).clamp(50.0, canvasWidth);
+    double newHeight = (image.height + delta).clamp(50.0, canvasHeight);
 
     _updateSelectedImage(newWidth: newWidth, newHeight: newHeight);
   }
@@ -844,7 +674,9 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     final currentPage = _viewablePages[_currentPageIndex];
     setState(() {
       _viewablePages[_currentPageIndex] = currentPage.copyWith(
-        images: currentPage.images.where((img) => img.id != _selectedImageId).toList(),
+        images: currentPage.images
+            .where((img) => img.id != _selectedImageId)
+            .toList(),
       );
       _selectedImageId = null;
       _isMovingSelectedImage = false;
@@ -856,18 +688,20 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     if (_selectedImageId == null) return;
     setState(() {
       _isMovingSelectedImage = !_isMovingSelectedImage;
-      _selectedTool = DrawingTool.image; // Ensure tool is set to image
-      if (!_isMovingSelectedImage) _dragStartCanvasPosition = null; // Reset drag state
+      _selectedTool = DrawingTool.image;
+      if (!_isMovingSelectedImage) _dragStartCanvasPosition = null;
     });
   }
 
-
   Future<void> _showUploadedImagesSelector() async {
-    await _fetchUserUploadedImages(); // Ensure we have the latest list
+    await _fetchUserUploadedImages();
 
     if (_userUploadedImages.isEmpty) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('No uploaded images found for this patient. Use Camera or Gallery to upload one.'), backgroundColor: Colors.orange));
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text(
+                'No uploaded images found for this patient. Use Camera or Gallery to upload one.'),
+            backgroundColor: Colors.orange));
       }
       return;
     }
@@ -875,7 +709,8 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     await showModalBottomSheet(
       context: context,
       isScrollControlled: true,
-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
       builder: (BuildContext context) {
         return Container(
           height: MediaQuery.of(context).size.height * 0.8,
@@ -884,7 +719,11 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text("Uploaded Images", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: darkText)),
+              const Text("Uploaded Images",
+                  style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                      color: darkText)),
               const SizedBox(height: 10),
               const Divider(),
               Expanded(
@@ -902,7 +741,12 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
                       onTap: () {
                         Navigator.pop(context);
                         _addImageToCanvas(uploadedImage.publicUrl);
-                        if(mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Image added from uploaded files!'), backgroundColor: Colors.green));
+                        if (mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                  content: Text('Image added from uploaded files!'),
+                                  backgroundColor: Colors.green));
+                        }
                       },
                       child: Container(
                         decoration: BoxDecoration(
@@ -916,9 +760,17 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
                             fit: BoxFit.cover,
                             loadingBuilder: (context, child, loadingProgress) {
                               if (loadingProgress == null) return child;
-                              return Center(child: CircularProgressIndicator(value: loadingProgress.expectedTotalBytes != null ? loadingProgress.cumulativeBytesLoaded / loadingProgress.expectedTotalBytes! : null));
+                              return Center(
+                                  child: CircularProgressIndicator(
+                                      value: loadingProgress.expectedTotalBytes != null
+                                          ? loadingProgress.cumulativeBytesLoaded /
+                                          loadingProgress.expectedTotalBytes!
+                                          : null));
                             },
-                            errorBuilder: (context, error, stackTrace) => const Center(child: Icon(Icons.broken_image, color: Colors.red)),
+                            errorBuilder: (context, error, stackTrace) =>
+                            const Center(
+                                child: Icon(Icons.broken_image,
+                                    color: Colors.red)),
                           ),
                         ),
                       ),
@@ -936,69 +788,69 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
   // --- Pointer and Interaction Handlers ---
 
   void _handlePointerDown(PointerDownEvent details) {
-    // _commitTextChanges(); // Removed
-    final transformedPosition = _transformToCanvasCoordinates(details.localPosition);
+    final transformedPosition =
+    _transformToCanvasCoordinates(details.localPosition);
     if (!_isPointOnCanvas(transformedPosition)) return;
 
     final currentPage = _viewablePages[_currentPageIndex];
-    setState(() => _isStylusInteraction = details.kind == ui.PointerDeviceKind.stylus);
-
+    setState(
+            () => _isStylusInteraction = details.kind == ui.PointerDeviceKind.stylus);
 
     if (_selectedTool == DrawingTool.image) {
-      // 1. Check if the tap hits the currently selected image's move handle/body
-      final selectedImage = currentPage.images.firstWhereOrNull((img) => img.id == _selectedImageId);
+      final selectedImage = IterableX(currentPage.images)
+          .firstWhereOrNull((img) => img.id == _selectedImageId);
       bool hitSelectedImage = false;
 
       if (selectedImage != null) {
-        final imageRect = Rect.fromLTWH(selectedImage.position.dx, selectedImage.position.dy, selectedImage.width, selectedImage.height).inflate(5);
+        final imageRect = Rect.fromLTWH(selectedImage.position.dx,
+            selectedImage.position.dy, selectedImage.width, selectedImage.height)
+            .inflate(5);
         if (imageRect.contains(transformedPosition)) {
           hitSelectedImage = true;
         }
       }
 
       if (hitSelectedImage) {
-        // Only start drag if `_isMovingSelectedImage` is true, otherwise treat it as selection
         if (_isMovingSelectedImage) {
           _dragStartCanvasPosition = transformedPosition - selectedImage!.position;
         } else {
-          // If not in move mode, just a tap selects it and *might* enter move mode later if user presses move button
           _handleCanvasTap(transformedPosition);
         }
         return;
       } else {
-        // If it didn't hit the selected one, try to select a new image, which also handles deselection
         _handleCanvasTap(transformedPosition);
         return;
       }
     }
 
-
-    // Logic for Drawing/Erasing (Pen/Eraser)
-    // Only proceed if tool is pen/eraser AND it's a stylus interaction (Pen Only Mode)
     if (_isPenOnlyMode && _isStylusInteraction) {
       if (_selectedTool == DrawingTool.pen) {
         setState(() {
-          final newLine = DrawingLine(points: [transformedPosition], colorValue: _currentColor.value, strokeWidth: _strokeWidth);
-          _viewablePages[_currentPageIndex] = currentPage.copyWith(lines: [...currentPage.lines, newLine]);
+          final newLine = DrawingLine(
+              points: [transformedPosition],
+              colorValue: _currentColor.value,
+              strokeWidth: _strokeWidth);
+          _viewablePages[_currentPageIndex] =
+              currentPage.copyWith(lines: [...currentPage.lines, newLine]);
         });
       }
-      // Eraser logic is handled in _handlePointerMove, but setting _isStylusInteraction to true here is crucial
     }
   }
 
   void _handlePointerMove(PointerMoveEvent details) {
-    final transformedPosition = _transformToCanvasCoordinates(details.localPosition);
+    final transformedPosition =
+    _transformToCanvasCoordinates(details.localPosition);
     if (!_isPointOnCanvas(transformedPosition)) return;
 
-    // Image Movement Logic (works with finger or stylus if tool is image and move mode is active)
-    if (_selectedTool == DrawingTool.image && _isMovingSelectedImage && _selectedImageId != null && _dragStartCanvasPosition != null) {
-      // Logic for dragging/moving an image
+    if (_selectedTool == DrawingTool.image &&
+        _isMovingSelectedImage &&
+        _selectedImageId != null &&
+        _dragStartCanvasPosition != null) {
       final newImagePosition = transformedPosition - _dragStartCanvasPosition!;
       _updateSelectedImage(newPosition: newImagePosition);
       return;
     }
 
-    // Drawing/Erasing Logic (only with stylus in Pen Only Mode)
     if (_isPenOnlyMode && _isStylusInteraction) {
       if (_selectedTool == DrawingTool.pen) {
         setState(() {
@@ -1008,7 +860,8 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
           final newPoints = [...lastLine.points, transformedPosition];
           final updatedLines = List<DrawingLine>.from(currentPage.lines);
           updatedLines.last = lastLine.copyWith(points: newPoints);
-          _viewablePages[_currentPageIndex] = currentPage.copyWith(lines: updatedLines);
+          _viewablePages[_currentPageIndex] =
+              currentPage.copyWith(lines: updatedLines);
         });
       } else if (_selectedTool == DrawingTool.eraser) {
         _eraseLineAtPoint(transformedPosition);
@@ -1017,10 +870,11 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
   }
 
   void _handlePointerUp(PointerUpEvent details) {
-    if (_selectedTool == DrawingTool.image && _selectedImageId != null && _dragStartCanvasPosition != null) {
+    if (_selectedTool == DrawingTool.image &&
+        _selectedImageId != null &&
+        _dragStartCanvasPosition != null) {
       _dragStartCanvasPosition = null;
-      _debouncedSave(); // Save after image movement
-      // Note: _isMovingSelectedImage is NOT reset here, it is controlled by the lock icon.
+      _debouncedSave();
     }
 
     if (_isStylusInteraction) {
@@ -1029,13 +883,14 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     }
   }
 
-  void _handleCanvasTap(Offset canvasPosition) { // Taps when DrawingTool.image is active
+  void _handleCanvasTap(Offset canvasPosition) {
     final currentPage = _viewablePages[_currentPageIndex];
     String? newSelectedImageId;
 
-    // Check top-most image first
     for (final image in currentPage.images.reversed) {
-      final imageRect = Rect.fromLTWH(image.position.dx, image.position.dy, image.width, image.height).inflate(5); // Slight tolerance
+      final imageRect = Rect.fromLTWH(image.position.dx, image.position.dy,
+          image.width, image.height)
+          .inflate(5);
       if (imageRect.contains(canvasPosition)) {
         newSelectedImageId = image.id;
         break;
@@ -1044,19 +899,15 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
 
     setState(() {
       if (newSelectedImageId != null) {
-        // If a new image is tapped, select it, but DON'T auto-enter move mode
-        // if the old image was already selected, a tap simply confirms the selection.
         if (_selectedImageId != newSelectedImageId) {
-          _isMovingSelectedImage = false; // Reset move mode for new selection
+          _isMovingSelectedImage = false;
         }
         _selectedImageId = newSelectedImageId;
-
       } else {
-        // If they tapped outside an image, deselect it and exit move mode
         _selectedImageId = null;
         _isMovingSelectedImage = false;
       }
-      _redrawNotifier.value = 1 - _redrawNotifier.value; // Force redraw to show/hide selection border
+      _redrawNotifier.value = 1 - _redrawNotifier.value;
     });
   }
 
@@ -1064,10 +915,6 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
 
   void _onTransformUpdated() => setState(() {});
 
-  // NEW: Method to display the patient details modal
-  // --- Update the existing _showPatientDetailsModal method in _PrescriptionPageState ---
-
-  // NEW: Method to display the patient details modal
   void _showPatientDetailsModal() {
     if (_isLoadingPrescription) return;
 
@@ -1078,11 +925,10 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
           borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
       builder: (context) {
         return PatientInfoModal(
-          // FIX: Pass only the Supabase client and the required IDs.
-          supabase: supabase, // REQUIRED: Passes the client instance for fetching
-          ipdId: widget.ipdId, // REQUIRED
-          uhid: widget.uhid, // REQUIRED
-          healthRecordId: _healthRecordId, // Optional
+          supabase: supabase,
+          ipdId: widget.ipdId,
+          uhid: widget.uhid,
+          healthRecordId: _healthRecordId,
         );
       },
     );
@@ -1094,56 +940,64 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     setState(() {
       _copiedPageData = _CopiedPageData(
         lines: currentPage.lines.map((line) => line.copyWith()).toList(),
-        // texts: currentPage.texts.map((text) => text.copyWith()).toList(), // Removed
         images: currentPage.images.map((image) => image.copyWith()).toList(),
       );
     });
-    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Page content copied!'), backgroundColor: Colors.green, duration: Duration(seconds: 2)));
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Page content copied!'),
+        backgroundColor: Colors.green,
+        duration: Duration(seconds: 2)));
   }
 
   void _pastePageContent() {
     if (_copiedPageData == null) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Nothing to paste.'), backgroundColor: Colors.orange, duration: Duration(seconds: 2)));
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Nothing to paste.'),
+          backgroundColor: Colors.orange,
+          duration: Duration(seconds: 2)));
       return;
     }
     if (_viewablePages.isEmpty) return;
     setState(() {
       final currentPage = _viewablePages[_currentPageIndex];
-      // final pastedTextsWithNewIds = _copiedPageData!.texts.map((textToCopy) => textToCopy.copyWith(id: generateUniqueId())).toList(); // Removed
-      final pastedImagesWithNewIds = _copiedPageData!.images.map((imageToCopy) => imageToCopy.copyWith(id: generateUniqueId())).toList();
+      final pastedImagesWithNewIds = _copiedPageData!.images
+          .map((imageToCopy) => imageToCopy.copyWith(id: generateUniqueId()))
+          .toList();
 
       _viewablePages[_currentPageIndex] = currentPage.copyWith(
         lines: [...currentPage.lines, ..._copiedPageData!.lines],
-        // texts: [...currentPage.texts, ...pastedTextsWithNewIds], // Removed
         images: [...currentPage.images, ...pastedImagesWithNewIds],
       );
     });
     _debouncedSave();
-    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Content pasted!'), backgroundColor: primaryBlue, duration: Duration(seconds: 2)));
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Content pasted!'),
+        backgroundColor: primaryBlue,
+        duration: Duration(seconds: 2)));
   }
 
   void _undoLastAction() {
     HapticFeedback.lightImpact();
-    if (_viewablePages.isEmpty || (_viewablePages[_currentPageIndex].lines.isEmpty && _viewablePages[_currentPageIndex].images.isEmpty)) return; // Removed texts check
+    if (_viewablePages.isEmpty ||
+        (_viewablePages[_currentPageIndex].lines.isEmpty &&
+            _viewablePages[_currentPageIndex].images.isEmpty)) return;
 
-    // Simple undo: remove the last added element (line or image)
     setState(() {
       final currentPage = _viewablePages[_currentPageIndex];
-
       final lines = currentPage.lines.toList();
       final images = currentPage.images.toList();
 
-      // Prioritize removing drawing lines as they are the most frequent operation
       if (lines.isNotEmpty) {
         lines.removeLast();
       } else if (images.isNotEmpty) {
         images.removeLast();
       }
 
-      _selectedImageId = null; // Deselect anything when undoing
+      _selectedImageId = null;
       _isMovingSelectedImage = false;
 
-      _viewablePages[_currentPageIndex] = currentPage.copyWith(lines: lines, images: images); // Removed texts
+      _viewablePages[_currentPageIndex] =
+          currentPage.copyWith(lines: lines, images: images);
     });
     _debouncedSave();
   }
@@ -1152,8 +1006,9 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     HapticFeedback.mediumImpact();
     if (_viewablePages.isEmpty) return;
     setState(() {
-      _viewablePages[_currentPageIndex] = _viewablePages[_currentPageIndex].copyWith(lines: [], images: []); // Removed texts
-      _selectedImageId = null; // Deselect
+      _viewablePages[_currentPageIndex] =
+          _viewablePages[_currentPageIndex].copyWith(lines: [], images: []);
+      _selectedImageId = null;
       _isMovingSelectedImage = false;
     });
     _debouncedSave();
@@ -1176,14 +1031,15 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
       if (!remove) linesToKeep.add(line);
     }
     if (changed) {
-      setState(() => _viewablePages[_currentPageIndex] = currentPage.copyWith(lines: linesToKeep));
+      setState(() => _viewablePages[_currentPageIndex] =
+          currentPage.copyWith(lines: linesToKeep));
     }
   }
 
   void _zoomByFactor(double factor) {
     HapticFeedback.lightImpact();
-    // This is safe to call from a button outside the InteractiveViewer's direct control
-    final center = (context.findRenderObject() as RenderBox).size.center(Offset.zero);
+    final center =
+    (context.findRenderObject() as RenderBox).size.center(Offset.zero);
     final newMatrix = _transformationController.value.clone()
       ..translate(center.dx, center.dy)
       ..scale(factor)
@@ -1200,30 +1056,34 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
 
   Offset _transformToCanvasCoordinates(Offset localPosition) {
     final inverseMatrix = Matrix4.inverted(_transformationController.value);
-    // Uses the utility function from the helper file
     return Matrix4Utils.transformPoint(inverseMatrix, localPosition);
   }
 
   bool _isPointOnCanvas(Offset point) {
-    return point.dx >= 0 && point.dx <= canvasWidth && point.dy >= 0 && point.dy <= canvasHeight;
+    return point.dx >= 0 &&
+        point.dx <= canvasWidth &&
+        point.dy >= 0 &&
+        point.dy <= canvasHeight;
   }
 
   void _setInitialZoom(Size viewportSize) {
     if (viewportSize.isEmpty) return;
-    final scale = min(viewportSize.width / canvasWidth, viewportSize.height / canvasHeight);
+    final scale = (viewportSize.width / canvasWidth)
+        .clamp(0.1, viewportSize.height / canvasHeight);
     final dx = (viewportSize.width - canvasWidth * scale) / 2;
     final dy = (viewportSize.height - canvasHeight * scale) / 2;
-    _transformationController.value = Matrix4.identity()..translate(dx, dy)..scale(scale);
+    _transformationController.value = Matrix4.identity()
+      ..translate(dx, dy)
+      ..scale(scale);
   }
 
   void _navigateToPage(int index) async {
     if (index >= 0 && index < _viewablePages.length) {
-      // _commitTextChanges(); // Removed
       if (_pageController.hasClients) _pageController.jumpToPage(index);
       setState(() {
         _currentPageIndex = index;
         _isInitialZoomSet = false;
-        _selectedImageId = null; // Deselect image on page change
+        _selectedImageId = null;
         _isMovingSelectedImage = false;
       });
       await _loadTemplateUiImage(_viewablePages[index].templateImageUrl);
@@ -1234,7 +1094,8 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     if (_pagesInCurrentGroup.isEmpty) return;
     await showModalBottomSheet(
       context: context,
-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
       builder: (BuildContext context) {
         return Container(
           padding: const EdgeInsets.all(16.0),
@@ -1242,7 +1103,11 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text("Pages in '${_currentGroup?.groupName ?? 'Group'}'", style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: darkText)),
+              Text("Pages in '${_currentGroup?.groupName ?? 'Group'}'",
+                  style: const TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                      color: darkText)),
               const SizedBox(height: 10),
               const Divider(),
               Flexible(
@@ -1251,32 +1116,50 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
                   itemCount: _pagesInCurrentGroup.length,
                   itemBuilder: (context, index) {
                     final page = _pagesInCurrentGroup[index];
-                    final bool isSelected = page.id == _viewablePages[_currentPageIndex].id;
+                    final bool isSelected =
+                        page.id == _viewablePages[_currentPageIndex].id;
                     return ListTile(
-                      leading: Icon(Icons.description_outlined, color: isSelected ? primaryBlue : mediumGreyText),
-                      title: Text(page.pageName, style: TextStyle(fontWeight: isSelected ? FontWeight.bold : FontWeight.normal, color: isSelected ? primaryBlue : darkText)),
+                      leading: Icon(Icons.description_outlined,
+                          color: isSelected ? primaryBlue : mediumGreyText),
+                      title: Text(page.pageName,
+                          style: TextStyle(
+                              fontWeight: isSelected
+                                  ? FontWeight.bold
+                                  : FontWeight.normal,
+                              color: isSelected ? primaryBlue : darkText)),
                       selected: isSelected,
                       selectedTileColor: primaryBlue.withOpacity(0.1),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(8)),
                       onTap: () {
                         Navigator.pop(context);
                         final tappedPage = _pagesInCurrentGroup[index];
-                        if (tappedPage.id == _viewablePages[_currentPageIndex].id) return;
-                        final tappedPrefix = tappedPage.pageName.split('(')[0].trim();
-                        final newViewablePages = _pagesInCurrentGroup.where((p) => p.pageName.split('(')[0].trim() == tappedPrefix).toList();
-                        final newPageIndex = newViewablePages.indexWhere((p) => p.id == tappedPage.id);
+                        if (tappedPage.id ==
+                            _viewablePages[_currentPageIndex].id) return;
+                        final tappedPrefix =
+                        tappedPage.pageName.split('(')[0].trim();
+                        final newViewablePages = _pagesInCurrentGroup
+                            .where((p) =>
+                        p.pageName.split('(')[0].trim() ==
+                            tappedPrefix)
+                            .toList();
+                        final newPageIndex = newViewablePages
+                            .indexWhere((p) => p.id == tappedPage.id);
                         if (newPageIndex != -1) {
-                          // _commitTextChanges(); // Removed
                           setState(() {
                             _viewablePages = newViewablePages;
                             _currentPageIndex = newPageIndex;
                             _isInitialZoomSet = false;
-                            _selectedImageId = null; // Deselect image on page change
+                            _selectedImageId = null;
                             _isMovingSelectedImage = false;
                           });
                           WidgetsBinding.instance.addPostFrameCallback((_) {
-                            if (_pageController.hasClients) _pageController.jumpToPage(newPageIndex);
-                            _loadTemplateUiImage(newViewablePages[newPageIndex].templateImageUrl);
+                            if (_pageController.hasClients) {
+                              _pageController.jumpToPage(newPageIndex);
+                            }
+                            _loadTemplateUiImage(
+                                newViewablePages[newPageIndex]
+                                    .templateImageUrl);
                           });
                         }
                       },
@@ -1292,7 +1175,6 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
   }
 
   Future<bool> _handleBackButton() async {
-    // _commitTextChanges(); // Removed
     _syncViewablePagesToMasterList();
     if (Navigator.canPop(context)) {
       Navigator.of(context).pop(_pagesInCurrentGroup);
@@ -1310,53 +1192,88 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     if (_viewablePages.isEmpty) {
       return Scaffold(
         appBar: AppBar(title: const Text("Error")),
-        body: const Center(child: Padding(padding: EdgeInsets.all(16.0), child: Text("Page data could not be loaded.", textAlign: TextAlign.center))),
+        body: const Center(
+            child: Padding(
+                padding: EdgeInsets.all(16.0),
+                child: Text("Page data could not be loaded.",
+                    textAlign: TextAlign.center))),
       );
     }
 
     final currentPageData = _viewablePages[_currentPageIndex];
-
-    // Determine if InteractiveViewer should be pan-enabled.
-    // It should be disabled when the user is actively drawing (stylus interaction)
-    // or when the user is actively moving a selected image.
-    final bool panScaleEnabled = !_isStylusInteraction && !_isMovingSelectedImage;
-
+    final bool panScaleEnabled =
+        !_isStylusInteraction && !_isMovingSelectedImage;
 
     return WillPopScope(
       onWillPop: _handleBackButton,
       child: Scaffold(
         backgroundColor: lightBackground,
         appBar: AppBar(
-          leading: IconButton(icon: const Icon(Icons.arrow_back), onPressed: _handleBackButton, tooltip: 'Back'),
-          title: Text("${currentPageData.pageName} (${currentPageData.groupName})"),
+          leading: IconButton(
+              icon: const Icon(Icons.arrow_back),
+              onPressed: _handleBackButton,
+              tooltip: 'Back'),
+          title: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(_patientName,
+                  style: const TextStyle(
+                      fontSize: 16, fontWeight: FontWeight.bold)),
+              Text(
+                  "${currentPageData.pageName} (${currentPageData.groupName})",
+                  style:
+                  const TextStyle(fontSize: 12, color: mediumGreyText)),
+            ],
+          ),
           backgroundColor: Colors.white,
           elevation: 2,
           actions: [
-            // NEW: Patient Info Icon
             IconButton(
               icon: const Icon(Icons.info_outline, color: primaryBlue),
               tooltip: 'Patient Details',
               onPressed: _showPatientDetailsModal,
             ),
-            IconButton(icon: const Icon(Icons.list_alt, color: primaryBlue), tooltip: 'Select Page', onPressed: _showFolderPageSelector),
+            IconButton(
+                icon: const Icon(Icons.list_alt, color: primaryBlue),
+                tooltip: 'Select Page',
+                onPressed: _showFolderPageSelector),
             if (_viewablePages.length > 1)
               Padding(
                 padding: const EdgeInsets.only(right: 8.0),
                 child: ActionChip(
-                  onPressed: () => _navigateToPage((_currentPageIndex + 1) % _viewablePages.length),
-                  avatar: const Icon(Icons.arrow_forward_ios, size: 14, color: primaryBlue),
-                  label: Text("${_currentPageIndex + 1}/${_viewablePages.length}", style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: primaryBlue)),
+                  onPressed: () => _navigateToPage(
+                      (_currentPageIndex + 1) % _viewablePages.length),
+                  avatar: const Icon(Icons.arrow_forward_ios,
+                      size: 14, color: primaryBlue),
+                  label: Text(
+                      "${_currentPageIndex + 1}/${_viewablePages.length}",
+                      style: const TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.bold,
+                          color: primaryBlue)),
                   backgroundColor: primaryBlue.withOpacity(0.15),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(20)),
                 ),
               ),
             _buildPageActionsMenu(),
             IconButton(
+              icon: const Icon(Icons.picture_as_pdf_rounded,
+                  color: primaryBlue),
+              tooltip: 'Download Group as PDF',
+              onPressed: _isSaving ? null : _downloadGroupAsPdf,
+            ),
+            IconButton(
               icon: _isSaving
-                  ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: primaryBlue))
+                  ? const SizedBox(
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(
+                      strokeWidth: 2, color: primaryBlue))
                   : const Icon(Icons.save_alt_rounded, color: primaryBlue),
               tooltip: "Save and Refresh",
-              onPressed: _isSaving ? null : () => _savePrescriptionData(isManualSave: true),
+              onPressed:
+              _isSaving ? null : () => _savePrescriptionData(isManualSave: true),
             ),
             const SizedBox(width: 8),
           ],
@@ -1364,8 +1281,12 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
             preferredSize: const Size.fromHeight(48),
             child: Container(
               color: Colors.white,
-              padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 4.0),
-              child: Row(children: [Expanded(child: _buildDrawingToolbar()), _buildPanToolbar()]),
+              padding:
+              const EdgeInsets.symmetric(horizontal: 12.0, vertical: 4.0),
+              child: Row(children: [
+                Expanded(child: _buildDrawingToolbar()),
+                _buildPanToolbar()
+              ]),
             ),
           ),
         ),
@@ -1382,7 +1303,6 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
             return Stack(
               children: [
                 Listener(
-                  // Listener only for high-precision input (stylus) and image manipulation
                   onPointerDown: _handlePointerDown,
                   onPointerMove: _handlePointerMove,
                   onPointerUp: _handlePointerUp,
@@ -1390,7 +1310,6 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
                     controller: _pageController,
                     itemCount: _viewablePages.length,
                     onPageChanged: (index) async {
-                      // _commitTextChanges(); // Removed
                       setState(() {
                         _currentPageIndex = index;
                         _isInitialZoomSet = false;
@@ -1398,43 +1317,44 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
                         _selectedImageId = null;
                         _isMovingSelectedImage = false;
                       });
-                      await _loadTemplateUiImage(_viewablePages[index].templateImageUrl);
+                      await _loadTemplateUiImage(
+                          _viewablePages[index].templateImageUrl);
                     },
                     physics: const NeverScrollableScrollPhysics(),
                     itemBuilder: (context, index) {
                       return InteractiveViewer(
                         transformationController: _transformationController,
-                        // Enable pan/scale only if NOT drawing/erasing AND NOT actively moving an image
                         panEnabled: panScaleEnabled,
                         scaleEnabled: panScaleEnabled,
                         minScale: 0.1,
                         maxScale: 10.0,
                         constrained: false,
                         boundaryMargin: const EdgeInsets.all(double.infinity),
-                        child: GestureDetector( // Add GestureDetector for image selection (non-stylus taps)
+                        child: GestureDetector(
                           onTapUp: (details) {
-                            // If tool is image and not actively moving and not a stylus interaction (which is handled by Listener)
-                            if (_selectedTool == DrawingTool.image && !_isStylusInteraction && !_isMovingSelectedImage) {
-                              _handleCanvasTap(_transformToCanvasCoordinates(details.localPosition));
+                            if (_selectedTool == DrawingTool.image &&
+                                !_isStylusInteraction &&
+                                !_isMovingSelectedImage) {
+                              _handleCanvasTap(_transformToCanvasCoordinates(
+                                  details.localPosition));
                             }
                           },
                           child: CustomPaint(
                             painter: PrescriptionPainter(
                               drawingPage: _viewablePages[index],
                               templateUiImage: _currentTemplateUiImage,
-                              // editingTextId: _editingTextId, // Removed
                               selectedImageId: _selectedImageId,
                               redrawNotifier: _redrawNotifier,
                             ),
-                            child: const SizedBox(width: canvasWidth, height: canvasHeight),
+                            child: const SizedBox(
+                                width: canvasWidth, height: canvasHeight),
                           ),
                         ),
                       );
                     },
                   ),
                 ),
-                // if (_editingTextId != null) _buildTextFieldOverlay(), // Removed text overlay
-                if (_selectedImageId != null) _buildImageOverlayControls(), // Image manipulation controls
+                if (_selectedImageId != null) _buildImageOverlayControls(),
               ],
             );
           },
@@ -1443,12 +1363,12 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     );
   }
 
-  // Refactored method to use the new ImageOverlayControls widget
   Widget _buildImageOverlayControls() {
     if (_selectedImageId == null) return const SizedBox.shrink();
 
     final currentPage = _viewablePages[_currentPageIndex];
-    final selectedImage = currentPage.images.firstWhereOrNull((img) => img.id == _selectedImageId);
+    final selectedImage = IterableX(currentPage.images)
+        .firstWhereOrNull((img) => img.id == _selectedImageId);
 
     if (selectedImage == null) return const SizedBox.shrink();
 
@@ -1464,8 +1384,6 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     );
   }
 
-  // Removed _buildImageControlIcon as it's now a top-level function in the helper file
-
   Widget _buildPageActionsMenu() {
     return PopupMenuButton<String>(
       onSelected: (String value) {
@@ -1474,22 +1392,45 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
         else if (value == 'camera') _pickAndUploadImage(ImageSource.camera);
         else if (value == 'gallery') _pickAndUploadImage(ImageSource.gallery);
         else if (value == 'uploaded') _showUploadedImagesSelector();
+        else if (value == 'stamp') _showStampSelectorModal(); // ADDED
       },
       icon: const Icon(Icons.more_vert, color: primaryBlue),
       tooltip: 'Page Actions',
       itemBuilder: (BuildContext context) => <PopupMenuEntry<String>>[
-        const PopupMenuItem<String>(value: 'copy', child: ListTile(leading: Icon(Icons.copy_all_rounded), title: Text('Copy Page'))),
+        const PopupMenuItem<String>(
+            value: 'copy',
+            child: ListTile(
+                leading: Icon(Icons.copy_all_rounded),
+                title: Text('Copy Page'))),
         if (_copiedPageData != null)
-          const PopupMenuItem<String>(value: 'paste', child: ListTile(leading: Icon(Icons.paste_rounded), title: Text('Paste on Page'))),
+          const PopupMenuItem<String>(
+              value: 'paste',
+              child: ListTile(
+                  leading: Icon(Icons.paste_rounded),
+                  title: Text('Paste on Page'))),
         const PopupMenuDivider(),
-        const PopupMenuItem<String>(value: 'camera', child: ListTile(leading: Icon(Icons.camera_alt_rounded), title: Text('Insert from Camera'))),
-        const PopupMenuItem<String>(value: 'gallery', child: ListTile(leading: Icon(Icons.photo_library_rounded), title: Text('Insert from Gallery'))),
-        const PopupMenuItem<String>(value: 'uploaded', child: ListTile(leading: Icon(Icons.cloud_upload_rounded), title: Text('Pick from Uploaded'))),
+        const PopupMenuItem<String>(
+            value: 'camera',
+            child: ListTile(
+                leading: Icon(Icons.camera_alt_rounded),
+                title: Text('Insert from Camera'))),
+        const PopupMenuItem<String>(
+            value: 'gallery',
+            child: ListTile(
+                leading: Icon(Icons.photo_library_rounded),
+                title: Text('Insert from Gallery'))),
+        const PopupMenuItem<String>(
+            value: 'uploaded',
+            child: ListTile(
+                leading: Icon(Icons.cloud_upload_rounded),
+                title: Text('Pick from Uploaded'))),
+        const PopupMenuItem<String>(
+            value: 'stamp', // ADDED
+            child: ListTile(
+                leading: Icon(Icons.star_rounded), title: Text('Insert Stamp'))),
       ],
     );
   }
-
-  // Widget _buildTextFieldOverlay() { ... } // Removed
 
   Widget _buildDrawingToolbar() {
     return SingleChildScrollView(
@@ -1498,16 +1439,19 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
         mainAxisAlignment: MainAxisAlignment.start,
         children: [
           ToggleButtons(
-            isSelected: [_selectedTool == DrawingTool.pen, _selectedTool == DrawingTool.eraser, _selectedTool == DrawingTool.image], // Removed text
+            isSelected: [
+              _selectedTool == DrawingTool.pen,
+              _selectedTool == DrawingTool.eraser,
+              _selectedTool == DrawingTool.image
+            ],
             onPressed: (index) {
               HapticFeedback.selectionClick();
               setState(() {
-                // _commitTextChanges(); // Removed
-                _selectedImageId = null; // Deselect on tool change
-                _isMovingSelectedImage = false; // Exit move mode on tool change
+                _selectedImageId = null;
+                _isMovingSelectedImage = false;
                 if (index == 0) _selectedTool = DrawingTool.pen;
                 else if (index == 1) _selectedTool = DrawingTool.eraser;
-                else _selectedTool = DrawingTool.image; // Now index 2 is image
+                else _selectedTool = DrawingTool.image;
               });
             },
             borderRadius: BorderRadius.circular(8),
@@ -1518,16 +1462,21 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
             constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
             children: const [
               Tooltip(message: "Pen", child: Icon(Icons.edit, size: 20)),
-              Tooltip(message: "Eraser", child: Icon(Icons.cleaning_services, size: 20)),
-              // Tooltip(message: "Text", child: Icon(Icons.text_fields_rounded, size: 20)), // Removed text tool
-              Tooltip(message: "Image Select/Move", child: Icon(Icons.photo_library_outlined, size: 20)),
+              Tooltip(
+                  message: "Eraser",
+                  child: Icon(Icons.cleaning_services, size: 20)),
+              Tooltip(
+                  message: "Image Select/Move",
+                  child: Icon(Icons.photo_library_outlined, size: 20)),
             ],
           ),
           const SizedBox(width: 16),
           if (_selectedTool != DrawingTool.image)
-            ...[Colors.black, Colors.blue, Colors.red, Colors.green].map((color) => _buildColorOption(color)).toList(),
-
-          if (_selectedTool == DrawingTool.pen || _selectedTool == DrawingTool.eraser)
+            ...[Colors.black, Colors.blue, Colors.red, Colors.green]
+                .map((color) => _buildColorOption(color))
+                .toList(),
+          if (_selectedTool == DrawingTool.pen ||
+              _selectedTool == DrawingTool.eraser)
             Row(
               children: [
                 const SizedBox(width: 16),
@@ -1545,28 +1494,17 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
                 ),
               ],
             ),
-
-          // Text size slider removed
-          // if (_selectedTool == DrawingTool.text)
-          //   Row(
-          //     children: [
-          //       const Icon(Icons.format_size, size: 20, color: mediumGreyText),
-          //       SizedBox(
-          //         width: 120,
-          //         child: Slider(
-          //           value: _currentFontSize,
-          //           min: 10.0,
-          //           max: 60.0,
-          //           divisions: 10,
-          //           onChanged: (value) => setState(() => _currentFontSize = value),
-          //           activeColor: primaryBlue,
-          //         ),
-          //       ),
-          //     ],
-          //   ),
           const SizedBox(width: 24),
-          IconButton(icon: const Icon(Icons.undo_rounded, color: primaryBlue, size: 22), onPressed: _undoLastAction, tooltip: "Undo"),
-          IconButton(icon: const Icon(Icons.delete_sweep_rounded, color: primaryBlue, size: 22), onPressed: _clearAllDrawings, tooltip: "Clear All"),
+          IconButton(
+              icon: const Icon(Icons.undo_rounded,
+                  color: primaryBlue, size: 22),
+              onPressed: _undoLastAction,
+              tooltip: "Undo"),
+          IconButton(
+              icon: const Icon(Icons.delete_sweep_rounded,
+                  color: primaryBlue, size: 22),
+              onPressed: _clearAllDrawings,
+              tooltip: "Clear All"),
         ],
       ),
     );
@@ -1576,9 +1514,18 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     return Row(
       mainAxisAlignment: MainAxisAlignment.end,
       children: [
-        IconButton(onPressed: _zoomIn, icon: const Icon(Icons.zoom_in), tooltip: "Zoom In"),
-        IconButton(onPressed: _zoomOut, icon: const Icon(Icons.zoom_out), tooltip: "Zoom Out"),
-        IconButton(onPressed: _resetZoom, icon: const Icon(Icons.zoom_out_map), tooltip: "Reset Zoom"),
+        IconButton(
+            onPressed: _zoomIn,
+            icon: const Icon(Icons.zoom_in),
+            tooltip: "Zoom In"),
+        IconButton(
+            onPressed: _zoomOut,
+            icon: const Icon(Icons.zoom_out),
+            tooltip: "Zoom Out"),
+        IconButton(
+            onPressed: _resetZoom,
+            icon: const Icon(Icons.zoom_out_map),
+            tooltip: "Reset Zoom"),
       ],
     );
   }
@@ -1597,9 +1544,13 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
             decoration: BoxDecoration(
               color: color,
               shape: BoxShape.circle,
-              border: isSelected ? Border.all(color: primaryBlue, width: 2.5) : Border.all(color: Colors.grey.shade300, width: 1),
+              border: isSelected
+                  ? Border.all(color: primaryBlue, width: 2.5)
+                  : Border.all(color: Colors.grey.shade300, width: 1),
             ),
-            child: isSelected ? const Icon(Icons.check, color: Colors.white, size: 16) : null,
+            child: isSelected
+                ? const Icon(Icons.check, color: Colors.white, size: 16)
+                : null,
           ),
         ),
       ),
@@ -1610,37 +1561,49 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
 class PrescriptionPainter extends CustomPainter {
   final DrawingPage drawingPage;
   final ui.Image? templateUiImage;
-  // final String? editingTextId; // Removed
   final String? selectedImageId;
   final ValueNotifier<int> redrawNotifier;
 
-  PrescriptionPainter({required this.drawingPage, this.templateUiImage, required this.redrawNotifier, this.selectedImageId}) : super(repaint: redrawNotifier); // Removed editingTextId
+  PrescriptionPainter(
+      {required this.drawingPage,
+        this.templateUiImage,
+        required this.redrawNotifier,
+        this.selectedImageId})
+      : super(repaint: redrawNotifier);
 
   @override
   void paint(Canvas canvas, Size size) {
     // 1. Draw Template/Background
     if (templateUiImage != null) {
-      paintImage(canvas: canvas, rect: Rect.fromLTWH(0, 0, size.width, size.height), image: templateUiImage!, fit: BoxFit.contain, alignment: Alignment.center);
+      paintImage(
+          canvas: canvas,
+          rect: Rect.fromLTWH(0, 0, size.width, size.height),
+          image: templateUiImage!,
+          fit: BoxFit.contain,
+          alignment: Alignment.center);
     } else {
-      canvas.drawRect(Rect.fromLTWH(0, 0, size.width, size.height), Paint()..color = Colors.grey[200]!);
+      canvas.drawRect(Rect.fromLTWH(0, 0, size.width, size.height),
+          Paint()..color = Colors.grey[200]!);
     }
 
     // 2. Draw Images
     for (var image in drawingPage.images) {
-      // Use the utility function from the helper file
       final cachedImage = ImageCacheManager.getCachedImage(image.imageUrl);
 
       if (cachedImage == null) {
-        // Asynchronously load the image
         ImageCacheManager.loadImage(image.imageUrl).then((ui.Image? loadedImage) {
           if (loadedImage != null) {
-            // Trigger repaint if image was loaded async
-            if (redrawNotifier.value == 0) redrawNotifier.value = 1; else redrawNotifier.value = 0;
+            if (redrawNotifier.value == 0) {
+              redrawNotifier.value = 1;
+            } else {
+              redrawNotifier.value = 0;
+            }
           }
         });
       }
 
-      final destRect = Rect.fromLTWH(image.position.dx, image.position.dy, image.width, image.height);
+      final destRect =
+      Rect.fromLTWH(image.position.dx, image.position.dy, image.width, image.height);
 
       if (cachedImage != null) {
         paintImage(
@@ -1648,19 +1611,18 @@ class PrescriptionPainter extends CustomPainter {
             rect: destRect,
             image: cachedImage,
             fit: BoxFit.contain,
-            alignment: Alignment.topLeft
-        );
+            alignment: Alignment.topLeft);
       } else {
-        // Draw a placeholder while loading
         canvas.drawRect(destRect, Paint()..color = Colors.grey.withOpacity(0.5));
         final textPainter = TextPainter(
-          text: const TextSpan(text: 'Loading...', style: TextStyle(color: Colors.black, fontSize: 14)),
+          text: const TextSpan(
+              text: 'Loading...',
+              style: TextStyle(color: Colors.black, fontSize: 14)),
           textDirection: TextDirection.ltr,
         )..layout();
         textPainter.paint(canvas, image.position.translate(5, 5));
       }
 
-      // Draw selection border if selected
       if (image.id == selectedImageId) {
         final borderPaint = Paint()
           ..color = primaryBlue
@@ -1685,13 +1647,12 @@ class PrescriptionPainter extends CustomPainter {
         canvas.drawPath(path, paint);
       }
     }
-
-    // 4. Draw Texts - REMOVED
   }
 
   @override
   bool shouldRepaint(covariant PrescriptionPainter oldDelegate) {
-    // Removed editingTextId from comparison
-    return oldDelegate.drawingPage != drawingPage || oldDelegate.templateUiImage != templateUiImage || oldDelegate.selectedImageId != selectedImageId;
+    return oldDelegate.drawingPage != drawingPage ||
+        oldDelegate.templateUiImage != templateUiImage ||
+        oldDelegate.selectedImageId != selectedImageId;
   }
 }
