@@ -19,8 +19,9 @@ extension IterableX<T> on Iterable<T> {
 
 class PdfGenerator {
   static const String kBaseImageUrl = 'https://apimmedford.infispark.in/';
-  static const double canvasWidth = 1000;
-  static const double canvasHeight = 1414;
+  // These constants define the SOURCE coordinate space from the Flutter app's canvas.
+  static const double kSourceCanvasWidth = 1000;
+  static const double kSourceCanvasHeight = 1414;
 
   static String _getFullImageUrl(String relativePath) {
     if (relativePath.isEmpty) return '';
@@ -88,7 +89,8 @@ class PdfGenerator {
             ?.map((g) => DrawingGroup.fromJson(g))
             .toList() ??
             [];
-        final currentGroup = allGroups.firstWhereOrNull((g) => g.id == groupId);
+        final currentGroup =
+        allGroups.firstWhereOrNull((g) => g.id == groupId);
         rawPages = currentGroup?.pages.map((p) => p.toJson()).toList();
       }
 
@@ -116,12 +118,20 @@ class PdfGenerator {
       }
 
       for (final pageData in allPages) {
-        final templateImageBytes = await _fetchImageBytes(_getFullImageUrl(pageData.templateImageUrl));
+        final templateImageBytes =
+        await _fetchImageBytes(_getFullImageUrl(pageData.templateImageUrl));
         if (templateImageBytes == null) {
-          debugPrint("Skipping page ${pageData.pageName} due to missing template.");
+          debugPrint(
+              "Skipping page ${pageData.pageName} due to missing template.");
           continue;
         }
         final templateImage = pw.MemoryImage(templateImageBytes);
+
+        final dynamicPageFormat = PdfPageFormat(
+          templateImage.width!.toDouble(),
+          templateImage.height!.toDouble(),
+          marginAll: 0,
+        );
 
         final Map<String, pw.MemoryImage> embeddedImages = {};
         for (final img in pageData.images) {
@@ -131,21 +141,57 @@ class PdfGenerator {
           }
         }
 
+        // --- ✅ FIX START: COORDINATE TRANSFORMATION LOGIC ---
+        // This logic reverses the `BoxFit.contain` effect from the Flutter UI.
+        final double imageWidth = templateImage.width!.toDouble();
+        final double imageHeight = templateImage.height!.toDouble();
+
+        final double canvasAspectRatio = kSourceCanvasWidth / kSourceCanvasHeight;
+        final double imageAspectRatio = imageWidth / imageHeight;
+
+        double sourceContentWidth;
+        double sourceContentHeight;
+        double offsetX;
+        double offsetY;
+
+        // Calculate the size and position of the image as it was displayed
+        // within the source canvas in the Flutter app.
+        if (imageAspectRatio > canvasAspectRatio) {
+          // Letterboxed: Image is wider than canvas ratio. Width is constrained.
+          sourceContentWidth = kSourceCanvasWidth;
+          sourceContentHeight = kSourceCanvasWidth / imageAspectRatio;
+          offsetX = 0;
+          offsetY = (kSourceCanvasHeight - sourceContentHeight) / 2.0;
+        } else {
+          // Pillarboxed: Image is taller than canvas ratio. Height is constrained.
+          sourceContentHeight = kSourceCanvasHeight;
+          sourceContentWidth = kSourceCanvasHeight * imageAspectRatio;
+          offsetX = (kSourceCanvasWidth - sourceContentWidth) / 2.0;
+          offsetY = 0;
+        }
+
+        // These are the final scaling factors to map from the content area
+        // of the source canvas to the final PDF page size.
+        final double scaleX = imageWidth / sourceContentWidth;
+        final double scaleY = imageHeight / sourceContentHeight;
+        // --- ✅ FIX END ---
+
         doc.addPage(
           pw.Page(
-            pageFormat: PdfPageFormat.a4,
+            pageFormat: dynamicPageFormat,
             margin: pw.EdgeInsets.zero,
             build: (pw.Context context) {
               return pw.Stack(
                 alignment: pw.Alignment.topLeft,
                 children: [
                   pw.Image(templateImage, fit: pw.BoxFit.fill),
-                  ...pageData.images.where((img) => embeddedImages.containsKey(img.imageUrl)).map((image) {
-                    final scaleX = context.page.pageFormat.width / canvasWidth;
-                    final scaleY = context.page.pageFormat.height / canvasHeight;
+                  ...pageData.images
+                      .where((img) => embeddedImages.containsKey(img.imageUrl))
+                      .map((image) {
+                    // Apply the transformation to image position and size
                     return pw.Positioned(
-                      left: image.position.dx * scaleX,
-                      top: image.position.dy * scaleY,
+                      left: (image.position.dx - offsetX) * scaleX,
+                      top: (image.position.dy - offsetY) * scaleY,
                       child: pw.Image(
                         embeddedImages[image.imageUrl]!,
                         width: image.width * scaleX,
@@ -157,27 +203,33 @@ class PdfGenerator {
                   pw.Positioned.fill(
                     child: pw.CustomPaint(
                       painter: (PdfGraphics canvas, PdfPoint size) {
-                        final scaleX = size.x / canvasWidth;
-                        final scaleY = size.y / canvasHeight;
-
                         for (final line in pageData.lines) {
                           if (line.points.length < 2) continue;
 
                           canvas
                             ..saveContext()
                             ..setStrokeColor(PdfColor.fromInt(line.colorValue))
-                            ..setLineWidth(line.strokeWidth * scaleX)
+                            ..setLineWidth(line.strokeWidth * scaleX) // Scale stroke
                             ..setLineCap(PdfLineCap.round);
 
+                          // Transform the first point and move to it
+                          final firstPoint = line.points.first;
+                          final transformedFirstX = (firstPoint.dx - offsetX) * scaleX;
+                          final transformedFirstY = (firstPoint.dy - offsetY) * scaleY;
+
                           canvas.moveTo(
-                            line.points.first.dx * scaleX,
-                            size.y - (line.points.first.dy * scaleY),
+                            transformedFirstX,
+                            size.y - transformedFirstY, // Invert Y-axis for PDF
                           );
 
+                          // Transform all subsequent points and draw lines to them
                           for (int i = 1; i < line.points.length; i++) {
+                            final point = line.points[i];
+                            final transformedX = (point.dx - offsetX) * scaleX;
+                            final transformedY = (point.dy - offsetY) * scaleY;
                             canvas.lineTo(
-                              line.points[i].dx * scaleX,
-                              size.y - (line.points[i].dy * scaleY),
+                              transformedX,
+                              size.y - transformedY, // Invert Y-axis for PDF
                             );
                           }
                           canvas.strokePath();
