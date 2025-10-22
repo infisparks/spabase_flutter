@@ -108,6 +108,9 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     'Discharge / Dama': 'discharge_dama_data',
     'Casualty Note': 'casualty_note_data',
     'Indoor Patient File': 'indoor_patient_file_data',
+    'Icu chart': 'icu_chart_data',
+    'Transfer Summary': 'transfer_summary_data',
+    'Prescription Sheet':'prescription_sheet_data'
   };
 
   // --- Drawing State ---
