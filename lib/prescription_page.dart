@@ -11,6 +11,11 @@ import 'patient_info_header_card.dart';
 import 'drawing_models.dart';
 import 'pdf_generator.dart';
 
+// Assuming ImageCacheManager and Matrix4Utils are defined in 'image_manipulation_helpers.dart'
+// Assuming PatientInfoModal is defined in 'patient_info_header_card.dart'
+// Assuming PdfGenerator is defined in 'pdf_generator.dart'
+// Assuming DrawingLine, DrawingImage, DrawingPage, DrawingGroup, StampImage, generateUniqueId, and ImageOverlayControls are defined/used across the other files.
+
 // Extension for list safety
 extension IterableX<T> on Iterable<T> {
   T? firstWhereOrNull(bool Function(T element) test) {
@@ -33,7 +38,8 @@ const Color darkText = Color(0xFF1E293B);
 const Color mediumGreyText = Color(0xFF64748B);
 const Color lightBackground = Color(0xFFF8FAFC);
 
-enum DrawingTool { pen, eraser, image }
+// ADDED: DrawingTool.lasso
+enum DrawingTool { pen, eraser, image, lasso }
 
 class _CopiedPageData {
   final List<DrawingLine> lines;
@@ -79,7 +85,7 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
   List<DrawingPage> _pagesInCurrentGroup = [];
   _CopiedPageData? _copiedPageData;
   List<UploadedImage> _userUploadedImages = [];
-  List<StampImage> _stamps = []; // ADDED: For stamps
+  List<StampImage> _stamps = [];
   String _patientName = 'Loading Patient Name...';
   Map<String, dynamic> _patientDetails = {};
   Map<String, dynamic> _ipdRegistrationDetails = {};
@@ -108,6 +114,8 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
   Color _currentColor = Colors.black;
   double _strokeWidth = 2.0;
   DrawingTool _selectedTool = DrawingTool.pen;
+  // ADDED: For Lasso/Selection
+  List<Offset> _lassoPoints = [];
 
   // --- Image Manipulation State ---
   String? _selectedImageId;
@@ -116,11 +124,12 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
 
   // --- View State ---
   final PageController _pageController = PageController();
-  final TransformationController _transformationController = TransformationController();
+  final TransformationController _transformationController =
+  TransformationController();
   ui.Image? _currentTemplateUiImage;
   bool _isLoadingPrescription = true;
   bool _isSaving = false;
-  bool _isLoadingStamps = false; // ADDED: For stamps
+  bool _isLoadingStamps = false;
   bool _isInitialZoomSet = false;
   bool _isStylusInteraction = false;
   final bool _isPenOnlyMode = true;
@@ -137,7 +146,7 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     super.initState();
     _loadHealthDetailsAndPage();
     _fetchUserUploadedImages();
-    _fetchStamps(); // ADDED: Fetch stamps on init
+    _fetchStamps();
     _transformationController.addListener(_onTransformUpdated);
   }
 
@@ -361,8 +370,7 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
             .single();
         final rawCustomGroups = response['custom_groups_data'] ?? [];
         final List<DrawingGroup> customGroups = (rawCustomGroups as List?)
-            ?.map((json) =>
-            DrawingGroup.fromJson(json as Map<String, dynamic>))
+            ?.map((json) => DrawingGroup.fromJson(json as Map<String, dynamic>))
             .toList() ??
             [];
         int groupIndex = customGroups.indexWhere((g) => g.id == widget.groupId);
@@ -505,7 +513,8 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
                       child: Container(
                         decoration: BoxDecoration(
                           borderRadius: BorderRadius.circular(8),
-                          border: Border.all(color: mediumGreyText.withOpacity(0.5)),
+                          border:
+                          Border.all(color: mediumGreyText.withOpacity(0.5)),
                         ),
                         child: ClipRRect(
                           borderRadius: BorderRadius.circular(8),
@@ -516,7 +525,8 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
                               if (loadingProgress == null) return child;
                               return Center(
                                   child: CircularProgressIndicator(
-                                      value: loadingProgress.expectedTotalBytes != null
+                                      value: loadingProgress.expectedTotalBytes !=
+                                          null
                                           ? loadingProgress.cumulativeBytesLoaded /
                                           loadingProgress.expectedTotalBytes!
                                           : null));
@@ -744,14 +754,16 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
                         if (mounted) {
                           ScaffoldMessenger.of(context).showSnackBar(
                               const SnackBar(
-                                  content: Text('Image added from uploaded files!'),
+                                  content:
+                                  Text('Image added from uploaded files!'),
                                   backgroundColor: Colors.green));
                         }
                       },
                       child: Container(
                         decoration: BoxDecoration(
                           borderRadius: BorderRadius.circular(8),
-                          border: Border.all(color: mediumGreyText.withOpacity(0.5)),
+                          border:
+                          Border.all(color: mediumGreyText.withOpacity(0.5)),
                         ),
                         child: ClipRRect(
                           borderRadius: BorderRadius.circular(8),
@@ -762,7 +774,8 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
                               if (loadingProgress == null) return child;
                               return Center(
                                   child: CircularProgressIndicator(
-                                      value: loadingProgress.expectedTotalBytes != null
+                                      value: loadingProgress.expectedTotalBytes !=
+                                          null
                                           ? loadingProgress.cumulativeBytesLoaded /
                                           loadingProgress.expectedTotalBytes!
                                           : null));
@@ -795,6 +808,13 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     final currentPage = _viewablePages[_currentPageIndex];
     setState(
             () => _isStylusInteraction = details.kind == ui.PointerDeviceKind.stylus);
+
+    if (_selectedTool == DrawingTool.lasso) {
+      setState(() {
+        _lassoPoints = [transformedPosition];
+      });
+      return;
+    }
 
     if (_selectedTool == DrawingTool.image) {
       final selectedImage = IterableX(currentPage.images)
@@ -842,6 +862,14 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     _transformToCanvasCoordinates(details.localPosition);
     if (!_isPointOnCanvas(transformedPosition)) return;
 
+    if (_selectedTool == DrawingTool.lasso) {
+      setState(() {
+        _lassoPoints = [..._lassoPoints, transformedPosition];
+        _redrawNotifier.value = 1 - _redrawNotifier.value; // Force redraw of lasso
+      });
+      return;
+    }
+
     if (_selectedTool == DrawingTool.image &&
         _isMovingSelectedImage &&
         _selectedImageId != null &&
@@ -870,6 +898,17 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
   }
 
   void _handlePointerUp(PointerUpEvent details) {
+    if (_selectedTool == DrawingTool.lasso) {
+      if (_lassoPoints.length > 2) {
+        _copySelectedContent();
+      }
+      setState(() {
+        _lassoPoints = [];
+        _redrawNotifier.value = 1 - _redrawNotifier.value; // Clear lasso
+      });
+      return;
+    }
+
     if (_selectedTool == DrawingTool.image &&
         _selectedImageId != null &&
         _dragStartCanvasPosition != null) {
@@ -913,6 +952,66 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
 
   // --- Utility & Action Methods ---
 
+  // NEW: Copy feature logic
+  void _copySelectedContent() {
+    if (_lassoPoints.length < 3) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Draw a closed shape to copy content.'),
+          backgroundColor: Colors.orange,
+          duration: Duration(seconds: 2)));
+      return;
+    }
+
+    final path = Path()..moveTo(_lassoPoints.first.dx, _lassoPoints.first.dy);
+    for (int i = 1; i < _lassoPoints.length; i++) {
+      path.lineTo(_lassoPoints[i].dx, _lassoPoints[i].dy);
+    }
+    path.close();
+
+    final currentPage = _viewablePages[_currentPageIndex];
+    final copiedLines = <DrawingLine>[];
+    final copiedImages = <DrawingImage>[];
+
+    // 1. Copy Lines
+    for (var line in currentPage.lines) {
+      if (line.points.any((p) => path.contains(p))) {
+        copiedLines.add(line.copyWith()); // Copy the entire line if any point is inside
+      }
+    }
+
+    // 2. Copy Images
+    for (var image in currentPage.images) {
+      final imageRect = Rect.fromLTWH(
+          image.position.dx, image.position.dy, image.width, image.height);
+      // Check if the center of the image is inside the lasso path
+      final imageCenter = imageRect.center;
+      if (path.contains(imageCenter)) {
+        copiedImages.add(image.copyWith());
+      }
+    }
+
+    if (copiedLines.isEmpty && copiedImages.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('No content found within the lasso selection.'),
+          backgroundColor: Colors.orange,
+          duration: Duration(seconds: 2)));
+      return;
+    }
+
+    setState(() {
+      _copiedPageData = _CopiedPageData(
+        lines: copiedLines,
+        images: copiedImages,
+      );
+    });
+
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(
+            'Copied ${copiedLines.length} drawing(s) and ${copiedImages.length} image(s)!'),
+        backgroundColor: Colors.green,
+        duration: const Duration(seconds: 2)));
+  }
+
   void _onTransformUpdated() => setState(() {});
 
   void _showPatientDetailsModal() {
@@ -934,6 +1033,7 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     );
   }
 
+  // MODIFIED: Simplified to use the old full-page copy only when lasso is not used
   void _copyPageContent() {
     if (_viewablePages.isEmpty) return;
     final currentPage = _viewablePages[_currentPageIndex];
@@ -944,7 +1044,7 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
       );
     });
     ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text('Page content copied!'),
+        content: Text('Full page content copied!'),
         backgroundColor: Colors.green,
         duration: Duration(seconds: 2)));
   }
@@ -960,6 +1060,7 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     if (_viewablePages.isEmpty) return;
     setState(() {
       final currentPage = _viewablePages[_currentPageIndex];
+      // Assign new unique IDs to pasted images to avoid ID conflicts
       final pastedImagesWithNewIds = _copiedPageData!.images
           .map((imageToCopy) => imageToCopy.copyWith(id: generateUniqueId()))
           .toList();
@@ -1031,8 +1132,8 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
       if (!remove) linesToKeep.add(line);
     }
     if (changed) {
-      setState(() => _viewablePages[_currentPageIndex] =
-          currentPage.copyWith(lines: linesToKeep));
+      setState(() =>
+      _viewablePages[_currentPageIndex] = currentPage.copyWith(lines: linesToKeep));
     }
   }
 
@@ -1123,9 +1224,8 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
                           color: isSelected ? primaryBlue : mediumGreyText),
                       title: Text(page.pageName,
                           style: TextStyle(
-                              fontWeight: isSelected
-                                  ? FontWeight.bold
-                                  : FontWeight.normal,
+                              fontWeight:
+                              isSelected ? FontWeight.bold : FontWeight.normal,
                               color: isSelected ? primaryBlue : darkText)),
                       selected: isSelected,
                       selectedTileColor: primaryBlue.withOpacity(0.1),
@@ -1134,14 +1234,13 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
                       onTap: () {
                         Navigator.pop(context);
                         final tappedPage = _pagesInCurrentGroup[index];
-                        if (tappedPage.id ==
-                            _viewablePages[_currentPageIndex].id) return;
+                        if (tappedPage.id == _viewablePages[_currentPageIndex].id)
+                          return;
                         final tappedPrefix =
                         tappedPage.pageName.split('(')[0].trim();
                         final newViewablePages = _pagesInCurrentGroup
                             .where((p) =>
-                        p.pageName.split('(')[0].trim() ==
-                            tappedPrefix)
+                        p.pageName.split('(')[0].trim() == tappedPrefix)
                             .toList();
                         final newPageIndex = newViewablePages
                             .indexWhere((p) => p.id == tappedPage.id);
@@ -1158,8 +1257,7 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
                               _pageController.jumpToPage(newPageIndex);
                             }
                             _loadTemplateUiImage(
-                                newViewablePages[newPageIndex]
-                                    .templateImageUrl);
+                                newViewablePages[newPageIndex].templateImageUrl);
                           });
                         }
                       },
@@ -1201,8 +1299,10 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     }
 
     final currentPageData = _viewablePages[_currentPageIndex];
-    final bool panScaleEnabled =
-        !_isStylusInteraction && !_isMovingSelectedImage;
+    // Pan scale is disabled when lasso tool is active
+    final bool panScaleEnabled = !_isStylusInteraction &&
+        !_isMovingSelectedImage &&
+        _selectedTool != DrawingTool.lasso;
 
     return WillPopScope(
       onWillPop: _handleBackButton,
@@ -1258,8 +1358,7 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
               ),
             _buildPageActionsMenu(),
             IconButton(
-              icon: const Icon(Icons.picture_as_pdf_rounded,
-                  color: primaryBlue),
+              icon: const Icon(Icons.picture_as_pdf_rounded, color: primaryBlue),
               tooltip: 'Download Group as PDF',
               onPressed: _isSaving ? null : _downloadGroupAsPdf,
             ),
@@ -1316,6 +1415,7 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
                         _transformationController.value = Matrix4.identity();
                         _selectedImageId = null;
                         _isMovingSelectedImage = false;
+                        _lassoPoints = []; // Clear lasso on page change
                       });
                       await _loadTemplateUiImage(
                           _viewablePages[index].templateImageUrl);
@@ -1345,6 +1445,8 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
                               templateUiImage: _currentTemplateUiImage,
                               selectedImageId: _selectedImageId,
                               redrawNotifier: _redrawNotifier,
+                              lassoPoints:
+                              index == _currentPageIndex ? _lassoPoints : [],
                             ),
                             child: const SizedBox(
                                 width: canvasWidth, height: canvasHeight),
@@ -1387,21 +1489,22 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
   Widget _buildPageActionsMenu() {
     return PopupMenuButton<String>(
       onSelected: (String value) {
-        if (value == 'copy') _copyPageContent();
+        if (value == 'copy_full') _copyPageContent();
         else if (value == 'paste') _pastePageContent();
         else if (value == 'camera') _pickAndUploadImage(ImageSource.camera);
         else if (value == 'gallery') _pickAndUploadImage(ImageSource.gallery);
         else if (value == 'uploaded') _showUploadedImagesSelector();
-        else if (value == 'stamp') _showStampSelectorModal(); // ADDED
+        else if (value == 'stamp') _showStampSelectorModal();
       },
       icon: const Icon(Icons.more_vert, color: primaryBlue),
       tooltip: 'Page Actions',
       itemBuilder: (BuildContext context) => <PopupMenuEntry<String>>[
+        // MODIFIED: Old copy action name changed to 'copy_full'
         const PopupMenuItem<String>(
-            value: 'copy',
+            value: 'copy_full',
             child: ListTile(
                 leading: Icon(Icons.copy_all_rounded),
-                title: Text('Copy Page'))),
+                title: Text('Copy Full Page'))),
         if (_copiedPageData != null)
           const PopupMenuItem<String>(
               value: 'paste',
@@ -1425,7 +1528,7 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
                 leading: Icon(Icons.cloud_upload_rounded),
                 title: Text('Pick from Uploaded'))),
         const PopupMenuItem<String>(
-            value: 'stamp', // ADDED
+            value: 'stamp',
             child: ListTile(
                 leading: Icon(Icons.star_rounded), title: Text('Insert Stamp'))),
       ],
@@ -1442,16 +1545,19 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
             isSelected: [
               _selectedTool == DrawingTool.pen,
               _selectedTool == DrawingTool.eraser,
-              _selectedTool == DrawingTool.image
+              _selectedTool == DrawingTool.image,
+              _selectedTool == DrawingTool.lasso, // ADDED: Lasso Tool
             ],
             onPressed: (index) {
               HapticFeedback.selectionClick();
               setState(() {
                 _selectedImageId = null;
                 _isMovingSelectedImage = false;
+                _lassoPoints = []; // Clear lasso path on tool change
                 if (index == 0) _selectedTool = DrawingTool.pen;
                 else if (index == 1) _selectedTool = DrawingTool.eraser;
-                else _selectedTool = DrawingTool.image;
+                else if (index == 2) _selectedTool = DrawingTool.image;
+                else _selectedTool = DrawingTool.lasso; // ADDED
               });
             },
             borderRadius: BorderRadius.circular(8),
@@ -1468,10 +1574,14 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
               Tooltip(
                   message: "Image Select/Move",
                   child: Icon(Icons.photo_library_outlined, size: 20)),
+              // ADDED: Lasso Tool Icon
+              Tooltip(
+                  message: "Lasso Copy Selection",
+                  child: Icon(Icons.select_all, size: 20)),
             ],
           ),
           const SizedBox(width: 16),
-          if (_selectedTool != DrawingTool.image)
+          if (_selectedTool != DrawingTool.image && _selectedTool != DrawingTool.lasso)
             ...[Colors.black, Colors.blue, Colors.red, Colors.green]
                 .map((color) => _buildColorOption(color))
                 .toList(),
@@ -1496,8 +1606,7 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
             ),
           const SizedBox(width: 24),
           IconButton(
-              icon: const Icon(Icons.undo_rounded,
-                  color: primaryBlue, size: 22),
+              icon: const Icon(Icons.undo_rounded, color: primaryBlue, size: 22),
               onPressed: _undoLastAction,
               tooltip: "Undo"),
           IconButton(
@@ -1563,12 +1672,15 @@ class PrescriptionPainter extends CustomPainter {
   final ui.Image? templateUiImage;
   final String? selectedImageId;
   final ValueNotifier<int> redrawNotifier;
+  // ADDED: For Lasso/Selection
+  final List<Offset> lassoPoints;
 
   PrescriptionPainter(
       {required this.drawingPage,
         this.templateUiImage,
         required this.redrawNotifier,
-        this.selectedImageId})
+        this.selectedImageId,
+        required this.lassoPoints}) // ADDED
       : super(repaint: redrawNotifier);
 
   @override
@@ -1602,8 +1714,8 @@ class PrescriptionPainter extends CustomPainter {
         });
       }
 
-      final destRect =
-      Rect.fromLTWH(image.position.dx, image.position.dy, image.width, image.height);
+      final destRect = Rect.fromLTWH(
+          image.position.dx, image.position.dy, image.width, image.height);
 
       if (cachedImage != null) {
         paintImage(
@@ -1647,12 +1759,28 @@ class PrescriptionPainter extends CustomPainter {
         canvas.drawPath(path, paint);
       }
     }
+
+    // 4. ADDED: Draw Lasso Line
+    if (lassoPoints.length > 1) {
+      final lassoPaint = Paint()
+        ..color = primaryBlue
+        ..strokeWidth = 2.0
+        ..strokeCap = StrokeCap.round
+        ..style = PaintingStyle.stroke;
+      final lassoPath = Path()..moveTo(lassoPoints.first.dx, lassoPoints.first.dy);
+      for (int i = 1; i < lassoPoints.length; i++) {
+        lassoPath.lineTo(lassoPoints[i].dx, lassoPoints[i].dy);
+      }
+      canvas.drawPath(lassoPath, lassoPaint);
+    }
   }
 
   @override
   bool shouldRepaint(covariant PrescriptionPainter oldDelegate) {
+    // ADDED: Check for lassoPoints change to trigger redraw for the lasso line
     return oldDelegate.drawingPage != drawingPage ||
         oldDelegate.templateUiImage != templateUiImage ||
-        oldDelegate.selectedImageId != selectedImageId;
+        oldDelegate.selectedImageId != selectedImageId ||
+        oldDelegate.lassoPoints.length != lassoPoints.length;
   }
 }
