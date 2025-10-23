@@ -8,6 +8,7 @@ import 'dart:math';
 import 'dart:convert';
 import 'dart:ui' show Offset, Color;
 import 'ipd_structure.dart'; // <-- IMPORT THE NEW STRUCTURE FILE
+import 'pdf_generator.dart'; // <-- IMPORT THE PDF GENERATOR
 
 // --- UNIFIED & HIGHLY COMPRESSED DATA MODELS ---
 
@@ -168,6 +169,13 @@ class DrawingPage {
   final String groupName;
   final List<DrawingLine> lines;
   final List<DrawingText> texts;
+  // NOTE: You have 'DrawingImage' in PrescriptionPage but not here.
+  // Assuming 'DrawingText' is what you meant, or that 'images' are
+  // not part of this specific model definition.
+  // If images ARE part of this model, you need to add:
+  // final List<DrawingImage> images;
+  // And update toJson, fromJson, and copyWith.
+  // For now, I am matching YOUR provided code.
 
   DrawingPage({
     required this.id,
@@ -415,7 +423,8 @@ class _ManageIpdPatientPageState extends State<ManageIpdPatientPage> {
 
           // Ensure the column exists in the response before trying to access it
           if (!response.containsKey(columnName)) {
-            debugPrint("Warning: Column '$columnName' not found in response for group '$groupName'. Skipping.");
+            debugPrint(
+                "Warning: Column '$columnName' not found in response for group '$groupName'. Skipping.");
             loadedGroups.add(DrawingGroup(
               id: generateUniqueId(),
               groupName: groupName,
@@ -423,7 +432,6 @@ class _ManageIpdPatientPageState extends State<ManageIpdPatientPage> {
             ));
             continue; // Skip to next group config
           }
-
 
           final List<dynamic> rawPages = response[columnName] ?? [];
           final pages = rawPages
@@ -523,20 +531,25 @@ class _ManageIpdPatientPageState extends State<ManageIpdPatientPage> {
       }
 
       // If saving everything or if the changed group was a custom one, save custom_groups_data
-      if (changedGroupName == null || _groupToColumnMap[changedGroupName] == null) {
+      if (changedGroupName == null ||
+          _groupToColumnMap[changedGroupName] == null) {
         // Need to fetch existing custom groups if only saving one custom group
         List<DrawingGroup> finalCustomGroups = customGroups;
-        if (changedGroupName != null && _groupToColumnMap[changedGroupName] == null && _healthRecordId != null) {
+        if (changedGroupName != null &&
+            _groupToColumnMap[changedGroupName] == null &&
+            _healthRecordId != null) {
           final existingData = await supabase
               .from('user_health_details')
               .select('custom_groups_data')
               .eq('id', _healthRecordId!)
               .single();
-          final List<dynamic> rawExistingCustom = existingData['custom_groups_data'] ?? [];
+          final List<dynamic> rawExistingCustom =
+              existingData['custom_groups_data'] ?? [];
           final List<DrawingGroup> existingCustomGroups = rawExistingCustom
               .whereType<Map<String, dynamic>>()
               .map((json) => DrawingGroup.fromJson(json))
-              .where((g) => g.groupName != changedGroupName) // Exclude the one being updated
+              .where((g) =>
+          g.groupName != changedGroupName) // Exclude the one being updated
               .toList();
           finalCustomGroups = [...existingCustomGroups, ...customGroups]; // Combine
         }
@@ -544,7 +557,6 @@ class _ManageIpdPatientPageState extends State<ManageIpdPatientPage> {
         dataToSave['custom_groups_data'] =
             finalCustomGroups.map((group) => group.toJson()).toList();
       }
-
 
       dataToSave['ipd_registration_id'] = widget.ipdId;
       dataToSave['patient_uhid'] = widget.uhid;
@@ -578,6 +590,28 @@ class _ManageIpdPatientPageState extends State<ManageIpdPatientPage> {
       }
     }
   }
+
+  // --- NEW: Handler for the Download Full Record button ---
+  Future<void> _downloadFullRecord() async {
+    if (_healthRecordId == null) {
+      _showErrorSnackbar("Cannot download, health record is not loaded.");
+      return;
+    }
+
+    // Use _isSaving to disable buttons while PDF is generating
+    setState(() => _isSaving = true);
+
+    await PdfGenerator.downloadFullRecordAsPdf(
+      context: context,
+      supabase: supabase,
+      healthRecordId: _healthRecordId,
+    );
+
+    if (mounted) {
+      setState(() => _isSaving = false);
+    }
+  }
+  // --- END NEW HANDLER ---
 
   void _createNewGroup() {
     TextEditingController groupNameController = TextEditingController();
@@ -615,7 +649,8 @@ class _ManageIpdPatientPageState extends State<ManageIpdPatientPage> {
                 if (groupNameController.text.isNotEmpty) {
                   final newGroupName = groupNameController.text;
                   // Check if group name already exists
-                  if (_drawingGroups.any((g) => g.groupName.toLowerCase() == newGroupName.toLowerCase())) {
+                  if (_drawingGroups.any((g) =>
+                  g.groupName.toLowerCase() == newGroupName.toLowerCase())) {
                     _showErrorSnackbar("A group with this name already exists.");
                     return;
                   }
@@ -736,12 +771,14 @@ class _ManageIpdPatientPageState extends State<ManageIpdPatientPage> {
   }
 
   // --- NEW FUNCTION for Custom Name Dialog ---
-  Future<void> _addSinglePageWithCustomName(DrawingGroup group, String tag, String pageNamePrefix) async {
+  Future<void> _addSinglePageWithCustomName(
+      DrawingGroup group, String tag, String pageNamePrefix) async {
     final template = _findTemplateByTag(tag);
     if (template == null) return;
 
     final newPageNumber = group.pages.length + 1;
-    TextEditingController nameController = TextEditingController(text: '$pageNamePrefix $newPageNumber');
+    TextEditingController nameController =
+    TextEditingController(text: '$pageNamePrefix $newPageNumber');
 
     final String? customName = await showDialog<String>(
       context: context,
@@ -776,11 +813,11 @@ class _ManageIpdPatientPageState extends State<ManageIpdPatientPage> {
       final finalPageName = '$customName - $formattedDate';
 
       // Check if a page with the exact same name already exists in this group
-      if (group.pages.any((p) => p.pageName.toLowerCase() == finalPageName.toLowerCase())) {
+      if (group.pages.any(
+              (p) => p.pageName.toLowerCase() == finalPageName.toLowerCase())) {
         _showErrorSnackbar("A sheet with this name already exists in this group.");
         return;
       }
-
 
       final newPage = DrawingPage(
         id: generateUniqueId(),
@@ -848,7 +885,8 @@ class _ManageIpdPatientPageState extends State<ManageIpdPatientPage> {
   }
 
   void _showDischargeOptions(DrawingGroup group, String tag) async {
-    final dischargeTemplates = _availableTemplates.where((t) => t.tag == tag).toList();
+    final dischargeTemplates =
+    _availableTemplates.where((t) => t.tag == tag).toList();
     if (dischargeTemplates.isEmpty) {
       _showErrorSnackbar("No 'Discharge' or 'Dama' templates found.");
       return;
@@ -940,7 +978,8 @@ class _ManageIpdPatientPageState extends State<ManageIpdPatientPage> {
         break;
     // --- NEW CASE ADDED ---
       case AddBehavior.multiPageSingleCustomName:
-        _addSinglePageWithCustomName(group, config.templateTag!, config.pageNamePrefix);
+        _addSinglePageWithCustomName(
+            group, config.templateTag!, config.pageNamePrefix);
         break;
     // --- END NEW CASE ---
       case AddBehavior.singlePairOnly:
@@ -975,7 +1014,9 @@ class _ManageIpdPatientPageState extends State<ManageIpdPatientPage> {
           RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
           title: const Text("Confirm Delete",
               style: TextStyle(
-                  color: Colors.red, fontWeight: FontWeight.bold, fontSize: 18)),
+                  color: Colors.red,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 18)),
           content: Text(
               "Are you sure you want to delete the file: \"${page.pageName}\"? This action cannot be undone.",
               style: const TextStyle(fontSize: 15)),
@@ -996,17 +1037,21 @@ class _ManageIpdPatientPageState extends State<ManageIpdPatientPage> {
 
                   // If it was a paired page, remove its partner too
                   final config = findGroupConfigByName(group.groupName);
-                  bool wasPaired = config != null && (config.behavior == AddBehavior.multiPagePaired || config.behavior == AddBehavior.singlePairOnly);
-                  if(wasPaired) {
+                  bool wasPaired = config != null &&
+                      (config.behavior == AddBehavior.multiPagePaired ||
+                          config.behavior == AddBehavior.singlePairOnly);
+                  if (wasPaired) {
                     if (page.pageName.contains("(Front)")) {
-                      String backNamePart = page.pageName.replaceFirst("(Front)", "(Back)");
+                      String backNamePart =
+                      page.pageName.replaceFirst("(Front)", "(Back)");
                       updatedPages.removeWhere((p) => p.pageName == backNamePart);
                     } else if (page.pageName.contains("(Back)")) {
-                      String frontNamePart = page.pageName.replaceFirst("(Back)", "(Front)");
-                      updatedPages.removeWhere((p) => p.pageName == frontNamePart);
+                      String frontNamePart =
+                      page.pageName.replaceFirst("(Back)", "(Front)");
+                      updatedPages
+                          .removeWhere((p) => p.pageName == frontNamePart);
                     }
                   }
-
 
                   // Re-index page numbers
                   for (int i = 0; i < updatedPages.length; i++) {
@@ -1020,10 +1065,12 @@ class _ManageIpdPatientPageState extends State<ManageIpdPatientPage> {
 
                   if (groupIndex != -1) {
                     _drawingGroups[groupIndex] = updatedGroup;
-                    _showSuccessSnackbar('File "${page.pageName}"${wasPaired ? ' and its pair' : ''} deleted.');
+                    _showSuccessSnackbar(
+                        'File "${page.pageName}"${wasPaired ? ' and its pair' : ''} deleted.');
                     _saveHealthDetails(changedGroupName: group.groupName);
                   } else {
-                    _showErrorSnackbar("Could not find group to update after deletion.");
+                    _showErrorSnackbar(
+                        "Could not find group to update after deletion.");
                   }
                 });
               },
@@ -1180,13 +1227,12 @@ class _ManageIpdPatientPageState extends State<ManageIpdPatientPage> {
           _loadAllDetails(); // Reload as a fallback
         }
       });
-    } else if (result != null){
+    } else if (result != null) {
       // If result is not a List<DrawingPage> but not null, maybe just reload?
       _loadAllDetails();
     }
     // If result is null, user probably just backed out, no state change needed.
   }
-
 
   void _openDocumentsPage() {
     Navigator.of(context).push(
@@ -1376,6 +1422,20 @@ class _ManageIpdPatientPageState extends State<ManageIpdPatientPage> {
                 Row(
                   mainAxisAlignment: MainAxisAlignment.end,
                   children: [
+                    // --- NEW BUTTON ADDED ---
+                    ElevatedButton.icon(
+                      onPressed: _isSaving ? null : _downloadFullRecord,
+                      icon:
+                      const Icon(Icons.picture_as_pdf_outlined, size: 18),
+                      label: const Text("Download Full Record"),
+                      style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.teal, // Different color
+                          foregroundColor: Colors.white,
+                          shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(10))),
+                    ),
+                    const SizedBox(width: 10),
+                    // --- END NEW BUTTON ---
                     ElevatedButton.icon(
                       onPressed: _openDocumentsPage,
                       icon: const Icon(Icons.folder_open, size: 18),
@@ -1503,7 +1563,12 @@ class _ManageIpdPatientPageState extends State<ManageIpdPatientPage> {
                           childrenPadding: const EdgeInsets.only(
                               left: 8.0, right: 8.0, bottom: 8.0, top: 0), // Adjust padding
                           children: [
-                            const Divider(height: 1, thickness: 1, indent: 8, endIndent: 8, color: lightBackground),
+                            const Divider(
+                                height: 1,
+                                thickness: 1,
+                                indent: 8,
+                                endIndent: 8,
+                                color: lightBackground),
                             if (group.pages.isEmpty)
                               const Padding(
                                 padding: EdgeInsets.all(16.0),
@@ -1558,7 +1623,8 @@ class _ManageIpdPatientPageState extends State<ManageIpdPatientPage> {
   List<Widget> _buildPairedPageRows(DrawingGroup group) {
     List<Widget> rows = [];
     // Ensure pages are sorted by pageNumber before pairing
-    final sortedPages = List<DrawingPage>.from(group.pages)..sort((a,b) => a.pageNumber.compareTo(b.pageNumber));
+    final sortedPages = List<DrawingPage>.from(group.pages)
+      ..sort((a, b) => a.pageNumber.compareTo(b.pageNumber));
 
     for (int i = 0; i < sortedPages.length; i += 2) {
       final DrawingPage pageFront = sortedPages[i];
@@ -1566,7 +1632,8 @@ class _ManageIpdPatientPageState extends State<ManageIpdPatientPage> {
       (i + 1 < sortedPages.length) ? sortedPages[i + 1] : null;
 
       rows.add(
-        Padding( // Add padding between rows of paired tiles
+        Padding(
+          // Add padding between rows of paired tiles
           padding: const EdgeInsets.symmetric(vertical: 4.0),
           child: _PairedPageTile(
             pageFront: pageFront,
@@ -1604,18 +1671,21 @@ class _SinglePageTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Padding( // Add padding around single tiles too
+    return Padding(
+      // Add padding around single tiles too
       padding: const EdgeInsets.symmetric(vertical: 4.0),
       child: ListTile(
         leading: const Icon(Icons.description_outlined,
             color: _ManageIpdPatientPageState.primaryBlue, size: 22),
-        title: Text(page.pageName,
+        title: Text(
+          page.pageName,
           style: const TextStyle(
               fontWeight: FontWeight.w600,
               color: _ManageIpdPatientPageState.darkText,
               fontSize: 15),
           maxLines: 2,
-          overflow: TextOverflow.ellipsis,),
+          overflow: TextOverflow.ellipsis,
+        ),
         subtitle: Text("Page ${page.pageNumber}",
             style: const TextStyle(
                 color: _ManageIpdPatientPageState.mediumGreyText, fontSize: 13)),
@@ -1625,9 +1695,11 @@ class _SinglePageTile extends StatelessWidget {
         onLongPress: onLongPress,
         shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(8),
-            side: BorderSide(color: _ManageIpdPatientPageState.primaryBlue.withOpacity(0.3), width: 1)
-        ),
-        tileColor: _ManageIpdPatientPageState.primaryBlue.withOpacity(0.03), // Subtle background
+            side: BorderSide(
+                color: _ManageIpdPatientPageState.primaryBlue.withOpacity(0.3),
+                width: 1)),
+        tileColor:
+        _ManageIpdPatientPageState.primaryBlue.withOpacity(0.03), // Subtle background
       ),
     );
   }
@@ -1691,8 +1763,11 @@ class _PairedPageTile extends StatelessWidget {
     final String defaultText = isFront ? "(Front)" : "(Back)"; // Simpler default
     final String pageTitle = page?.pageName ?? defaultText;
     // Extract the base name (remove date and front/back indicator)
-    final String baseName = page?.pageName.split(' - ')[0].replaceAll(RegExp(r'\s*\((Front|Back)\)$'), '').trim() ?? defaultText;
-
+    final String baseName = page?.pageName
+        .split(' - ')[0]
+        .replaceAll(RegExp(r'\s*\((Front|Back)\)$'), '')
+        .trim() ??
+        defaultText;
 
     return Card(
       elevation: 0.5, // Subtle elevation
@@ -1712,25 +1787,31 @@ class _PairedPageTile extends StatelessWidget {
         onLongPress: isEmpty ? null : onLongPress,
         borderRadius: BorderRadius.circular(8),
         child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10), // Reduced vertical padding
+          padding:
+          const EdgeInsets.symmetric(horizontal: 10, vertical: 10), // Reduced vertical padding
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             mainAxisSize: MainAxisSize.min, // Take minimum height
             children: [
-              Row( // Icon and Page Number/Indicator
+              Row(
+                // Icon and Page Number/Indicator
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
                   Icon(
                     isEmpty
                         ? Icons.disabled_by_default_outlined
-                        : (isFront ? Icons.flip_to_front_outlined : Icons.flip_to_back_outlined),
+                        : (isFront
+                        ? Icons.flip_to_front_outlined
+                        : Icons.flip_to_back_outlined),
                     color: isEmpty
                         ? Colors.grey[400]
                         : _ManageIpdPatientPageState.primaryBlue,
                     size: 18,
                   ),
                   Text(
-                    page != null ? "Page ${page.pageNumber}" : (isFront ? "Front" : "Back"),
+                    page != null
+                        ? "Page ${page.pageNumber}"
+                        : (isFront ? "Front" : "Back"),
                     style: TextStyle(
                         color: _ManageIpdPatientPageState.mediumGreyText,
                         fontSize: 11,
@@ -1754,9 +1835,14 @@ class _PairedPageTile extends StatelessWidget {
               const SizedBox(height: 4),
               // Show full name subtly if needed, or date
               Text(
-                page != null ? DateFormat('dd MMM yy').format(DateTime.tryParse(page.pageName.split(' - ').last) ?? DateTime.now()) : " ", // Placeholder for height
+                page != null
+                    ? DateFormat('dd MMM yy').format(
+                    DateTime.tryParse(page.pageName.split(' - ').last) ??
+                        DateTime.now())
+                    : " ", // Placeholder for height
                 style: TextStyle(
-                  color: _ManageIpdPatientPageState.mediumGreyText.withOpacity(0.8),
+                  color:
+                  _ManageIpdPatientPageState.mediumGreyText.withOpacity(0.8),
                   fontSize: 11,
                   fontStyle:
                   isEmpty ? FontStyle.italic : FontStyle.normal,
@@ -1764,7 +1850,6 @@ class _PairedPageTile extends StatelessWidget {
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
               ),
-
             ],
           ),
         ),

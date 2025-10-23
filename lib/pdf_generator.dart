@@ -6,6 +6,7 @@ import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
 import 'package:http/http.dart' as http;
 import 'drawing_models.dart';
+import 'ipd_structure.dart'; // <-- IMPORTED the structure file
 
 // Helper extension for list safety
 extension IterableX<T> on Iterable<T> {
@@ -31,6 +32,244 @@ class PdfGenerator {
     return finalUri.toString();
   }
 
+  /// --- NEW FUNCTION TO DOWNLOAD THE ENTIRE PATIENT RECORD ---
+  static Future<void> downloadFullRecordAsPdf({
+    required BuildContext context,
+    required SupabaseClient supabase,
+    required String? healthRecordId,
+  }) async {
+    if (healthRecordId == null) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text('Cannot download, health record not loaded.'),
+            backgroundColor: Colors.red));
+      }
+      return;
+    }
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (BuildContext context) {
+        return const Dialog(
+          child: Padding(
+            padding: EdgeInsets.all(20.0),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                CircularProgressIndicator(),
+                SizedBox(width: 20),
+                Text("Generating Full Record PDF..."),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+
+    try {
+      // Define all columns to fetch, based on ipd_structure.dart
+      final List<String> allDataColumns = [
+        'id',
+        ...allGroupColumnNames, // From ipd_structure.dart
+        'custom_groups_data',
+      ];
+
+      // Fetch all group data in one call
+      final response = await supabase
+          .from('user_health_details')
+          .select(allDataColumns.join(','))
+          .eq('id', healthRecordId)
+          .single();
+
+      final List<DrawingPage> allPages = [];
+
+      // 1. Add pages from default groups, in the order defined by ipdGroupStructure
+      for (final config in ipdGroupStructure) {
+        final columnName = config.columnName;
+        if (response.containsKey(columnName)) {
+          final List<dynamic>? rawPages = response[columnName] as List?;
+          if (rawPages != null) {
+            final pages = rawPages
+                .map((p) => DrawingPage.fromJson(p as Map<String, dynamic>))
+                .toList();
+            pages.sort((a, b) => a.pageNumber.compareTo(b.pageNumber));
+            allPages.addAll(pages);
+          }
+        }
+      }
+
+      // 2. Add pages from custom groups
+      final List<dynamic>? rawCustomGroups =
+      response['custom_groups_data'] as List?;
+      if (rawCustomGroups != null) {
+        final customGroups = rawCustomGroups
+            .map((g) => DrawingGroup.fromJson(g as Map<String, dynamic>))
+            .toList();
+        for (final group in customGroups) {
+          final pages = group.pages;
+          pages.sort((a, b) => a.pageNumber.compareTo(b.pageNumber));
+          allPages.addAll(pages);
+        }
+      }
+
+      if (allPages.isEmpty) {
+        throw Exception("No pages found in this record to download.");
+      }
+
+      // --- PDF Generation Logic (Same as your original function) ---
+      final doc = pw.Document();
+
+      Future<Uint8List?> _fetchImageBytes(String url) async {
+        try {
+          final response = await http.get(Uri.parse(url));
+          if (response.statusCode == 200) {
+            return response.bodyBytes;
+          }
+        } catch (e) {
+          debugPrint('Failed to fetch image $url: $e');
+        }
+        return null;
+      }
+
+      for (final pageData in allPages) {
+        final templateImageBytes =
+        await _fetchImageBytes(_getFullImageUrl(pageData.templateImageUrl));
+        if (templateImageBytes == null) {
+          debugPrint(
+              "Skipping page ${pageData.pageName} due to missing template.");
+          continue;
+        }
+        final templateImage = pw.MemoryImage(templateImageBytes);
+
+        final dynamicPageFormat = PdfPageFormat(
+          templateImage.width!.toDouble(),
+          templateImage.height!.toDouble(),
+          marginAll: 0,
+        );
+
+        final Map<String, pw.MemoryImage> embeddedImages = {};
+        for (final img in pageData.images) {
+          final imgBytes = await _fetchImageBytes(img.imageUrl);
+          if (imgBytes != null) {
+            embeddedImages[img.imageUrl] = pw.MemoryImage(imgBytes);
+          }
+        }
+
+        final double imageWidth = templateImage.width!.toDouble();
+        final double imageHeight = templateImage.height!.toDouble();
+        final double canvasAspectRatio =
+            kSourceCanvasWidth / kSourceCanvasHeight;
+        final double imageAspectRatio = imageWidth / imageHeight;
+
+        double sourceContentWidth;
+        double sourceContentHeight;
+        double offsetX;
+        double offsetY;
+
+        if (imageAspectRatio > canvasAspectRatio) {
+          sourceContentWidth = kSourceCanvasWidth;
+          sourceContentHeight = kSourceCanvasWidth / imageAspectRatio;
+          offsetX = 0;
+          offsetY = (kSourceCanvasHeight - sourceContentHeight) / 2.0;
+        } else {
+          sourceContentHeight = kSourceCanvasHeight;
+          sourceContentWidth = kSourceCanvasHeight * imageAspectRatio;
+          offsetX = (kSourceCanvasWidth - sourceContentWidth) / 2.0;
+          offsetY = 0;
+        }
+
+        final double scaleX = imageWidth / sourceContentWidth;
+        final double scaleY = imageHeight / sourceContentHeight;
+
+        doc.addPage(
+          pw.Page(
+            pageFormat: dynamicPageFormat,
+            margin: pw.EdgeInsets.zero,
+            build: (pw.Context context) {
+              return pw.Stack(
+                alignment: pw.Alignment.topLeft,
+                children: [
+                  pw.Image(templateImage, fit: pw.BoxFit.fill),
+                  ...pageData.images
+                      .where((img) => embeddedImages.containsKey(img.imageUrl))
+                      .map((image) {
+                    return pw.Positioned(
+                      left: (image.position.dx - offsetX) * scaleX,
+                      top: (image.position.dy - offsetY) * scaleY,
+                      child: pw.Image(
+                        embeddedImages[image.imageUrl]!,
+                        width: image.width * scaleX,
+                        height: image.height * scaleY,
+                        fit: pw.BoxFit.contain,
+                      ),
+                    );
+                  }).toList(),
+                  pw.Positioned.fill(
+                    child: pw.CustomPaint(
+                      painter: (PdfGraphics canvas, PdfPoint size) {
+                        for (final line in pageData.lines) {
+                          if (line.points.length < 2) continue;
+
+                          canvas
+                            ..saveContext()
+                            ..setStrokeColor(PdfColor.fromInt(line.colorValue))
+                            ..setLineWidth(
+                                line.strokeWidth * scaleX) // Scale stroke
+                            ..setLineCap(PdfLineCap.round);
+
+                          final firstPoint = line.points.first;
+                          final transformedFirstX =
+                              (firstPoint.dx - offsetX) * scaleX;
+                          final transformedFirstY =
+                              (firstPoint.dy - offsetY) * scaleY;
+
+                          canvas.moveTo(
+                            transformedFirstX,
+                            size.y -
+                                transformedFirstY, // Invert Y-axis for PDF
+                          );
+
+                          for (int i = 1; i < line.points.length; i++) {
+                            final point = line.points[i];
+                            final transformedX = (point.dx - offsetX) * scaleX;
+                            final transformedY = (point.dy - offsetY) * scaleY;
+                            canvas.lineTo(
+                              transformedX,
+                              size.y -
+                                  transformedY, // Invert Y-axis for PDF
+                            );
+                          }
+                          canvas.strokePath();
+                          canvas.restoreContext();
+                        }
+                      },
+                    ),
+                  ),
+                ],
+              );
+            },
+          ),
+        );
+      }
+
+      if (context.mounted) Navigator.of(context).pop();
+
+      await Printing.layoutPdf(
+        onLayout: (PdfPageFormat format) async => doc.save(),
+      );
+    } catch (e) {
+      if (context.mounted) Navigator.of(context).pop();
+      debugPrint('Error generating PDF: $e');
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text('Failed to generate PDF: ${e.toString()}'),
+            backgroundColor: Colors.red));
+      }
+    }
+  }
+
+  /// --- Original function to download a single group ---
   static Future<void> downloadGroupAsPdf({
     required BuildContext context,
     required SupabaseClient supabase,
@@ -146,7 +385,8 @@ class PdfGenerator {
         final double imageWidth = templateImage.width!.toDouble();
         final double imageHeight = templateImage.height!.toDouble();
 
-        final double canvasAspectRatio = kSourceCanvasWidth / kSourceCanvasHeight;
+        final double canvasAspectRatio =
+            kSourceCanvasWidth / kSourceCanvasHeight;
         final double imageAspectRatio = imageWidth / imageHeight;
 
         double sourceContentWidth;
@@ -209,17 +449,21 @@ class PdfGenerator {
                           canvas
                             ..saveContext()
                             ..setStrokeColor(PdfColor.fromInt(line.colorValue))
-                            ..setLineWidth(line.strokeWidth * scaleX) // Scale stroke
+                            ..setLineWidth(
+                                line.strokeWidth * scaleX) // Scale stroke
                             ..setLineCap(PdfLineCap.round);
 
                           // Transform the first point and move to it
                           final firstPoint = line.points.first;
-                          final transformedFirstX = (firstPoint.dx - offsetX) * scaleX;
-                          final transformedFirstY = (firstPoint.dy - offsetY) * scaleY;
+                          final transformedFirstX =
+                              (firstPoint.dx - offsetX) * scaleX;
+                          final transformedFirstY =
+                              (firstPoint.dy - offsetY) * scaleY;
 
                           canvas.moveTo(
                             transformedFirstX,
-                            size.y - transformedFirstY, // Invert Y-axis for PDF
+                            size.y -
+                                transformedFirstY, // Invert Y-axis for PDF
                           );
 
                           // Transform all subsequent points and draw lines to them
@@ -229,7 +473,8 @@ class PdfGenerator {
                             final transformedY = (point.dy - offsetY) * scaleY;
                             canvas.lineTo(
                               transformedX,
-                              size.y - transformedY, // Invert Y-axis for PDF
+                              size.y -
+                                  transformedY, // Invert Y-axis for PDF
                             );
                           }
                           canvas.strokePath();

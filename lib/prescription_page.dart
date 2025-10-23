@@ -126,10 +126,11 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
   bool _isMovingSelectedImage = false;
 
   // --- View State ---
-  final PageController _pageController = PageController();
+  // MODIFIED: Made non-final
+  PageController _pageController = PageController();
   final TransformationController _transformationController =
   TransformationController();
-  ui.Image? _currentTemplateUiImage;
+  // REMOVED: ui.Image? _currentTemplateUiImage;
   bool _isLoadingPrescription = true;
   bool _isSaving = false;
   bool _isLoadingStamps = false;
@@ -178,20 +179,8 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
 
   // --- Data Loading, Saving, and Realtime ---
 
-  Future<void> _loadTemplateUiImage(String relativePath) async {
-    final String fullUrl = _getFullImageUrl(relativePath);
-    if (fullUrl.isEmpty) {
-      if (mounted) setState(() => _currentTemplateUiImage = null);
-      return;
-    }
-    try {
-      final loadedImage = await ImageCacheManager.loadImage(fullUrl);
-      if (mounted) setState(() => _currentTemplateUiImage = loadedImage);
-    } catch (e) {
-      debugPrint('Error loading image from $fullUrl: $e');
-      if (mounted) setState(() => _currentTemplateUiImage = null);
-    }
-  }
+  // REMOVED: _loadTemplateUiImage function is no longer needed.
+  // The new _PrescriptionCanvasPage widget handles this.
 
   Future<void> _loadHealthDetailsAndPage() async {
     if (!mounted) return;
@@ -265,13 +254,17 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
 
         if (initialIndex != -1) {
           _currentPageIndex = initialIndex;
-          if (_pageController.hasClients) {
-            WidgetsBinding.instance.addPostFrameCallback((_) {
-              if (mounted) _pageController.jumpToPage(_currentPageIndex);
-            });
-          }
-          await _loadTemplateUiImage(
-              _viewablePages[_currentPageIndex].templateImageUrl);
+
+          // --- FIX ---
+          // Dispose the old controller and create a new one
+          // with the correct initial page. This ensures the PageView
+          // builds the correct page first.
+          _pageController.dispose();
+          _pageController = PageController(initialPage: _currentPageIndex);
+          // --- END FIX ---
+
+          // We no longer load the template image here.
+          // The new _PrescriptionCanvasPage widget will load its own.
         } else {
           throw Exception("Starting page could not be located after refresh.");
         }
@@ -1181,7 +1174,8 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
       ..scale(scale);
   }
 
-  void _navigateToPage(int index) async {
+  // MODIFIED: Removed 'async' and call to _loadTemplateUiImage
+  void _navigateToPage(int index) {
     if (index >= 0 && index < _viewablePages.length) {
       if (_pageController.hasClients) _pageController.jumpToPage(index);
       setState(() {
@@ -1190,7 +1184,6 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
         _selectedImageId = null;
         _isMovingSelectedImage = false;
       });
-      await _loadTemplateUiImage(_viewablePages[index].templateImageUrl);
     }
   }
 
@@ -1255,12 +1248,11 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
                             _selectedImageId = null;
                             _isMovingSelectedImage = false;
                           });
+                          // MODIFIED: Removed call to _loadTemplateUiImage
                           WidgetsBinding.instance.addPostFrameCallback((_) {
                             if (_pageController.hasClients) {
                               _pageController.jumpToPage(newPageIndex);
                             }
-                            _loadTemplateUiImage(
-                                newViewablePages[newPageIndex].templateImageUrl);
                           });
                         }
                       },
@@ -1411,7 +1403,8 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
                   child: PageView.builder(
                     controller: _pageController,
                     itemCount: _viewablePages.length,
-                    onPageChanged: (index) async {
+                    // MODIFIED: Removed 'async' and _loadTemplateUiImage
+                    onPageChanged: (index) {
                       setState(() {
                         _currentPageIndex = index;
                         _isInitialZoomSet = false;
@@ -1420,41 +1413,26 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
                         _isMovingSelectedImage = false;
                         _lassoPoints = []; // Clear lasso on page change
                       });
-                      await _loadTemplateUiImage(
-                          _viewablePages[index].templateImageUrl);
                     },
                     physics: const NeverScrollableScrollPhysics(),
+                    // MODIFIED: Replaced InteractiveViewer with _PrescriptionCanvasPage
                     itemBuilder: (context, index) {
-                      return InteractiveViewer(
+                      return _PrescriptionCanvasPage(
+                        drawingPage: _viewablePages[index],
+                        selectedImageId: _selectedImageId,
+                        redrawNotifier: _redrawNotifier,
+                        lassoPoints: index == _currentPageIndex ? _lassoPoints : [],
                         transformationController: _transformationController,
-                        panEnabled: panScaleEnabled,
-                        scaleEnabled: panScaleEnabled,
-                        minScale: 0.1,
-                        maxScale: 10.0,
-                        constrained: false,
-                        boundaryMargin: const EdgeInsets.all(double.infinity),
-                        child: GestureDetector(
-                          onTapUp: (details) {
-                            if (_selectedTool == DrawingTool.image &&
-                                !_isStylusInteraction &&
-                                !_isMovingSelectedImage) {
-                              _handleCanvasTap(_transformToCanvasCoordinates(
-                                  details.localPosition));
-                            }
-                          },
-                          child: CustomPaint(
-                            painter: PrescriptionPainter(
-                              drawingPage: _viewablePages[index],
-                              templateUiImage: _currentTemplateUiImage,
-                              selectedImageId: _selectedImageId,
-                              redrawNotifier: _redrawNotifier,
-                              lassoPoints:
-                              index == _currentPageIndex ? _lassoPoints : [],
-                            ),
-                            child: const SizedBox(
-                                width: canvasWidth, height: canvasHeight),
-                          ),
-                        ),
+                        panScaleEnabled: panScaleEnabled,
+                        onTap: (details) {
+                          // Pass the tap handler logic
+                          if (_selectedTool == DrawingTool.image &&
+                              !_isStylusInteraction &&
+                              !_isMovingSelectedImage) {
+                            _handleCanvasTap(_transformToCanvasCoordinates(
+                                details.localPosition));
+                          }
+                        },
                       );
                     },
                   ),
@@ -1669,6 +1647,109 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     );
   }
 }
+
+// --- ADDED NEW WIDGET ---
+// This widget manages its own template image, fixing the bug
+class _PrescriptionCanvasPage extends StatefulWidget {
+  final DrawingPage drawingPage;
+  final String? selectedImageId;
+  final ValueNotifier<int> redrawNotifier;
+  final List<Offset> lassoPoints;
+  final TransformationController transformationController;
+  final bool panScaleEnabled;
+  final ValueChanged<TapUpDetails> onTap;
+
+  const _PrescriptionCanvasPage({
+    required this.drawingPage,
+    this.selectedImageId,
+    required this.redrawNotifier,
+    required this.lassoPoints,
+    required this.transformationController,
+    required this.panScaleEnabled,
+    required this.onTap,
+  });
+
+  @override
+  State<_PrescriptionCanvasPage> createState() => _PrescriptionCanvasPageState();
+}
+
+class _PrescriptionCanvasPageState extends State<_PrescriptionCanvasPage>
+    with AutomaticKeepAliveClientMixin {
+  ui.Image? _templateUiImage;
+
+  @override
+  bool get wantKeepAlive => true; // Keep state alive when off-screen
+
+  @override
+  void initState() {
+    super.initState();
+    _loadTemplate();
+  }
+
+  @override
+  void didUpdateWidget(_PrescriptionCanvasPage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // Reload image if the URL changes (e.g., page name changes, but not needed for simple page view)
+    if (oldWidget.drawingPage.templateImageUrl !=
+        widget.drawingPage.templateImageUrl) {
+      _loadTemplate();
+    }
+  }
+
+  String _getFullImageUrl(String relativePath) {
+    if (relativePath.isEmpty) return '';
+    if (relativePath.startsWith('http')) return relativePath;
+    final baseUri = Uri.parse(kBaseImageUrl); // Use global constant
+    final finalUri = baseUri.resolve(relativePath);
+    return finalUri.toString();
+  }
+
+  Future<void> _loadTemplate() async {
+    final String fullUrl = _getFullImageUrl(widget.drawingPage.templateImageUrl);
+    if (fullUrl.isEmpty) {
+      if (mounted) setState(() => _templateUiImage = null);
+      return;
+    }
+    try {
+      // Use the existing ImageCacheManager
+      final loadedImage = await ImageCacheManager.loadImage(fullUrl);
+      if (mounted) setState(() => _templateUiImage = loadedImage);
+    } catch (e) {
+      debugPrint('Error loading image from $fullUrl: $e');
+      if (mounted) setState(() => _templateUiImage = null);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    super.build(context); // Needed for AutomaticKeepAliveClientMixin
+
+    return InteractiveViewer(
+      transformationController: widget.transformationController,
+      panEnabled: widget.panScaleEnabled,
+      scaleEnabled: widget.panScaleEnabled,
+      minScale: 0.1,
+      maxScale: 10.0,
+      constrained: false,
+      boundaryMargin: const EdgeInsets.all(double.infinity),
+      child: GestureDetector(
+        onTapUp: widget.onTap,
+        child: CustomPaint(
+          painter: PrescriptionPainter(
+            drawingPage: widget.drawingPage,
+            templateUiImage: _templateUiImage, // Use this widget's state
+            selectedImageId: widget.selectedImageId,
+            redrawNotifier: widget.redrawNotifier,
+            lassoPoints: widget.lassoPoints,
+          ),
+          child: const SizedBox(width: canvasWidth, height: canvasHeight),
+        ),
+      ),
+    );
+  }
+}
+// --- END OF NEW WIDGET ---
+
 
 class PrescriptionPainter extends CustomPainter {
   final DrawingPage drawingPage;
