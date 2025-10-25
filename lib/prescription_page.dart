@@ -13,11 +13,7 @@ import 'patient_info_header_card.dart';
 import 'drawing_models.dart';
 import 'pdf_generator.dart';
 
-// Assuming ImageCacheManager and Matrix4Utils are defined in 'image_manipulation_helpers.dart'
-// Assuming PatientInfoModal is defined in 'patient_info_header_card.dart'
-// Assuming PdfGenerator is defined in 'pdf_generator.dart'
-// Assuming DrawingLine, DrawingImage, DrawingPage, DrawingGroup, StampImage, generateUniqueId, and ImageOverlayControls are defined/used across the other files.
-// IMPORTANT: Make sure your DrawingGroup.fromJson and DrawingPage.fromJson handle potentially missing 'lines' and 'images' gracefully (e.g., default to empty lists).
+// (All helper classes like ImageCacheManager, PatientInfoModal, PdfGenerator, etc., are assumed to be in the imported files)
 
 // Extension for list safety
 extension IterableX<T> on Iterable<T> {
@@ -41,7 +37,6 @@ const Color darkText = Color(0xFF1E293B);
 const Color mediumGreyText = Color(0xFF64748B);
 const Color lightBackground = Color(0xFFF8FAFC);
 
-// ADDED: DrawingTool.lasso
 enum DrawingTool { pen, eraser, image, lasso }
 
 class _CopiedPageData {
@@ -123,6 +118,7 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
   double _strokeWidth = 2.0;
   DrawingTool _selectedTool = DrawingTool.pen;
   bool _isEnhancedHandwriting = false;
+  bool _isPressureSensitive = false; // --- ADDED: For pressure sensitivity
   List<Offset> _lassoPoints = [];
 
   // --- Image Manipulation State ---
@@ -871,7 +867,10 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
           final newLine = DrawingLine(
               points: [transformedPosition],
               colorValue: _currentColor.value,
-              strokeWidth: _strokeWidth);
+              strokeWidth: _strokeWidth,
+              // --- MODIFIED: Capture pressure ---
+              pressure: _isPressureSensitive ? [details.pressure] : null
+          );
           _viewablePages[_currentPageIndex] =
               currentPage.copyWith(lines: [...currentPage.lines, newLine]);
         });
@@ -909,8 +908,23 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
           if (currentPage.lines.isEmpty) return;
           final lastLine = currentPage.lines.last;
           final newPoints = [...lastLine.points, transformedPosition];
+
+          // --- MODIFIED: Capture pressure ---
+          List<double>? newPressures = lastLine.pressure;
+          if (_isPressureSensitive) {
+            // Ensure pressure list exists and add new pressure
+            newPressures = [...(lastLine.pressure ?? []), details.pressure];
+          }
+          // --- END MODIFIED ---
+
           final updatedLines = List<DrawingLine>.from(currentPage.lines);
-          updatedLines.last = lastLine.copyWith(points: newPoints);
+
+          // --- MODIFIED: Pass new pressures to copyWith ---
+          updatedLines.last = lastLine.copyWith(
+              points: newPoints,
+              pressure: newPressures
+          );
+
           _viewablePages[_currentPageIndex] =
               currentPage.copyWith(lines: updatedLines);
         });
@@ -1723,6 +1737,8 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
                         transformationController: _transformationController,
                         panScaleEnabled: panScaleEnabled,
                         isEnhancedHandwriting: _isEnhancedHandwriting,
+                        // --- ADDED: Pass pressure state ---
+                        isPressureSensitive: _isPressureSensitive,
                         onTap: (details) {
                           if (_selectedTool == DrawingTool.image && !_isStylusInteraction && !_isMovingSelectedImage) {
                             _handleCanvasTap(_transformToCanvasCoordinates(details.localPosition));
@@ -1815,7 +1831,7 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
   }
 
   Widget _buildDrawingToolbar() {
-    // ... (implementation unchanged)
+    // --- MODIFIED: Added Pressure Sensitive Button ---
     return SingleChildScrollView(
       scrollDirection: Axis.horizontal,
       child: Row(
@@ -1861,7 +1877,8 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
           ),
           const SizedBox(width: 8),
 
-          if (_selectedTool == DrawingTool.pen)
+          if (_selectedTool == DrawingTool.pen) ...[
+            // Enhanced Handwriting (Smoothing)
             IconButton(
               icon: Icon(
                 _isEnhancedHandwriting ? Icons.auto_awesome : Icons.timeline,
@@ -1870,7 +1887,7 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
               ),
               tooltip: _isEnhancedHandwriting
                   ? 'Good Handwriting Mode (ON)'
-                  : 'Normal Handwriting Mode (ON)',
+                  : 'Normal Handwriting Mode (OFF)',
               onPressed: () {
                 setState(() {
                   _isEnhancedHandwriting = !_isEnhancedHandwriting;
@@ -1886,6 +1903,33 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
                 ));
               },
             ),
+            // --- ADDED: Pressure Sensitivity Toggle ---
+            IconButton(
+              icon: Icon(
+                Icons.opacity, // Icon implying "dark and light"
+                color: _isPressureSensitive ? primaryBlue : mediumGreyText,
+                size: 22,
+              ),
+              tooltip: _isPressureSensitive
+                  ? 'Pressure Sensitivity (ON)'
+                  : 'Pressure Sensitivity (OFF)',
+              onPressed: () {
+                setState(() {
+                  _isPressureSensitive = !_isPressureSensitive;
+                  _redrawNotifier.value = 1 - _redrawNotifier.value;
+                });
+                HapticFeedback.lightImpact();
+                ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                  content: Text(_isPressureSensitive
+                      ? 'Pressure Sensitive Mode Activated'
+                      : 'Pressure Sensitive Mode Deactivated'),
+                  backgroundColor: primaryBlue,
+                  duration: const Duration(seconds: 2),
+                ));
+              },
+            ),
+          ],
+
           const SizedBox(width: 8),
 
           if (_selectedTool != DrawingTool.image && _selectedTool != DrawingTool.lasso)
@@ -1992,6 +2036,7 @@ class _PrescriptionCanvasPage extends StatefulWidget {
   final bool panScaleEnabled;
   final ValueChanged<TapUpDetails> onTap;
   final bool isEnhancedHandwriting;
+  final bool isPressureSensitive; // --- ADDED ---
 
   const _PrescriptionCanvasPage({
     required this.drawingPage,
@@ -2002,6 +2047,7 @@ class _PrescriptionCanvasPage extends StatefulWidget {
     required this.panScaleEnabled,
     required this.onTap,
     required this.isEnhancedHandwriting,
+    required this.isPressureSensitive, // --- ADDED ---
   });
 
   @override
@@ -2119,6 +2165,7 @@ class _PrescriptionCanvasPageState extends State<_PrescriptionCanvasPage>
             redrawNotifier: widget.redrawNotifier,
             lassoPoints: widget.lassoPoints,
             isEnhancedHandwriting: widget.isEnhancedHandwriting,
+            isPressureSensitive: widget.isPressureSensitive, // --- ADDED ---
           ),
           child: const SizedBox(width: canvasWidth, height: canvasHeight),
         ),
@@ -2137,6 +2184,7 @@ class PrescriptionPainter extends CustomPainter {
   final ValueNotifier<int> redrawNotifier;
   final List<Offset> lassoPoints;
   final bool isEnhancedHandwriting;
+  final bool isPressureSensitive; // --- ADDED ---
 
   final RdpSimplifier _simplifier = RdpSimplifier();
   final double _simplificationTolerance = 0.75;
@@ -2149,6 +2197,7 @@ class PrescriptionPainter extends CustomPainter {
         this.selectedImageId,
         required this.lassoPoints,
         required this.isEnhancedHandwriting,
+        required this.isPressureSensitive, // --- ADDED ---
         // **OPTIMIZATION: Initialize with the loaded map**
         required this.loadedDrawingImages
       })
@@ -2210,48 +2259,89 @@ class PrescriptionPainter extends CustomPainter {
     }
 
     // 3. Draw Lines/Drawings
+    // --- MODIFIED: To handle pressure sensitivity ---
     for (var line in drawingPage.lines) {
-      final paint = Paint()
-        ..color = Color(line.colorValue)
-        ..strokeWidth = line.strokeWidth
-        ..strokeCap = StrokeCap.round
-        ..strokeJoin = StrokeJoin.round
-        ..style = PaintingStyle.stroke;
+      if (line.points.length <= 1) continue; // Skip empty/single-point lines
 
+      // Check if pressure data is available and the mode is on
+      final bool usePressure = isPressureSensitive &&
+          line.pressure != null &&
+          line.pressure!.length == line.points.length;
 
-      if (isEnhancedHandwriting && line.points.length > 1) {
-        final List<Offset> pointsToDraw =
-        _simplifier.simplify(line.points, _simplificationTolerance);
+      if (usePressure) {
+        // --- ADDED: Pressure-sensitive drawing logic ---
+        // Vary stroke width based on pressure
+        final double minWidth = line.strokeWidth * 0.4;
+        final double maxWidth = line.strokeWidth * 2.0;
+        final points = line.points;
+        final pressures = line.pressure!;
+        final tempPaint = Paint()
+          ..color = Color(line.colorValue)
+          ..strokeCap = StrokeCap.round // Round cap helps fill gaps
+          ..style = PaintingStyle.stroke;
 
-        if (pointsToDraw.length > 1) {
-          final path = Path()..moveTo(pointsToDraw.first.dx, pointsToDraw.first.dy);
+        for (int i = 0; i < points.length - 1; i++) {
+          final p1 = points[i];
+          final p2 = points[i + 1];
+          // Average pressure of the segment, clamped between 0.0 and 1.0
+          final avgPressure =
+          ((pressures[i] + pressures[i + 1]) / 2).clamp(0.0, 1.0);
 
-          if (pointsToDraw.length < 3) {
-            path.lineTo(pointsToDraw.last.dx, pointsToDraw.last.dy);
-          } else {
-            var p1 = pointsToDraw[0];
-            var p2 = pointsToDraw[1];
-            for (int i = 1; i < pointsToDraw.length - 1; i++) {
-              final midPoint = Offset(
-                (p1.dx + p2.dx) / 2,
-                (p1.dy + p2.dy) / 2,
-              );
-              path.quadraticBezierTo(p1.dx, p1.dy, midPoint.dx, midPoint.dy);
-              p1 = pointsToDraw[i];
-              p2 = pointsToDraw[i + 1];
+          // Interpolate the stroke width
+          final newWidth = ui.lerpDouble(minWidth, maxWidth, avgPressure)!;
+
+          // Only draw if width is visible
+          if (newWidth > 0.1) {
+            tempPaint.strokeWidth = newWidth;
+            canvas.drawLine(p1, p2, tempPaint);
+          }
+        }
+      } else {
+        // --- ORIGINAL logic for non-pressure drawing ---
+        final paint = Paint()
+          ..color = Color(line.colorValue)
+          ..strokeWidth = line.strokeWidth
+          ..strokeCap = StrokeCap.round
+          ..strokeJoin = StrokeJoin.round
+          ..style = PaintingStyle.stroke;
+
+        if (isEnhancedHandwriting) {
+          // Use RDP simplification for smoother curves
+          final List<Offset> pointsToDraw =
+          _simplifier.simplify(line.points, _simplificationTolerance);
+
+          if (pointsToDraw.length > 1) {
+            final path = Path()..moveTo(pointsToDraw.first.dx, pointsToDraw.first.dy);
+
+            if (pointsToDraw.length < 3) {
+              path.lineTo(pointsToDraw.last.dx, pointsToDraw.last.dy);
+            } else {
+              var p1 = pointsToDraw[0];
+              var p2 = pointsToDraw[1];
+              for (int i = 1; i < pointsToDraw.length - 1; i++) {
+                final midPoint = Offset(
+                  (p1.dx + p2.dx) / 2,
+                  (p1.dy + p2.dy) / 2,
+                );
+                path.quadraticBezierTo(p1.dx, p1.dy, midPoint.dx, midPoint.dy);
+                p1 = pointsToDraw[i];
+                p2 = pointsToDraw[i + 1];
+              }
+              path.lineTo(p2.dx, p2.dy);
             }
-            path.lineTo(p2.dx, p2.dy);
+            canvas.drawPath(path, paint);
+          }
+        } else {
+          // Standard raw line drawing
+          final path = Path()..moveTo(line.points.first.dx, line.points.first.dy);
+          for (int i = 1; i < line.points.length; i++) {
+            path.lineTo(line.points[i].dx, line.points[i].dy);
           }
           canvas.drawPath(path, paint);
         }
-      } else if (!isEnhancedHandwriting && line.points.length > 1) {
-        final path = Path()..moveTo(line.points.first.dx, line.points.first.dy);
-        for (int i = 1; i < line.points.length; i++) {
-          path.lineTo(line.points[i].dx, line.points[i].dy);
-        }
-        canvas.drawPath(path, paint);
       }
     }
+    // --- END MODIFIED SECTION ---
 
     // 4. Draw Lasso Line
     if (lassoPoints.length > 1) {
@@ -2270,17 +2360,18 @@ class PrescriptionPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant PrescriptionPainter oldDelegate) {
-    // **OPTIMIZATION: Add loadedDrawingImages to repaint check**
     return oldDelegate.drawingPage != drawingPage ||
         oldDelegate.templateUiImage != templateUiImage ||
         oldDelegate.selectedImageId != selectedImageId ||
         oldDelegate.lassoPoints.length != lassoPoints.length ||
         oldDelegate.isEnhancedHandwriting != isEnhancedHandwriting ||
+        oldDelegate.isPressureSensitive != isPressureSensitive || // --- ADDED ---
         oldDelegate.loadedDrawingImages.length != loadedDrawingImages.length;
   }
 }
 
 // --- HELPER CLASS FOR STROKE SIMPLIFICATION (Unchanged) ---
+// This is used by the 'isEnhancedHandwriting' feature
 class RdpSimplifier {
   double _getPerpendicularDistance(
       Offset p, Offset p1, Offset p2) {

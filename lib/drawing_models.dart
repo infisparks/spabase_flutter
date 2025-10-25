@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 // --- Utility Functions ---
 
 String generateUniqueId() {
+  // Generates a unique ID for new elements
   return DateTime.now().microsecondsSinceEpoch.toString() +
       Random().nextInt(100000).toString();
 }
@@ -53,11 +54,15 @@ class DrawingLine {
   final List<Offset> points;
   final int colorValue;
   final double strokeWidth;
+  // FIX: Added nullable pressure field
+  final List<double>? pressure;
 
   DrawingLine({
     required this.points,
     required this.colorValue,
     required this.strokeWidth,
+    // FIX: Added to constructor
+    this.pressure,
   });
 
   factory DrawingLine.fromJson(Map<String, dynamic> json) {
@@ -65,6 +70,13 @@ class DrawingLine {
     final pointsData = json['points'];
     final color = (json['colorValue'] as num?)?.toInt() ?? Colors.black.value;
     final width = (json['strokeWidth'] as num?)?.toDouble() ?? 2.0;
+
+    // FIX: Deserialize pressure list (stored as List<num> and converted to List<double>)
+    final pressureList = (json['pressure'] as List?)
+        ?.whereType<num>()
+        .map((e) => e.toDouble())
+        .toList();
+
 
     if (pointsData is List && pointsData.isNotEmpty) {
       if (pointsData[0] is Map) {
@@ -95,17 +107,33 @@ class DrawingLine {
       }
     }
 
-    return DrawingLine(points: pointsList, colorValue: color, strokeWidth: width);
+    return DrawingLine(
+      points: pointsList,
+      colorValue: color,
+      strokeWidth: width,
+      pressure: pressureList, // FIX: Added pressure
+    );
   }
 
   Map<String, dynamic> toJson() {
+    final jsonMap = {
+      'colorValue': colorValue,
+      'strokeWidth': strokeWidth,
+      // FIX: Added pressure to JSON output
+      'pressure': pressure,
+    };
+
+    // Compression logic for points
     if (points.isEmpty) {
-      return {'points': [], 'colorValue': colorValue, 'strokeWidth': strokeWidth};
+      jsonMap['points'] = [];
+      return jsonMap;
     }
 
+    // Optimization: Simplify points before compression/storage
     final simplifiedPoints = simplify(points, 0.2);
     if (simplifiedPoints.isEmpty) {
-      return {'points': [], 'colorValue': colorValue, 'strokeWidth': strokeWidth};
+      jsonMap['points'] = [];
+      return jsonMap;
     }
 
     final compressedPoints = <int>[];
@@ -123,22 +151,22 @@ class DrawingLine {
       lastY = currentY;
     }
 
-    return {
-      'points': compressedPoints,
-      'colorValue': colorValue,
-      'strokeWidth': strokeWidth,
-    };
+    jsonMap['points'] = compressedPoints;
+    return jsonMap;
   }
 
   DrawingLine copyWith({
     List<Offset>? points,
     int? colorValue,
     double? strokeWidth,
+    // FIX: Added pressure to copyWith
+    List<double>? pressure,
   }) {
     return DrawingLine(
       points: points ?? this.points,
       colorValue: colorValue ?? this.colorValue,
       strokeWidth: strokeWidth ?? this.strokeWidth,
+      pressure: pressure ?? this.pressure, // FIX: Added pressure
     );
   }
 }

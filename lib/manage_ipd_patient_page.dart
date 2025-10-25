@@ -597,7 +597,8 @@ class _ManageIpdPatientPageState extends State<ManageIpdPatientPage> {
       _showErrorSnackbar("Cannot download, health record is not loaded.");
       return;
     }
-
+    final String patientNameForFile = _patientName ?? 'UnknownPatient';
+    final String uhidForFile = widget.uhid;
     // Use _isSaving to disable buttons while PDF is generating
     setState(() => _isSaving = true);
 
@@ -605,6 +606,8 @@ class _ManageIpdPatientPageState extends State<ManageIpdPatientPage> {
       context: context,
       supabase: supabase,
       healthRecordId: _healthRecordId,
+      patientName: patientNameForFile,
+      uhid: uhidForFile,
     );
 
     if (mounted) {

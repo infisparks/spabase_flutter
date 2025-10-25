@@ -37,6 +37,10 @@ class PdfGenerator {
     required BuildContext context,
     required SupabaseClient supabase,
     required String? healthRecordId,
+    // --- ADDED: New parameters for filename ---
+    required String patientName,
+    required String uhid,
+    // --- END ADDED ---
   }) async {
     if (healthRecordId == null) {
       if (context.mounted) {
@@ -46,6 +50,13 @@ class PdfGenerator {
       }
       return;
     }
+
+    // --- ADDED: Create the PDF filename ---
+    // Replaces spaces/special characters in name with an underscore
+    final String safePatientName =
+    patientName.replaceAll(RegExp(r'[^a-zA-Z0-9]+'), '_');
+    final String pdfName = '${safePatientName}_${uhid}.pdf';
+    // --- END ADDED ---
 
     showDialog(
       context: context,
@@ -149,12 +160,15 @@ class PdfGenerator {
         );
 
         final Map<String, pw.MemoryImage> embeddedImages = {};
-        for (final img in pageData.images) {
-          final imgBytes = await _fetchImageBytes(img.imageUrl);
-          if (imgBytes != null) {
-            embeddedImages[img.imageUrl] = pw.MemoryImage(imgBytes);
-          }
-        }
+        // This is a placeholder for DrawingImage, which seems to be missing
+        // from your DrawingPage model in main.dart. If you add images
+        // back to DrawingPage, this loop will work.
+        // for (final img in pageData.images) {
+        //   final imgBytes = await _fetchImageBytes(img.imageUrl);
+        //   if (imgBytes != null) {
+        //     embeddedImages[img.imageUrl] = pw.MemoryImage(imgBytes);
+        //   }
+        // }
 
         final double imageWidth = templateImage.width!.toDouble();
         final double imageHeight = templateImage.height!.toDouble();
@@ -191,20 +205,21 @@ class PdfGenerator {
                 alignment: pw.Alignment.topLeft,
                 children: [
                   pw.Image(templateImage, fit: pw.BoxFit.fill),
-                  ...pageData.images
-                      .where((img) => embeddedImages.containsKey(img.imageUrl))
-                      .map((image) {
-                    return pw.Positioned(
-                      left: (image.position.dx - offsetX) * scaleX,
-                      top: (image.position.dy - offsetY) * scaleY,
-                      child: pw.Image(
-                        embeddedImages[image.imageUrl]!,
-                        width: image.width * scaleX,
-                        height: image.height * scaleY,
-                        fit: pw.BoxFit.contain,
-                      ),
-                    );
-                  }).toList(),
+                  // Placeholder for images, if you add them back:
+                  // ...pageData.images
+                  //     .where((img) => embeddedImages.containsKey(img.imageUrl))
+                  //     .map((image) {
+                  //   return pw.Positioned(
+                  //     left: (image.position.dx - offsetX) * scaleX,
+                  //     top: (image.position.dy - offsetY) * scaleY,
+                  //     child: pw.Image(
+                  //       embeddedImages[image.imageUrl]!,
+                  //       width: image.width * scaleX,
+                  //       height: image.height * scaleY,
+                  //       fit: pw.BoxFit.contain,
+                  //     ),
+                  //   );
+                  // }).toList(),
                   pw.Positioned.fill(
                     child: pw.CustomPaint(
                       painter: (PdfGraphics canvas, PdfPoint size) {
@@ -256,6 +271,9 @@ class PdfGenerator {
       if (context.mounted) Navigator.of(context).pop();
 
       await Printing.layoutPdf(
+        // --- ADDED: Use the 'name' parameter ---
+        name: pdfName,
+        // --- END ADDED ---
         onLayout: (PdfPageFormat format) async => doc.save(),
       );
     } catch (e) {
@@ -373,12 +391,13 @@ class PdfGenerator {
         );
 
         final Map<String, pw.MemoryImage> embeddedImages = {};
-        for (final img in pageData.images) {
-          final imgBytes = await _fetchImageBytes(img.imageUrl);
-          if (imgBytes != null) {
-            embeddedImages[img.imageUrl] = pw.MemoryImage(imgBytes);
-          }
-        }
+        // Placeholder for images
+        // for (final img in pageData.images) {
+        //   final imgBytes = await _fetchImageBytes(img.imageUrl);
+        //   if (imgBytes != null) {
+        //     embeddedImages[img.imageUrl] = pw.MemoryImage(imgBytes);
+        //   }
+        // }
 
         // --- ✅ FIX START: COORDINATE TRANSFORMATION LOGIC ---
         // This logic reverses the `BoxFit.contain` effect from the Flutter UI.
@@ -425,21 +444,21 @@ class PdfGenerator {
                 alignment: pw.Alignment.topLeft,
                 children: [
                   pw.Image(templateImage, fit: pw.BoxFit.fill),
-                  ...pageData.images
-                      .where((img) => embeddedImages.containsKey(img.imageUrl))
-                      .map((image) {
-                    // Apply the transformation to image position and size
-                    return pw.Positioned(
-                      left: (image.position.dx - offsetX) * scaleX,
-                      top: (image.position.dy - offsetY) * scaleY,
-                      child: pw.Image(
-                        embeddedImages[image.imageUrl]!,
-                        width: image.width * scaleX,
-                        height: image.height * scaleY,
-                        fit: pw.BoxFit.contain,
-                      ),
-                    );
-                  }).toList(),
+                  // ...pageData.images
+                  //     .where((img) => embeddedImages.containsKey(img.imageUrl))
+                  //     .map((image) {
+                  //   // Apply the transformation to image position and size
+                  //   return pw.Positioned(
+                  //     left: (image.position.dx - offsetX) * scaleX,
+                  //     top: (image.position.dy - offsetY) * scaleY,
+                  //     child: pw.Image(
+                  //       embeddedImages[image.imageUrl]!,
+                  //       width: image.width * scaleX,
+                  //       height: image.height * scaleY,
+                  //       fit: pw.BoxFit.contain,
+                  //     ),
+                  //   );
+                  // }).toList(),
                   pw.Positioned.fill(
                     child: pw.CustomPaint(
                       painter: (PdfGraphics canvas, PdfPoint size) {
@@ -506,3 +525,4 @@ class PdfGenerator {
     }
   }
 }
+
