@@ -861,6 +861,36 @@ class _ManageIpdPatientPageState extends State<ManageIpdPatientPage> {
     _addPagesToGroup(group, [newPage]);
   }
 
+  // --- NEW FUNCTION: A generic version of _showConsentOptions ---
+  void _showGenericListSelection(DrawingGroup group, String tag) async {
+    final templates =
+    _availableTemplates.where((t) => t.tag == tag).toList();
+
+    if (templates.isEmpty) {
+      _showErrorSnackbar("No templates found for this group (tag: $tag).");
+      return;
+    }
+
+    final selectedTemplate = await _showTemplateSelectionDialog(templates);
+    if (selectedTemplate == null || !mounted) return;
+
+    if (group.pages.any(
+            (p) => p.pageName.toLowerCase() == selectedTemplate.name.toLowerCase())) {
+      _showErrorSnackbar("'${selectedTemplate.name}' has already been added.");
+      return;
+    }
+
+    final newPageNumber = group.pages.length + 1;
+    final newPage = DrawingPage(
+        id: generateUniqueId(),
+        templateImageUrl: selectedTemplate.url,
+        pageNumber: newPageNumber,
+        pageName: selectedTemplate.name, // Use template name
+        groupName: group.groupName);
+    _addPagesToGroup(group, [newPage]);
+  }
+  // --- END NEW FUNCTION ---
+
   void _addOtFormPage(DrawingGroup group, String templateName) {
     final template = _findTemplateByName(templateName);
     if (template == null) return;
@@ -990,17 +1020,27 @@ class _ManageIpdPatientPageState extends State<ManageIpdPatientPage> {
         _addPairedPage(group, config.templateTag!, config.pageNamePrefix);
         break;
       case AddBehavior.multiPageFromList:
-      // 'Consent' and 'Discharge / Dama' use this
+      // --- UPDATED TO HANDLE t19 ---
         if (config.templateTag == 't10') {
+          // Consent has a special filter to remove 'OT Form'
           _showConsentOptions(group, config.templateTag!);
         } else if (config.templateTag == 't14') {
+          // Discharge has special paired-page logic
           _showDischargeOptions(group, config.templateTag!);
+        } else if (config.templateTag == 't19') {
+          // Billing Consent is simple: just show all from the tag
+          _showGenericListSelection(group, config.templateTag!);
+        } else {
+          // Fallback for other list types
+          _showGenericListSelection(group, config.templateTag!);
         }
+        // --- END UPDATE ---
         break;
       case AddBehavior.singleBook:
       // 'OT' uses this
         _addOtFormPage(group, config.templateName!);
         break;
+    // --- FIX: Corrected typo 'AddDBehavior' to 'AddBehavior' ---
       case AddBehavior.multiPageCustom:
         _showCustomTemplateDialogForGroup(group);
         break;
@@ -1828,6 +1868,7 @@ class _PairedPageTile extends StatelessWidget {
                 style: TextStyle(
                   fontWeight: FontWeight.w600,
                   color: isEmpty
+                  // --- FIX: Corrected typo '_ManageIpPatientPageState' to '_ManageIpdPatientPageState' ---
                       ? _ManageIpdPatientPageState.mediumGreyText
                       : _ManageIpdPatientPageState.darkText,
                   fontSize: 13, // Slightly smaller font

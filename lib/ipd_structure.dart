@@ -12,7 +12,7 @@ enum AddBehavior {
   multiPageSingle,
 
   /// Can add multiple single pages, prompting for a custom name each time.
-  multiPageSingleCustomName, // <-- NEW BEHAVIOR ADDED
+  multiPageSingleCustomName,
 
   /// Can add multiple page pairs (front/back) from a specific template tag.
   multiPagePaired,
@@ -37,7 +37,7 @@ class GroupConfig {
   final AddBehavior behavior;
 
   /// Used for behaviors requiring a template tag.
-  /// e.g., 't1', 't6', 't10', 't14', 't18'
+  /// e.g., 't1', 't6', 't10', 't14', 't18', 't19'
   final String? templateTag;
 
   /// Used for behaviors: singleBook.
@@ -132,7 +132,6 @@ final List<GroupConfig> ipdGroupStructure = [
     templateTag: 't2',
     pageNamePrefix: 'Daily Drug Chart',
   ),
-  // --- NEW GROUP ADDED ---
   const GroupConfig(
     groupName: 'Prescription Sheet',
     columnName: 'prescription_sheet_data', // Define a new DB column
@@ -140,7 +139,6 @@ final List<GroupConfig> ipdGroupStructure = [
     templateTag: 't18', // Your new template tag
     pageNamePrefix: 'Prescription', // Default prefix for the name dialog
   ),
-  // --- END NEW GROUP ---
   const GroupConfig(
     groupName: 'Icu chart',
     columnName: 'icu_chart_data',
@@ -187,6 +185,15 @@ final List<GroupConfig> ipdGroupStructure = [
   ),
 
   // --- Admin & Discharge ---
+  // --- NEW GROUP ADDED HERE ---
+  const GroupConfig(
+    groupName: 'Billing Consent',
+    columnName: 'billing_consent_data', // <-- MUST ADD THIS to user_health_details
+    behavior: AddBehavior.multiPageFromList,
+    templateTag: 't19',
+    pageNamePrefix: 'Billing Form',
+  ),
+  // --- END NEW GROUP ---
   const GroupConfig(
     groupName: 'Patient Charges Form',
     columnName: 'patient_charges_form_data',

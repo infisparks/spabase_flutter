@@ -110,7 +110,8 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     'Indoor Patient File': 'indoor_patient_file_data',
     'Icu chart': 'icu_chart_data',
     'Transfer Summary': 'transfer_summary_data',
-    'Prescription Sheet':'prescription_sheet_data'
+    'Prescription Sheet':'prescription_sheet_data',
+    'Billing Consent':'billing_consent_data'
   };
 
   // --- Drawing State ---
