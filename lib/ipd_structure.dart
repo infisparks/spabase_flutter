@@ -91,7 +91,7 @@ final List<GroupConfig> ipdGroupStructure = [
   const GroupConfig(
     groupName: 'Clinical Notes',
     columnName: 'clinical_notes_data',
-    behavior: AddBehavior.multiPagePaired,
+    behavior: AddBehavior.singlePairOnly,
     templateTag: 't7',
     pageNamePrefix: 'Clinical Note',
   ),

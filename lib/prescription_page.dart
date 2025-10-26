@@ -1965,11 +1965,11 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
               icon: const Icon(Icons.undo_rounded, color: primaryBlue, size: 22),
               onPressed: _undoLastAction,
               tooltip: "Undo"),
-          IconButton(
-              icon: const Icon(Icons.delete_sweep_rounded,
-                  color: primaryBlue, size: 22),
-              onPressed: _clearAllDrawings,
-              tooltip: "Clear All"),
+          // IconButton(
+          //     icon: const Icon(Icons.delete_sweep_rounded,
+          //         color: primaryBlue, size: 22),
+          //     onPressed: _clearAllDrawings,
+          //     tooltip: "Clear All"),
         ],
       ),
     );
