@@ -113,7 +113,79 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     'Prescription Sheet':'prescription_sheet_data',
     'Billing Consent':'billing_consent_data'
   };
+  void _nextPage() {
+    if (_viewablePages.length <= 1) return;
+    final newIndex = (_currentPageIndex + 1) % _viewablePages.length;
+    _navigateToPage(newIndex);
+  }
 
+  void _previousPage() {
+    if (_viewablePages.length <= 1) return;
+    final newIndex = (_currentPageIndex - 1 + _viewablePages.length) % _viewablePages.length;
+    _navigateToPage(newIndex);
+  }
+
+  void _clearCopiedContent() {
+    HapticFeedback.mediumImpact();
+    setState(() {
+      _copiedPageData = null;
+    });
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Copied content cleared.'),
+        backgroundColor: Colors.red,
+        duration: Duration(seconds: 2)));
+  }
+
+  Widget _buildFloatingCopyPasteButton() {
+    if (_copiedPageData == null) {
+      return const SizedBox.shrink();
+    }
+
+    // Determine if content is available (copied lines or images)
+    final bool hasContent = (_copiedPageData?.lines.isNotEmpty ?? false) ||
+        (_copiedPageData?.images.isNotEmpty ?? false);
+
+    if (!hasContent) {
+      return const SizedBox.shrink();
+    }
+
+    return Positioned(
+      bottom: 20,
+      right: 20,
+      child: FloatingActionButton.extended(
+        onPressed: _pastePageContent,
+        icon: const Icon(Icons.paste_rounded, size: 24),
+        label: const Text('Paste Content'),
+        tooltip: 'Paste Copied Content to this Page',
+        backgroundColor: primaryBlue,
+        foregroundColor: Colors.white,
+        elevation: 6,
+      ),
+    );
+  }
+
+
+  String _getBasePagePrefix(String pageName) {
+    // 1. Remove date and time suffix (" - dd MMM yyyy" or similar)
+    String baseName = pageName.split(' - ')[0].trim();
+
+    // 2. If it's a paired page, use the part before the parenthesis.
+    if (baseName.contains('(')) {
+      return baseName.split('(')[0].trim();
+    }
+
+    // 3. If it's a single page (like Dr Visit), remove the number/set number.
+    // Example: "Doctor Visit 1" -> "Doctor Visit"
+    // Example: "Prescription 2" -> "Prescription"
+    final parts = baseName.split(' ');
+    if (parts.isNotEmpty && int.tryParse(parts.last) != null) {
+      // Check if the last part looks like a number
+      return parts.sublist(0, parts.length - 1).join(' ').trim();
+    }
+
+    // 4. Fallback (e.g., OT form, Consent names, or Custom names without numbers)
+    return baseName;
+  }
   // --- Drawing State ---
   Color _currentColor = Colors.black;
   double _strokeWidth = 2.0;
@@ -144,6 +216,8 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
   RealtimeChannel? _healthRecordChannel;
   DateTime? _lastSuccessfulSaveTime;
   bool _isDisposed = false;
+
+  get pagePrefix => null;
 
   @override
   void initState() {
@@ -250,12 +324,15 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
           throw Exception("Start page '$currentPageIdBeforeRefresh' not found in group '${_currentGroup?.groupName}'. Available pages: ${_pagesInCurrentGroup.map((p)=> p.id).join(', ')}");
         }
 
+// --- FIX: Use the new helper to correctly determine the base prefix ---
+        String basePagePrefix = _getBasePagePrefix(startPage.pageName);
+        debugPrint("Filtering pages based on prefix: $basePagePrefix");
 
-        // Determine which pages belong to the same 'template type' (part before '(')
-        String pagePrefix = startPage.pageName.split('(')[0].trim();
         _viewablePages = _pagesInCurrentGroup
-            .where((p) => p.pageName.split('(')[0].trim() == pagePrefix)
+            .where((p) => _getBasePagePrefix(p.pageName) == basePagePrefix)
             .toList();
+// --- END FIX ---
+
 
         int initialIndex =
         _viewablePages.indexWhere((p) => p.id == currentPageIdBeforeRefresh);
@@ -1001,9 +1078,11 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
       return;
     }
 
+    // The second line is the problem: it uses the last point's Y-coordinate for ALL intermediate points.
     final path = Path()..moveTo(_lassoPoints.first.dx, _lassoPoints.first.dy);
     for (int i = 1; i < _lassoPoints.length; i++) {
-      path.lineTo(_lassoPoints[i].dx, _lassoPoints.last.dy);
+      // FIX: Use the current point's coordinates (dx, dy)
+      path.lineTo(_lassoPoints[i].dx, _lassoPoints[i].dy);
     }
     path.close();
 
@@ -1011,17 +1090,52 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     final copiedLines = <DrawingLine>[];
     final copiedImages = <DrawingImage>[];
 
-    // 1. Copy Lines
+    // 2. COPY LINES (New Robust Logic)
+    // The 'oversampling' step dramatically increases hit accuracy.
+    const double samplingDistance = 5.0; // Check a point every 5 pixels
+
     for (var line in currentPage.lines) {
-      if (line.points.any((p) => path.contains(p))) {
-        copiedLines.add(line.copyWith()); // Copy the entire line if any point is inside
+      bool foundIntersection = false;
+      final points = line.points;
+
+      // A. Check actual recorded points (simple check)
+      if (points.any((p) => path.contains(p))) {
+        foundIntersection = true;
+      } else {
+        // B. Check oversampled points (robust check)
+        for (int i = 0; i < points.length - 1; i++) {
+          final p1 = points[i];
+          final p2 = points[i + 1];
+          final distance = (p2 - p1).distance;
+
+          // Only oversample segments longer than the sampling distance
+          if (distance > samplingDistance) {
+            final int steps = (distance / samplingDistance).ceil();
+            for (int j = 1; j < steps; j++) {
+              // Linear interpolation (LERP) to find an intermediate point
+              final double t = j / steps;
+              final intermediatePoint = Offset.lerp(p1, p2, t)!;
+
+              if (path.contains(intermediatePoint)) {
+                foundIntersection = true;
+                break;
+              }
+            }
+          }
+          if (foundIntersection) break;
+        }
+      }
+
+      if (foundIntersection) {
+        copiedLines.add(line.copyWith());
       }
     }
 
-    // 2. Copy Images
+    // 3. COPY IMAGES (Original Logic - this is generally correct)
     for (var image in currentPage.images) {
       final imageRect = Rect.fromLTWH(
           image.position.dx, image.position.dy, image.width, image.height);
+
       // Check if the center of the image is inside the lasso path
       final imageCenter = imageRect.center;
       if (path.contains(imageCenter)) {
@@ -1661,7 +1775,36 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
                 icon: const Icon(Icons.list_alt, color: primaryBlue),
                 tooltip: 'Select Page in this Group',
                 onPressed: _showFolderPageSelector),
-            if (_viewablePages.length > 1)
+            if (_viewablePages.length > 1) ...[
+              IconButton(
+                icon: const Icon(Icons.arrow_back_ios_new, color: primaryBlue, size: 20),
+                tooltip: 'Previous Page',
+                onPressed: _previousPage,
+              ),
+              Padding(
+                padding: const EdgeInsets.only(left: 4.0, right: 4.0),
+                child: Center(
+                  child: ActionChip(
+                    onPressed: _showFolderPageSelector, // Still opens the selector on tap
+                    label: Text(
+                      "${_currentPageIndex + 1}/${_viewablePages.length}",
+                      style: const TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.bold,
+                          color: primaryBlue),
+                    ),
+                    backgroundColor: primaryBlue.withOpacity(0.15),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(20)),
+                  ),
+                ),
+              ),
+              IconButton(
+                icon: const Icon(Icons.arrow_forward_ios, color: primaryBlue, size: 20),
+                tooltip: 'Next Page',
+                onPressed: _nextPage,
+              ),
+            ],
               Padding(
                 padding: const EdgeInsets.only(right: 8.0),
                 child: ActionChip(
@@ -1699,6 +1842,7 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
             ),
           ),
         ),
+
         body: LayoutBuilder(
           builder: (context, constraints) {
             if (!_isInitialZoomSet) {
@@ -1750,6 +1894,7 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
                   ),
                 ),
                 if (_selectedImageId != null) _buildImageOverlayControls(),
+                _buildFloatingCopyPasteButton(),
               ],
             );
           },
@@ -1807,6 +1952,11 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
               child: ListTile(
                   leading: Icon(Icons.paste_rounded),
                   title: Text('Paste on Page'))),
+        const PopupMenuItem<String>( // <-- NEW CLEAR OPTION IN MENU
+            value: 'clear_copy',
+            child: ListTile(
+                leading: Icon(Icons.delete_sweep_outlined, color: Colors.red),
+                title: Text('Clear Copied Content', style: TextStyle(color: Colors.red)))),
         const PopupMenuDivider(),
         const PopupMenuItem<String>(
             value: 'camera',

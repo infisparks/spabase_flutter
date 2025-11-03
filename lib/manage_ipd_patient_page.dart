@@ -9,6 +9,7 @@ import 'dart:convert';
 import 'dart:ui' show Offset, Color;
 import 'ipd_structure.dart'; // <-- IMPORT THE NEW STRUCTURE FILE
 import 'pdf_generator.dart'; // <-- IMPORT THE PDF GENERATOR
+import 'discharge_summary_page.dart'; // <-- IMPORT THE NEW DISCHARGE PAGE
 
 // --- UNIFIED & HIGHLY COMPRESSED DATA MODELS ---
 
@@ -23,11 +24,14 @@ class DrawingLine {
   final List<Offset> points;
   final int colorValue;
   final double strokeWidth;
+  // --- ADDED PRESSURE BACK ---
+  final List<double>? pressure;
 
   DrawingLine({
     required this.points,
     required this.colorValue,
     required this.strokeWidth,
+    this.pressure, // <-- ADDED
   });
 
   factory DrawingLine.fromJson(Map<String, dynamic> json) {
@@ -35,6 +39,11 @@ class DrawingLine {
     final pointsData = json['points'];
     final color = (json['colorValue'] as num?)?.toInt() ?? Colors.black.value;
     final width = (json['strokeWidth'] as num?)?.toDouble() ?? 2.0;
+
+    // --- ADDED PRESSURE DESERIALIZATION ---
+    final pressureData = json['pressure'] as List<dynamic>?;
+    final pressures = pressureData?.map((p) => (p as num).toDouble()).toList();
+    // --- END ---
 
     if (pointsData is List && pointsData.isNotEmpty) {
       if (pointsData[0] is Map) {
@@ -62,18 +71,32 @@ class DrawingLine {
       }
     }
     return DrawingLine(
-        points: pointsList, colorValue: color, strokeWidth: width);
+      points: pointsList,
+      colorValue: color,
+      strokeWidth: width,
+      pressure: pressures, // <-- ADDED
+    );
   }
 
   Map<String, dynamic> toJson() {
     if (points.isEmpty) {
-      return {'points': [], 'colorValue': colorValue, 'strokeWidth': strokeWidth};
+      return {
+        'points': [],
+        'colorValue': colorValue,
+        'strokeWidth': strokeWidth,
+        'pressure': pressure // <-- ADDED
+      };
     }
 
     // --- FIX: Removed the call to 'simplify'. We now use the original points to preserve all detail. ---
     final pointsToEncode = points;
     if (pointsToEncode.isEmpty) {
-      return {'points': [], 'colorValue': colorValue, 'strokeWidth': strokeWidth};
+      return {
+        'points': [],
+        'colorValue': colorValue,
+        'strokeWidth': strokeWidth,
+        'pressure': pressure // <-- ADDED
+      };
     }
 
     final compressedPoints = <int>[];
@@ -95,17 +118,75 @@ class DrawingLine {
       'points': compressedPoints,
       'colorValue': colorValue,
       'strokeWidth': strokeWidth,
+      'pressure': pressure, // <-- ADDED
     };
   }
 
-  DrawingLine copyWith({List<Offset>? points}) {
+  DrawingLine copyWith({List<Offset>? points, List<double>? pressure}) {
     return DrawingLine(
       points: points ?? this.points,
       colorValue: colorValue,
       strokeWidth: strokeWidth,
+      pressure: pressure ?? this.pressure, // <-- ADDED
     );
   }
 }
+
+// --- ADDED DrawingImage CLASS ---
+// This was missing from your file but present in PrescriptionPage
+class DrawingImage {
+  final String id;
+  final String imageUrl;
+  final Offset position;
+  final double width;
+  final double height;
+
+  DrawingImage({
+    required this.id,
+    required this.imageUrl,
+    required this.position,
+    required this.width,
+    required this.height,
+  });
+
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'imageUrl': imageUrl,
+    'position': {'dx': position.dx, 'dy': position.dy},
+    'width': width,
+    'height': height,
+  };
+
+  factory DrawingImage.fromJson(Map<String, dynamic> json) {
+    final pos = json['position'] as Map<String, dynamic>? ?? {'dx': 0.0, 'dy': 0.0};
+    return DrawingImage(
+      id: json['id'] as String? ?? generateUniqueId(),
+      imageUrl: json['imageUrl'] as String? ?? '',
+      position: Offset(
+        (pos['dx'] as num?)?.toDouble() ?? 0.0,
+        (pos['dy'] as num?)?.toDouble() ?? 0.0,
+      ),
+      width: (json['width'] as num?)?.toDouble() ?? 100.0,
+      height: (json['height'] as num?)?.toDouble() ?? 100.0,
+    );
+  }
+
+  DrawingImage copyWith({
+    String? id,
+    Offset? position,
+    double? width,
+    double? height,
+  }) {
+    return DrawingImage(
+      id: id ?? this.id,
+      imageUrl: imageUrl,
+      position: position ?? this.position,
+      width: width ?? this.width,
+      height: height ?? this.height,
+    );
+  }
+}
+// --- END DrawingImage CLASS ---
 
 class DrawingText {
   final String id;
@@ -169,13 +250,8 @@ class DrawingPage {
   final String groupName;
   final List<DrawingLine> lines;
   final List<DrawingText> texts;
-  // NOTE: You have 'DrawingImage' in PrescriptionPage but not here.
-  // Assuming 'DrawingText' is what you meant, or that 'images' are
-  // not part of this specific model definition.
-  // If images ARE part of this model, you need to add:
-  // final List<DrawingImage> images;
-  // And update toJson, fromJson, and copyWith.
-  // For now, I am matching YOUR provided code.
+  // --- ADDED images PROPERTY ---
+  final List<DrawingImage> images;
 
   DrawingPage({
     required this.id,
@@ -185,6 +261,7 @@ class DrawingPage {
     required this.groupName,
     this.lines = const [],
     this.texts = const [],
+    this.images = const [], // <-- ADDED
   });
 
   Map<String, dynamic> toJson() => {
@@ -195,6 +272,7 @@ class DrawingPage {
     'groupName': groupName,
     'lines': lines.map((line) => line.toJson()).toList(),
     'texts': texts.map((text) => text.toJson()).toList(),
+    'images': images.map((image) => image.toJson()).toList(), // <-- ADDED
   };
 
   factory DrawingPage.fromJson(Map<String, dynamic> json) {
@@ -214,16 +292,24 @@ class DrawingPage {
           .map((textJson) => DrawingText.fromJson(textJson))
           .toList() ??
           [],
+      // <-- ADDED images DESERIALIZATION ---
+      images: (json['images'] as List<dynamic>?)
+          ?.whereType<Map<String, dynamic>>()
+          .map((imageJson) => DrawingImage.fromJson(imageJson))
+          .toList() ??
+          [],
     );
   }
 
   // FIXED: Added int? pageNumber to allow updating the page number
-  DrawingPage copyWith(
-      {List<DrawingLine>? lines,
-        String? pageName,
-        List<DrawingText>? texts,
-        String? groupName,
-        int? pageNumber}) {
+  DrawingPage copyWith({
+    List<DrawingLine>? lines,
+    String? pageName,
+    List<DrawingText>? texts,
+    String? groupName,
+    int? pageNumber,
+    List<DrawingImage>? images, // <-- ADDED
+  }) {
     return DrawingPage(
       id: id,
       templateImageUrl: templateImageUrl,
@@ -232,6 +318,7 @@ class DrawingPage {
       groupName: groupName ?? this.groupName,
       lines: lines ?? this.lines,
       texts: texts ?? this.texts,
+      images: images ?? this.images, // <-- ADDED
     );
   }
 }
@@ -349,6 +436,7 @@ class _ManageIpdPatientPageState extends State<ManageIpdPatientPage> {
   List<SupabaseTemplateImage> _availableTemplates = [];
   String? _patientName;
   String? _roomType;
+  String? _patientAgeSex; // <-- ADDED THIS for prefill
 
   static const Color primaryBlue = Color(0xFF3B82F6);
   static const Color lightBlue = Color(0xFFE3F2FD);
@@ -384,7 +472,7 @@ class _ManageIpdPatientPageState extends State<ManageIpdPatientPage> {
       final patientDetailsResponse = await supabase
           .from('ipd_registration')
           .select(
-          'uhid, patient:patient_detail(name), bed:bed_management(room_type, bed_number)')
+          'uhid, patient:patient_detail(name, age, gender), bed:bed_management(room_type, bed_number)') // <-- ADDED age, gender
           .eq('ipd_id', widget.ipdId)
           .single();
 
@@ -392,16 +480,29 @@ class _ManageIpdPatientPageState extends State<ManageIpdPatientPage> {
       _patientName =
       (patientData != null) ? patientData['name'] as String? : 'N/A';
 
+      // --- ADDED AGE/SEX CALCULATION ---
+      final age = (patientData != null) ? patientData['age'] as int? : null;
+      final gender = (patientData != null) ? patientData['gender'] as String? : null;
+      if (age != null && gender != null) {
+        _patientAgeSex = '$age / $gender';
+      } else if (age != null) {
+        _patientAgeSex = '$age / N/A';
+      } else {
+        _patientAgeSex = 'N/A';
+      }
+      // --- END ADDED ---
+
       final bedData = patientDetailsResponse['bed'];
       _roomType = (bedData != null)
           ? '${bedData['room_type'] ?? 'N/A'} - Bed: ${bedData['bed_number'] ?? 'N/A'}'
           : 'N/A';
 
-      final List<Map<String, dynamic>> templateData = await supabase
-          .from('template_images')
-          .select('id, name, url, 2url, isbook, book_img_url, tag');
-      _availableTemplates =
-          templateData.map((json) => SupabaseTemplateImage.fromJson(json)).toList();
+      final List<Map<String, dynamic>> templateData =
+      await supabase.from('template_images').select(
+          'id, name, url, 2url, isbook, book_img_url, tag');
+      _availableTemplates = templateData
+          .map((json) => SupabaseTemplateImage.fromJson(json))
+          .toList();
 
       final response = await supabase
           .from('user_health_details')
@@ -442,8 +543,9 @@ class _ManageIpdPatientPageState extends State<ManageIpdPatientPage> {
           // Sort pages by page number to ensure correct order
           pages.sort((a, b) => a.pageNumber.compareTo(b.pageNumber));
 
-          final pagesWithGroupName =
-          pages.map((page) => page.copyWith(groupName: groupName)).toList();
+          final pagesWithGroupName = pages
+              .map((page) => page.copyWith(groupName: groupName))
+              .toList();
 
           loadedGroups.add(DrawingGroup(
             id: generateUniqueId(), // ID is transient for default groups
@@ -835,15 +937,17 @@ class _ManageIpdPatientPageState extends State<ManageIpdPatientPage> {
   // --- END NEW FUNCTION ---
 
   void _showConsentOptions(DrawingGroup group, String tag) async {
-    final consentTemplates =
-    _availableTemplates.where((t) => t.tag == tag && t.name != 'OT Form').toList();
+    final consentTemplates = _availableTemplates
+        .where((t) => t.tag == tag && t.name != 'OT Form')
+        .toList();
 
     if (consentTemplates.isEmpty) {
       _showErrorSnackbar("No relevant consent forms found.");
       return;
     }
 
-    final selectedTemplate = await _showTemplateSelectionDialog(consentTemplates);
+    final selectedTemplate =
+    await _showTemplateSelectionDialog(consentTemplates);
     if (selectedTemplate == null || !mounted) return;
 
     if (group.pages.any((p) => p.pageName == selectedTemplate.name)) {
@@ -863,8 +967,7 @@ class _ManageIpdPatientPageState extends State<ManageIpdPatientPage> {
 
   // --- NEW FUNCTION: A generic version of _showConsentOptions ---
   void _showGenericListSelection(DrawingGroup group, String tag) async {
-    final templates =
-    _availableTemplates.where((t) => t.tag == tag).toList();
+    final templates = _availableTemplates.where((t) => t.tag == tag).toList();
 
     if (templates.isEmpty) {
       _showErrorSnackbar("No templates found for this group (tag: $tag).");
@@ -874,8 +977,8 @@ class _ManageIpdPatientPageState extends State<ManageIpdPatientPage> {
     final selectedTemplate = await _showTemplateSelectionDialog(templates);
     if (selectedTemplate == null || !mounted) return;
 
-    if (group.pages.any(
-            (p) => p.pageName.toLowerCase() == selectedTemplate.name.toLowerCase())) {
+    if (group.pages
+        .any((p) => p.pageName.toLowerCase() == selectedTemplate.name.toLowerCase())) {
       _showErrorSnackbar("'${selectedTemplate.name}' has already been added.");
       return;
     }
@@ -1087,7 +1190,8 @@ class _ManageIpdPatientPageState extends State<ManageIpdPatientPage> {
                     if (page.pageName.contains("(Front)")) {
                       String backNamePart =
                       page.pageName.replaceFirst("(Front)", "(Back)");
-                      updatedPages.removeWhere((p) => p.pageName == backNamePart);
+                      updatedPages
+                          .removeWhere((p) => p.pageName == backNamePart);
                     } else if (page.pageName.contains("(Back)")) {
                       String frontNamePart =
                       page.pageName.replaceFirst("(Back)", "(Front)");
@@ -1289,6 +1393,26 @@ class _ManageIpdPatientPageState extends State<ManageIpdPatientPage> {
     );
   }
 
+  // --- ADDED: Navigation to Discharge Summary ---
+  void _openDischargeSummaryPage() {
+    if (_patientName == null || _patientAgeSex == null) {
+      _showErrorSnackbar("Patient details not fully loaded yet.");
+      return;
+    }
+
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => DischargeSummaryPage(
+          ipdId: widget.ipdId,
+          uhid: widget.uhid,
+          patientName: _patientName!, // Pass prefill data
+          ageSex: _patientAgeSex!, // Pass prefill data
+        ),
+      ),
+    );
+  }
+  // --- END ADDED ---
+
   @override
   Widget build(BuildContext context) {
     final double screenWidth = MediaQuery.of(context).size.width;
@@ -1462,46 +1586,64 @@ class _ManageIpdPatientPageState extends State<ManageIpdPatientPage> {
                   ],
                 ),
                 const SizedBox(height: 20),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.end,
-                  children: [
-                    // --- NEW BUTTON ADDED ---
-                    ElevatedButton.icon(
-                      onPressed: _isSaving ? null : _downloadFullRecord,
-                      icon:
-                      const Icon(Icons.picture_as_pdf_outlined, size: 18),
-                      label: const Text("Download Full Record"),
-                      style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.teal, // Different color
+
+                // --- FIX: Wrapped the Row in a SingleChildScrollView ---
+                SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.end,
+                    children: [
+                      ElevatedButton.icon(
+                        onPressed: _isSaving ? null : _downloadFullRecord,
+                        icon:
+                        const Icon(Icons.picture_as_pdf_outlined, size: 18),
+                        label: const Text("Download Full Record"),
+                        style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.teal, // Different color
+                            foregroundColor: Colors.white,
+                            shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(10))),
+                      ),
+                      const SizedBox(width: 10),
+                      ElevatedButton.icon(
+                        onPressed:
+                        _isSaving || _isLoading ? null : _openDischargeSummaryPage,
+                        icon: const Icon(Icons.description, size: 18),
+                        label: const Text("Discharge Summary"),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.orange.shade600, // Distinct color
                           foregroundColor: Colors.white,
                           shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(10))),
-                    ),
-                    const SizedBox(width: 10),
-                    // --- END NEW BUTTON ---
-                    ElevatedButton.icon(
-                      onPressed: _openDocumentsPage,
-                      icon: const Icon(Icons.folder_open, size: 18),
-                      label: const Text("Manage Documents"),
-                      style: ElevatedButton.styleFrom(
-                          backgroundColor: primaryBlue,
-                          foregroundColor: Colors.white,
-                          shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(10))),
-                    ),
-                    const SizedBox(width: 10),
-                    ElevatedButton.icon(
-                      onPressed: _createNewGroup,
-                      icon: const Icon(Icons.add_circle_outline, size: 18),
-                      label: const Text("Create New Group"),
-                      style: ElevatedButton.styleFrom(
-                          backgroundColor: primaryBlue,
-                          foregroundColor: Colors.white,
-                          shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(10))),
-                    ),
-                  ],
+                              borderRadius: BorderRadius.circular(10)),
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      ElevatedButton.icon(
+                        onPressed: _openDocumentsPage,
+                        icon: const Icon(Icons.folder_open, size: 18),
+                        label: const Text("Manage Documents"),
+                        style: ElevatedButton.styleFrom(
+                            backgroundColor: primaryBlue,
+                            foregroundColor: Colors.white,
+                            shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(10))),
+                      ),
+                      const SizedBox(width: 10),
+                      ElevatedButton.icon(
+                        onPressed: _createNewGroup,
+                        icon: const Icon(Icons.add_circle_outline, size: 18),
+                        label: const Text("Create New Group"),
+                        style: ElevatedButton.styleFrom(
+                            backgroundColor: primaryBlue,
+                            foregroundColor: Colors.white,
+                            shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(10))),
+                      ),
+                    ],
+                  ),
                 ),
+                // --- END FIX ---
+
                 const SizedBox(height: 14),
               ]),
             ),
@@ -1584,8 +1726,8 @@ class _ManageIpdPatientPageState extends State<ManageIpdPatientPage> {
                             .copyWith(dividerColor: Colors.transparent),
                         child: ExpansionTile(
                           initiallyExpanded: _searchQuery.isNotEmpty,
-                          tilePadding:
-                          const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                          tilePadding: const EdgeInsets.symmetric(
+                              horizontal: 16, vertical: 8),
                           title: Text(group.groupName,
                               style: const TextStyle(
                                   fontSize: 18,
@@ -1741,8 +1883,8 @@ class _SinglePageTile extends StatelessWidget {
             side: BorderSide(
                 color: _ManageIpdPatientPageState.primaryBlue.withOpacity(0.3),
                 width: 1)),
-        tileColor:
-        _ManageIpdPatientPageState.primaryBlue.withOpacity(0.03), // Subtle background
+        tileColor: _ManageIpdPatientPageState.primaryBlue
+            .withOpacity(0.03), // Subtle background
       ),
     );
   }
@@ -1830,8 +1972,8 @@ class _PairedPageTile extends StatelessWidget {
         onLongPress: isEmpty ? null : onLongPress,
         borderRadius: BorderRadius.circular(8),
         child: Padding(
-          padding:
-          const EdgeInsets.symmetric(horizontal: 10, vertical: 10), // Reduced vertical padding
+          padding: const EdgeInsets.symmetric(
+              horizontal: 10, vertical: 10), // Reduced vertical padding
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             mainAxisSize: MainAxisSize.min, // Take minimum height
@@ -1855,7 +1997,7 @@ class _PairedPageTile extends StatelessWidget {
                     page != null
                         ? "Page ${page.pageNumber}"
                         : (isFront ? "Front" : "Back"),
-                    style: TextStyle(
+                    style: const TextStyle(
                         color: _ManageIpdPatientPageState.mediumGreyText,
                         fontSize: 11,
                         fontWeight: FontWeight.w500),
@@ -1885,11 +2027,10 @@ class _PairedPageTile extends StatelessWidget {
                         DateTime.now())
                     : " ", // Placeholder for height
                 style: TextStyle(
-                  color:
-                  _ManageIpdPatientPageState.mediumGreyText.withOpacity(0.8),
+                  color: _ManageIpdPatientPageState.mediumGreyText
+                      .withOpacity(0.8),
                   fontSize: 11,
-                  fontStyle:
-                  isEmpty ? FontStyle.italic : FontStyle.normal,
+                  fontStyle: isEmpty ? FontStyle.italic : FontStyle.normal,
                 ),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
