@@ -45,6 +45,36 @@ class _CopiedPageData {
   _CopiedPageData({required this.lines, required this.images});
 }
 
+// --- ADDED: Model for content currently being transformed after paste ---
+class _PastedTransformData {
+  final List<DrawingLine> lines;
+  final List<DrawingImage> images;
+  final Offset offset;
+  final double scale;
+  _PastedTransformData({
+    required this.lines,
+    required this.images,
+    this.offset = Offset.zero,
+    this.scale = 1.0,
+  });
+
+  _PastedTransformData copyWith({
+    List<DrawingLine>? lines,
+    List<DrawingImage>? images,
+    Offset? offset,
+    double? scale,
+  }) {
+    return _PastedTransformData(
+      lines: lines ?? this.lines,
+      images: images ?? this.images,
+      offset: offset ?? this.offset,
+      scale: scale ?? this.scale,
+    );
+  }
+}
+// --- END ADDED MODEL ---
+
+
 class UploadedImage {
   final String name;
   final String publicUrl;
@@ -98,6 +128,12 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
   Offset _pipPosition = const Offset(50, 50);
   Size _pipSize = const Size(400, 565); // A4 aspect ratio
 
+  // --- ADDED: State for Post-Paste Transformation ---
+  bool _isTransformingPastedContent = false;
+  _PastedTransformData? _pastedTransformData;
+  Offset? _pasteDragStartLocal; // Local position where drag started relative to the content's origin
+  // --- END ADDED STATE ---
+
   static const Map<String, String> _groupToColumnMap = {
     'Indoor Patient Progress Digital': 'indoor_patient_progress_digital_data',
     'Daily Drug Chart': 'daily_drug_chart_data',
@@ -145,7 +181,8 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
   }
 
   Widget _buildFloatingCopyPasteButton() {
-    if (_copiedPageData == null) {
+    // Hide this button when paste transformation is active
+    if (_copiedPageData == null || _isTransformingPastedContent) {
       return const SizedBox.shrink();
     }
 
@@ -929,6 +966,16 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     setState(() =>
     _isStylusInteraction = details.kind == ui.PointerDeviceKind.stylus);
 
+    // --- ADDED: Handle Paste Transformation Drag Start ---
+    if (_isTransformingPastedContent) {
+      // Find where the drag starts relative to the content's origin
+      // This is used to maintain the relative position during the drag move
+      _pasteDragStartLocal = transformedPosition - _pastedTransformData!.offset;
+      return; // Consume the event for movement
+    }
+    // --- END ADDED ---
+
+
     if (_selectedTool == DrawingTool.lasso) {
       setState(() {
         _lassoPoints = [transformedPosition];
@@ -988,6 +1035,20 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     _transformToCanvasCoordinates(details.localPosition);
     if (!_isPointOnCanvas(transformedPosition)) return;
 
+    // --- ADDED: Handle Paste Transformation Drag Move ---
+    if (_isTransformingPastedContent && _pasteDragStartLocal != null) {
+      final newOffset = transformedPosition - _pasteDragStartLocal!;
+
+      setState(() {
+        _pastedTransformData = _pastedTransformData!.copyWith(
+          offset: newOffset,
+        );
+        _redrawNotifier.value = 1 - _redrawNotifier.value; // Force redraw
+      });
+      return;
+    }
+    // --- END ADDED ---
+
     if (_selectedTool == DrawingTool.lasso) {
       setState(() {
         _lassoPoints = [..._lassoPoints, transformedPosition];
@@ -1038,6 +1099,15 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
 
   void _handlePointerUp(PointerUpEvent details) {
     // ... (implementation unchanged)
+
+    // --- ADDED: Handle Paste Transformation Drag End ---
+    if (_isTransformingPastedContent && _pasteDragStartLocal != null) {
+      _pasteDragStartLocal = null;
+      // Do not save here, save happens on finalize
+      return;
+    }
+    // --- END ADDED ---
+
     if (_selectedTool == DrawingTool.lasso) {
       if (_lassoPoints.length > 2) {
         _copySelectedContent();
@@ -1228,7 +1298,6 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
   }
 
   void _pastePageContent() {
-    // ... (implementation unchanged)
     if (_copiedPageData == null) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
           content: Text('Nothing to paste.'),
@@ -1237,24 +1306,97 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
       return;
     }
     if (_viewablePages.isEmpty) return;
-    setState(() {
-      final currentPage = _viewablePages[_currentPageIndex];
-      // Assign new unique IDs to pasted images to avoid ID conflicts
-      final pastedImagesWithNewIds = _copiedPageData!.images
-          .map((imageToCopy) => imageToCopy.copyWith(id: generateUniqueId()))
-          .toList();
 
-      _viewablePages[_currentPageIndex] = currentPage.copyWith(
-        lines: [...currentPage.lines, ..._copiedPageData!.lines],
-        images: [...currentPage.images, ...pastedImagesWithNewIds],
+    // 1. Assign new unique IDs to pasted images to avoid ID conflicts
+    final pastedImagesWithNewIds = _copiedPageData!.images
+        .map((imageToCopy) => imageToCopy.copyWith(id: generateUniqueId()))
+        .toList();
+
+    // 2. Set the state to start transforming the pasted content
+    setState(() {
+      // FIX: Set initial offset to Offset.zero so the content appears at its original location
+      _pastedTransformData = _PastedTransformData(
+        // Copy lines and images directly (they will be offset/scaled by the painter)
+        lines: _copiedPageData!.lines.map((line) => line.copyWith()).toList(),
+        images: pastedImagesWithNewIds,
+        offset: Offset.zero, // Default to original copy position (0,0 offset)
+        scale: 1.0,
       );
+      _isTransformingPastedContent = true;
+      _selectedTool = DrawingTool.image; // Use Image tool for manipulation
+      _selectedImageId = null; // Clear image selection
+      _isMovingSelectedImage = false; // Clear moving state
     });
+
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Content pasted! Drag to move and press the ✓ button to finalize.'),
+        backgroundColor: primaryBlue,
+        duration: Duration(seconds: 4)));
+  }
+
+  // --- ADDED: Finalize Paste ---
+  void _finalizePaste() {
+    if (_pastedTransformData == null) return;
+
+    final currentPage = _viewablePages[_currentPageIndex];
+    final pastedData = _pastedTransformData!;
+    final Offset finalOffset = pastedData.offset;
+    final double finalScale = pastedData.scale;
+
+    // 1. Apply final transformation to all lines and images
+    final List<DrawingLine> finalLines = pastedData.lines.map((line) {
+      final newPoints = line.points.map((p) {
+        return (p * finalScale) + finalOffset;
+      }).toList();
+      // Adjust stroke width by scale if necessary (optional, but good practice)
+      final newStrokeWidth = line.strokeWidth * finalScale;
+      return line.copyWith(points: newPoints, strokeWidth: newStrokeWidth);
+    }).toList();
+
+    final List<DrawingImage> finalImages = pastedData.images.map((image) {
+      return image.copyWith(
+        position: (image.position * finalScale) + finalOffset,
+        width: image.width * finalScale,
+        height: image.height * finalScale,
+      );
+    }).toList();
+
+
+    setState(() {
+      // 2. Merge transformed content into the page
+      _viewablePages[_currentPageIndex] = currentPage.copyWith(
+        lines: [...currentPage.lines, ...finalLines],
+        images: [...currentPage.images, ...finalImages],
+      );
+      // 3. Clear temporary state
+      _pastedTransformData = null;
+      _isTransformingPastedContent = false;
+      _selectedTool = DrawingTool.pen; // Return to default tool
+    });
+
     _debouncedSave();
     ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text('Content pasted!'),
-        backgroundColor: primaryBlue,
+        content: Text('Pasted content finalized and saved.'),
+        backgroundColor: Colors.green,
         duration: Duration(seconds: 2)));
   }
+
+  // --- ADDED: Cancel Paste ---
+  void _cancelPaste() {
+    // FIX: Changed HapticFeedback.warning() to HapticFeedback.mediumImpact()
+    HapticFeedback.mediumImpact();
+    setState(() {
+      _pastedTransformData = null;
+      _isTransformingPastedContent = false;
+      _selectedTool = DrawingTool.pen; // Return to default tool
+    });
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Pasted content canceled.'),
+        backgroundColor: Colors.red,
+        duration: Duration(seconds: 2)));
+  }
+  // --- END ADDED PASTE LOGIC ---
+
 
   void _undoLastAction() {
     // ... (implementation unchanged)
@@ -1793,9 +1935,83 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
   }
 
 
-  // --- END ADDITION ---
+  // --- ADDED: Floating Toolbar for Pasted Content Transformation ---
+  Widget _buildPastedContentToolbar() {
+    if (!_isTransformingPastedContent || _pastedTransformData == null) {
+      return const SizedBox.shrink();
+    }
+
+    // Place the toolbar in the center bottom of the screen
+    return Positioned(
+      bottom: 20,
+      left: 0,
+      right: 0,
+      child: Center(
+        child: Card(
+          elevation: 8,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Tooltip(
+                  message: 'Cancel Paste',
+                  child: IconButton(
+                    icon: const Icon(Icons.close, color: Colors.red),
+                    onPressed: _cancelPaste,
+                  ),
+                ),
+                const SizedBox(width: 16),
+                const Text('Adjust Pasted Content (Drag to Move)',
+                    style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w600,
+                        color: darkText)),
+                const SizedBox(width: 16),
+                Tooltip(
+                  message: 'Finalize Paste',
+                  child: IconButton(
+                    icon: const Icon(Icons.check, color: Colors.green),
+                    onPressed: _finalizePaste,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+  // --- END ADDED TOOLBAR ---
 
   Future<bool> _handleBackButton() async {
+    // If paste is pending, confirm cancellation before navigating back
+    if (_isTransformingPastedContent) {
+      await showDialog(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Discard Pasted Content?'),
+          content: const Text('You are currently adjusting pasted content. Discard changes and go back?'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(), // Stay
+              child: const Text('No'),
+            ),
+            TextButton(
+              onPressed: () {
+                _cancelPaste(); // Discard and change state
+                Navigator.of(context).pop(); // Close dialog
+                Navigator.of(context).pop(_pagesInCurrentGroup); // Go back
+              },
+              child: const Text('Yes, Discard'),
+            ),
+          ],
+        ),
+      );
+      return false; // Prevent immediate pop if dialog is shown
+    }
+
     _syncViewablePagesToMasterList();
     if (Navigator.canPop(context)) {
       Navigator.of(context).pop(_pagesInCurrentGroup);
@@ -1855,9 +2071,11 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
 
 
     final currentPageData = _viewablePages[_currentPageIndex];
+    // Disable pan/scale if transforming pasted content
     final bool panScaleEnabled = !_isStylusInteraction &&
         !_isMovingSelectedImage &&
-        _selectedTool != DrawingTool.lasso;
+        _selectedTool != DrawingTool.lasso &&
+        !_isTransformingPastedContent; // --- MODIFIED ---
 
     return WillPopScope(
       onWillPop: _handleBackButton,
@@ -1986,6 +2204,7 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
             return Stack(
               children: [
                 Listener(
+                  // Use _handlePointer... methods regardless of paste mode, as they now contain the necessary conditional logic
                   onPointerDown: _handlePointerDown,
                   onPointerMove: _handlePointerMove,
                   onPointerUp: _handlePointerUp,
@@ -2013,10 +2232,12 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
                         transformationController: _transformationController,
                         panScaleEnabled: panScaleEnabled,
                         isEnhancedHandwriting: _isEnhancedHandwriting,
-                        // --- ADDED: Pass pressure state ---
+                        // --- ADDED: Pass pressure state and pasted transform data ---
                         isPressureSensitive: _isPressureSensitive,
+                        pastedTransformData: index == _currentPageIndex ? _pastedTransformData : null, // Pass only to current page
+                        // --- END ADDED ---
                         onTap: (details) {
-                          if (_selectedTool == DrawingTool.image &&
+                          if (!_isTransformingPastedContent && _selectedTool == DrawingTool.image &&
                               !_isStylusInteraction &&
                               !_isMovingSelectedImage) {
                             _handleCanvasTap(_transformToCanvasCoordinates(
@@ -2028,7 +2249,11 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
                   ),
                 ),
                 if (_selectedImageId != null) _buildImageOverlayControls(),
-                _buildFloatingCopyPasteButton(),
+                _buildFloatingCopyPasteButton(), // Hides itself if _isTransformingPastedContent is true
+
+                // --- ADDED: Floating Toolbar for Pasted Content ---
+                _buildPastedContentToolbar(),
+                // --- END ADDED ---
 
                 // --- UPDATED: Use the imported PiP Widget ---
                 if (_isPipWindowVisible)
@@ -2186,13 +2411,8 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
         mainAxisAlignment: MainAxisAlignment.start,
         children: [
           ToggleButtons(
-            isSelected: [
-              _selectedTool == DrawingTool.pen,
-              _selectedTool == DrawingTool.eraser,
-              _selectedTool == DrawingTool.image,
-              _selectedTool == DrawingTool.lasso,
-            ],
-            onPressed: (index) {
+            // Disable while transforming paste content
+            onPressed: _isTransformingPastedContent ? null : (index) {
               HapticFeedback.selectionClick();
               setState(() {
                 _selectedImageId = null;
@@ -2208,6 +2428,12 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
                   _selectedTool = DrawingTool.lasso;
               });
             },
+            isSelected: [
+              _selectedTool == DrawingTool.pen,
+              _selectedTool == DrawingTool.eraser,
+              _selectedTool == DrawingTool.image,
+              _selectedTool == DrawingTool.lasso,
+            ],
             borderRadius: BorderRadius.circular(8),
             selectedBorderColor: primaryBlue,
             fillColor: primaryBlue,
@@ -2240,7 +2466,7 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
               tooltip: _isEnhancedHandwriting
                   ? 'Good Handwriting Mode (ON)'
                   : 'Normal Handwriting Mode (OFF)',
-              onPressed: () {
+              onPressed: _isTransformingPastedContent ? null : () {
                 setState(() {
                   _isEnhancedHandwriting = !_isEnhancedHandwriting;
                   _redrawNotifier.value = 1 - _redrawNotifier.value;
@@ -2265,7 +2491,7 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
               tooltip: _isPressureSensitive
                   ? 'Pressure Sensitivity (ON)'
                   : 'Pressure Sensitivity (OFF)',
-              onPressed: () {
+              onPressed: _isTransformingPastedContent ? null : () {
                 setState(() {
                   _isPressureSensitive = !_isPressureSensitive;
                   _redrawNotifier.value = 1 - _redrawNotifier.value;
@@ -2306,7 +2532,7 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
                     min: 1.0,
                     max: 10.0,
                     divisions: 9,
-                    onChanged: (value) => setState(() => _strokeWidth = value),
+                    onChanged: _isTransformingPastedContent ? null : (value) => setState(() => _strokeWidth = value),
                     activeColor: primaryBlue,
                   ),
                 ),
@@ -2316,13 +2542,13 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
           IconButton(
               icon:
               const Icon(Icons.undo_rounded, color: primaryBlue, size: 22),
-              onPressed: _undoLastAction,
+              onPressed: _isTransformingPastedContent ? null : _undoLastAction,
               tooltip: "Undo"),
           // IconButton(
-          //     icon: const Icon(Icons.delete_sweep_rounded,
-          //         color: primaryBlue, size: 22),
-          //     onPressed: _clearAllDrawings,
-          //     tooltip: "Clear All"),
+          //     icon: const Icon(Icons.delete_sweep_rounded,
+          //         color: primaryBlue, size: 22),
+          //     onPressed: _clearAllDrawings,
+          //     tooltip: "Clear All"),
         ],
       ),
     );
@@ -2355,7 +2581,7 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 3.0),
       child: GestureDetector(
-        onTap: () => setState(() => _currentColor = color),
+        onTap: _isTransformingPastedContent ? null : () => setState(() => _currentColor = color),
         child: Tooltip(
           message: color.toString(),
           child: Container(
@@ -2390,6 +2616,7 @@ class _PrescriptionCanvasPage extends StatefulWidget {
   final ValueChanged<TapUpDetails> onTap;
   final bool isEnhancedHandwriting;
   final bool isPressureSensitive; // --- ADDED ---
+  final _PastedTransformData? pastedTransformData; // --- ADDED ---
 
   const _PrescriptionCanvasPage({
     required this.drawingPage,
@@ -2401,6 +2628,7 @@ class _PrescriptionCanvasPage extends StatefulWidget {
     required this.onTap,
     required this.isEnhancedHandwriting,
     required this.isPressureSensitive, // --- ADDED ---
+    this.pastedTransformData, // --- ADDED ---
   });
 
   @override
@@ -2425,7 +2653,9 @@ class _PrescriptionCanvasPageState extends State<_PrescriptionCanvasPage>
   @override
   void didUpdateWidget(_PrescriptionCanvasPage oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.drawingPage != widget.drawingPage) {
+    if (oldWidget.drawingPage != widget.drawingPage ||
+        oldWidget.pastedTransformData != widget.pastedTransformData // Check for pasted data change
+    ) {
       _loadAllImages();
     }
   }
@@ -2452,12 +2682,16 @@ class _PrescriptionCanvasPageState extends State<_PrescriptionCanvasPage>
       }
     }
 
-    // 2. Load all Drawing Images concurrently
+    // 2. Load all Drawing Images concurrently (from main list + temporary paste list)
+    final allImages = [...widget.drawingPage.images];
+    if (widget.pastedTransformData != null) {
+      allImages.addAll(widget.pastedTransformData!.images);
+    }
+
     final newLoadedDrawingImages = <String, ui.Image>{};
     final futures = <Future<void>>[];
 
-    for (var drawingImage in widget.drawingPage.images) {
-      // Use compute if image loading is CPU intensive, but here network/cache is the bottle neck, so just concurrent loading is fine.
+    for (var drawingImage in allImages) {
       futures.add(() async {
         final cachedImage =
         ImageCacheManager.getCachedImage(drawingImage.imageUrl);
@@ -2523,6 +2757,7 @@ class _PrescriptionCanvasPageState extends State<_PrescriptionCanvasPage>
             lassoPoints: widget.lassoPoints,
             isEnhancedHandwriting: widget.isEnhancedHandwriting,
             isPressureSensitive: widget.isPressureSensitive, // --- ADDED ---
+            pastedTransformData: widget.pastedTransformData, // --- ADDED ---
           ),
           child: const SizedBox(width: canvasWidth, height: canvasHeight),
         ),
@@ -2531,7 +2766,7 @@ class _PrescriptionCanvasPageState extends State<_PrescriptionCanvasPage>
   }
 }
 
-// --- CUSTOM PAINTER CLASS (Unchanged) ---
+// --- CUSTOM PAINTER CLASS (Modified to draw temporary pasted content) ---
 class PrescriptionPainter extends CustomPainter {
   final DrawingPage drawingPage;
   final ui.Image? templateUiImage;
@@ -2542,6 +2777,7 @@ class PrescriptionPainter extends CustomPainter {
   final List<Offset> lassoPoints;
   final bool isEnhancedHandwriting;
   final bool isPressureSensitive; // --- ADDED ---
+  final _PastedTransformData? pastedTransformData; // --- ADDED ---
 
   final RdpSimplifier _simplifier = RdpSimplifier();
   final double _simplificationTolerance = 0.75;
@@ -2555,8 +2791,9 @@ class PrescriptionPainter extends CustomPainter {
         required this.lassoPoints,
         required this.isEnhancedHandwriting,
         required this.isPressureSensitive, // --- ADDED ---
-        // **OPTIMIZATION: Initialize with the loaded map**
-        required this.loadedDrawingImages})
+        required this.loadedDrawingImages,
+        this.pastedTransformData // --- ADDED ---
+      })
       : super(repaint: redrawNotifier);
 
   @override
@@ -2701,8 +2938,106 @@ class PrescriptionPainter extends CustomPainter {
     }
     // --- END MODIFIED SECTION ---
 
-    // 4. Draw Lasso Line
-    if (lassoPoints.length > 1) {
+    // 4. Draw Pasted Content (Temporary, being positioned)
+    if (pastedTransformData != null) {
+      canvas.save();
+      // Apply translation to the entire pasted content block
+      canvas.translate(pastedTransformData!.offset.dx, pastedTransformData!.offset.dy);
+      final double scale = pastedTransformData!.scale;
+
+      // A. Draw Pasted Lines
+      for (var line in pastedTransformData!.lines) {
+        final paint = Paint()
+          ..color = Color(line.colorValue).withOpacity(0.8)
+          ..strokeWidth = line.strokeWidth * scale
+          ..strokeCap = StrokeCap.round
+          ..strokeJoin = StrokeJoin.round
+          ..style = PaintingStyle.stroke;
+
+        final path = Path()
+          ..moveTo(line.points.first.dx * scale, line.points.first.dy * scale);
+        for (int i = 1; i < line.points.length; i++) {
+          path.lineTo(line.points[i].dx * scale, line.points[i].dy * scale);
+        }
+        canvas.drawPath(path, paint);
+      }
+
+      // B. Draw Pasted Images
+      for (var image in pastedTransformData!.images) {
+        final cachedImage = loadedDrawingImages[image.id];
+        final destRect = Rect.fromLTWH(
+          image.position.dx * scale,
+          image.position.dy * scale,
+          image.width * scale,
+          image.height * scale,
+        );
+
+        if (cachedImage != null) {
+          paintImage(
+            canvas: canvas,
+            rect: destRect,
+            image: cachedImage,
+            fit: BoxFit.contain,
+            alignment: Alignment.topLeft,
+          );
+        } else {
+          // Placeholder for loading image
+          canvas.drawRect(destRect, Paint()..color = Colors.blueGrey.withOpacity(0.3));
+        }
+      }
+
+      // C. Draw Bounding Box/Border around all pasted content
+      final allPoints = [
+        ...pastedTransformData!.lines.expand((l) => l.points.map((p) => p * scale)),
+        ...pastedTransformData!.images.expand((i) => [
+          i.position * scale,
+          i.position * scale + Offset(i.width * scale, 0),
+          i.position * scale + Offset(0, i.height * scale),
+          i.position * scale + Offset(i.width * scale, i.height * scale),
+        ])
+      ];
+
+      if (allPoints.isNotEmpty) {
+        // Calculate the bounding box for the entire pasted group
+        double minX = allPoints.map((p) => p.dx).reduce(min);
+        double minY = allPoints.map((p) => p.dy).reduce(min);
+        double maxX = allPoints.map((p) => p.dx).reduce(max);
+        double maxY = allPoints.map((p) => p.dy).reduce(max);
+
+        final bounds = Rect.fromLTRB(minX, minY, maxX, maxY);
+
+        // Dashed stroke for the border
+        final borderPaint = Paint()
+          ..color = Colors.green.withOpacity(0.8)
+          ..strokeWidth = 3.0
+          ..style = PaintingStyle.stroke;
+
+        const double dashWidth = 8.0;
+        const double dashSpace = 5.0;
+
+        Path dashedPath = Path();
+        for (double d = 0; d < bounds.width; d += dashWidth + dashSpace) {
+          dashedPath.moveTo(bounds.left + d, bounds.top);
+          dashedPath.lineTo(bounds.left + d + dashWidth.clamp(0, bounds.width - d), bounds.top);
+          dashedPath.moveTo(bounds.left + d, bounds.bottom);
+          dashedPath.lineTo(bounds.left + d + dashWidth.clamp(0, bounds.width - d), bounds.bottom);
+        }
+        for (double d = 0; d < bounds.height; d += dashWidth + dashSpace) {
+          dashedPath.moveTo(bounds.left, bounds.top + d);
+          dashedPath.lineTo(bounds.left, bounds.top + d + dashWidth.clamp(0, bounds.height - d));
+          dashedPath.moveTo(bounds.right, bounds.top + d);
+          dashedPath.lineTo(bounds.right, bounds.top + d + dashWidth.clamp(0, bounds.height - d));
+        }
+
+        canvas.drawPath(dashedPath.shift(const Offset(-4, -4)), borderPaint); // Shifted in for padding
+      }
+
+      canvas.restore();
+    }
+
+
+    // 5. Draw Lasso Line
+    if (lassoPoints.length > 1 && pastedTransformData == null) {
       final lassoPaint = Paint()
         ..color = primaryBlue
         ..strokeWidth = 2.0
@@ -2725,7 +3060,8 @@ class PrescriptionPainter extends CustomPainter {
         oldDelegate.lassoPoints.length != lassoPoints.length ||
         oldDelegate.isEnhancedHandwriting != isEnhancedHandwriting ||
         oldDelegate.isPressureSensitive != isPressureSensitive || // --- ADDED ---
-        oldDelegate.loadedDrawingImages.length != loadedDrawingImages.length;
+        oldDelegate.loadedDrawingImages.length != loadedDrawingImages.length ||
+        oldDelegate.pastedTransformData != pastedTransformData; // --- ADDED ---
   }
 }
 
