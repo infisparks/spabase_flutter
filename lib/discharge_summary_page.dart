@@ -1,25 +1,78 @@
+import 'dart:io';
+import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart'; // For kIsWeb
 import 'dart:async';
-import 'dart:ui' as ui; // <-- FIX 1: Add aliased 'dart:ui' import
+import 'dart:ui' as ui;
 import 'package:intl/intl.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:collection/collection.dart';
 
-// --- ADDED FOR PDF GENERATION ---
+// --- PDF GENERATION IMPORTS ---
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:open_file/open_file.dart'; // To open the file on mobile
-import 'dart:io';
-// ----------------------------------
+import 'package:open_file/open_file.dart';
+
+// --- NEW IMPORTS FOR AI & MIC ---
+import 'package:google_generative_ai/google_generative_ai.dart';
+import 'package:record/record.dart';
+import 'package:permission_handler/permission_handler.dart';
+import 'dart:convert'; // For jsonDecode
 
 // Assuming these helpers/configs exist in your Flutter project
 import 'supabase_config.dart';
+import 'floating_reference_window.dart'; // Contains PipReferenceWindow
+import 'ipd_structure.dart'; // <-- Import for groupToColumnMap
+import 'drawing_models.dart'; // <-- NEW: Assumed source for DrawingGroup, DrawingPage, PipSelectedPageData
 
-// --- Type Definitions (Ported from React) ---
+// --- Utility Functions (Kept for local use) ---
 
+String generateUniqueId() {
+  return DateTime.now().microsecondsSinceEpoch.toString() +
+      Random().nextInt(100000).toString();
+}
+
+List<Offset> simplify(List<Offset> points, double epsilon) {
+  if (points.length < 3) {
+    return points;
+  }
+
+  double findPerpendicularDistance(
+      Offset point, Offset lineStart, Offset lineEnd) {
+    double dx = lineEnd.dx - lineStart.dx;
+    double dy = lineEnd.dy - lineStart.dy;
+    if (dx == 0 && dy == 0) return (point - lineStart).distance;
+    double t =
+        ((point.dx - lineStart.dx) * dx + (point.dy - lineStart.dy) * dy) /
+            (dx * dx + dy * dy);
+    t = max(0, min(1, t));
+    double closestX = lineStart.dx + t * dx;
+    double closestY = lineStart.dy + t * dy;
+    return sqrt(pow(point.dx - closestX, 2) + pow(point.dy - closestY, 2));
+  }
+
+  double dMax = 0;
+  int index = 0;
+  for (int i = 1; i < points.length - 1; i++) {
+    double d = findPerpendicularDistance(points[i], points.first, points.last);
+    if (d > dMax) {
+      index = i;
+      dMax = d;
+    }
+  }
+
+  if (dMax > epsilon) {
+    var recResults1 = simplify(points.sublist(0, index + 1), epsilon);
+    var recResults2 = simplify(points.sublist(index, points.length), epsilon);
+    return recResults1.sublist(0, recResults1.length - 1) + recResults2;
+  } else {
+    return [points.first, points.last];
+  }
+}
+
+// --- Type Definitions for Clinical/Discharge Data (No change) ---
 class ClinicalNotesData {
   final String mainComplaintsDuration;
   final String pastHistory;
@@ -282,42 +335,159 @@ class DischargeSummaryData {
   }
 }
 
-// --- Placeholder Services for Gemini/Audio (Simulated) ---
-
+// --- REAL Microphone Service (No change) ---
 class MicrophoneService {
+  final AudioRecorder _recorder = AudioRecorder();
+  String? _path;
+
   Future<void> startRecording() async {
-    // Implement real microphone recording
+    // 1. Check permissions
+    if (!await Permission.microphone.request().isGranted) {
+      throw Exception("Microphone permission not granted");
+    }
+
+    // 2. Get temp path
+    final dir = await getTemporaryDirectory();
+    _path = '${dir.path}/temp_audio.m4a';
+
+    // 3. Start recording
+    // Using aacLc encoder which produces an m4a file, compatible with Gemini
+    await _recorder.start(
+        const RecordConfig(encoder: AudioEncoder.aacLc), path: _path!);
   }
+
   Future<Uint8List> stopRecording() async {
-    // Implement real microphone stop
-    return Uint8List(0); // Dummy data
+    // 1. Stop recorder
+    final path = await _recorder.stop();
+    if (path == null) {
+      throw Exception("Failed to stop recording or no path found.");
+    }
+
+    // 2. Read file as bytes
+    final file = File(path);
+    final bytes = await file.readAsBytes();
+
+    // 3. Clean up temp file
+    await file.delete();
+    _path = null;
+
+    // 4. Return bytes
+    return bytes;
+  }
+
+  // Call this from the main widget's dispose method
+  void dispose() {
+    _recorder.dispose();
   }
 }
 
+// --- REAL Gemini API Service (No change) ---
 class GeminiApiService {
+  // --- PASTE YOUR API KEY HERE ---
+  static const String _apiKey = "YOUR_API_KEY_HERE"; // PASTE YOUR KEY
+  static const String _model = "gemini-1.5-flash"; // Use 1.5-flash
+
+  /// Transcribes audio for a single field
   Future<String> getTranscriptionFromAudio(
       Uint8List audioData, String fieldName) async {
-    await Future.delayed(const Duration(seconds: 3));
-    return "Simulated transcription for $fieldName.";
+    final model = GenerativeModel(
+      model: _model,
+      apiKey: _apiKey,
+    );
+
+    // Prompt copied directly from your React code
+    final prompt = """
+      You are a medical transcriptionist. Transcribe the dictation in the provided audio file.
+      The transcription should be relevant to the clinical note field: "$fieldName".
+      Return ONLY the clean transcribed text. Do not add any extra commentary or formatting.
+    """;
+
+    final audioPart = DataPart('audio/m4a', audioData);
+    final textPart = TextPart(prompt);
+
+    final response = await model.generateContent([
+      Content.multi([textPart, audioPart])
+    ]);
+
+    if (response.text == null) {
+      throw Exception("AI returned an empty transcription.");
+    }
+    return response.text!.trim();
   }
 
-  Future<Map<String, dynamic>> getSummaryFromAudio(Uint8List audioData) async {
-    await Future.delayed(const Duration(seconds: 5));
-    return {
-      'finalDiagnosis': 'Simulated AI Final Diagnosis.',
-      'historyOfPresentIllness': 'Simulated AI History.',
-      'dischargeMedications': 'Simulated AI Meds.',
-    };
+  /// Transcribes a full summary and returns a JSON map
+  Future<Map<String, dynamic>> getSummaryFromAudio(
+      Uint8List audioData) async {
+    // This model is configured to return JSON
+    final model = GenerativeModel(
+      model: _model,
+      apiKey: _apiKey,
+      generationConfig: GenerationConfig(
+        responseMimeType: 'application/json', // Enforce JSON output
+      ),
+    );
+
+    // Prompt copied directly from your React code
+    final prompt = """
+      You are a highly specialized medical transcriber. The doctor is dictating a detailed Discharge Summary.
+      The dictation will cover most of the fields required for the document.
+      Extract the following fields from the audio and return them STRICTLY as a clean JSON object.
+      If a field is not explicitly dictated, return an empty string "" for that field, but keep the field present in the JSON.
+
+      Format the output only as JSON.
+
+      The JSON schema you must follow is:
+      {
+        "type": "object",
+        "properties": {
+          "finalDiagnosis": { "type": "string" },
+          "finalDiagnosis2": { "type": "string" },
+          "procedure": { "type": "string" },
+          "procedure2": { "type": "string" },
+          "provisionalDiagnosis": { "type": "string" },
+          "historyOfPresentIllness": { "type": "string" },
+          "investigations": { "type": "string" },
+          "treatmentGiven": { "type": "string" },
+          "hospitalCourse": { "type": "string" },
+          "surgeryProcedureDetails": { "type": "string" },
+          "conditionAtDischarge": { "type": "string" },
+          "dischargeMedications": { "type": "string" },
+          "followUp": { "type": "string" },
+          "dischargeInstruction": { "type": "string" },
+          "reportImmediatelyIf": { "type": "string" }
+        }
+      }
+    """;
+
+    final audioPart = DataPart('audio/m4a', audioData);
+    final textPart = TextPart(prompt);
+
+    final response = await model.generateContent([
+      Content.multi([textPart, audioPart])
+    ]);
+
+    if (response.text == null) {
+      throw Exception("AI returned an empty response.");
+    }
+
+    // Clean the response text (in case it includes ```json ... ```)
+    final jsonText = response.text!
+        .trim()
+        .replaceAll('```json', '')
+        .replaceAll('```', '')
+        .trim();
+
+    // Decode the JSON string into a Map
+    return jsonDecode(jsonText) as Map<String, dynamic>;
   }
 }
 
-// --- Reusable Input Component with Voice Fill ---
+// --- Reusable Input Component (No change) ---
 class VoiceInput extends StatelessWidget {
   final String fieldName;
   final String currentValue;
   final ValueChanged<String> onChanged;
   final bool disabled;
-  final bool isTextarea;
   final bool disableVoiceFill;
   final VoidCallback? onVoiceFill;
   final bool isRecording;
@@ -330,7 +500,6 @@ class VoiceInput extends StatelessWidget {
     required this.currentValue,
     required this.onChanged,
     this.disabled = false,
-    this.isTextarea = false,
     this.disableVoiceFill = false,
     this.onVoiceFill,
     this.isRecording = false,
@@ -341,46 +510,24 @@ class VoiceInput extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final inputDecoration = InputDecoration(
-      hintText: isTextarea ? 'Enter or dictate $fieldName...' : null,
-      contentPadding: isTextarea
-          ? const EdgeInsets.all(8.0)
-          : const EdgeInsets.only(bottom: 8.0),
+      contentPadding: const EdgeInsets.only(bottom: 8.0),
       isDense: true,
-      border: isTextarea ? const OutlineInputBorder() : InputBorder.none,
-      enabledBorder: isTextarea
-          ? const OutlineInputBorder(
-          borderSide: BorderSide(color: Colors.grey, width: 1.0))
-          : const UnderlineInputBorder(
+      border: InputBorder.none,
+      enabledBorder: const UnderlineInputBorder(
           borderSide: BorderSide(color: Colors.grey, width: 1.0)),
-      focusedBorder: isTextarea
-          ? OutlineInputBorder(
-          borderSide: BorderSide(color: Colors.indigo.shade600, width: 2.0))
-          : UnderlineInputBorder(
+      focusedBorder: UnderlineInputBorder(
           borderSide: BorderSide(color: Colors.indigo.shade600, width: 2.0)),
-      filled: !isTextarea,
+      filled: true,
       fillColor: Colors.transparent,
     );
 
-    final inputWidget = isTextarea
-        ? TextField(
-      controller: TextEditingController(text: currentValue),
-      onChanged: onChanged,
-      minLines: 4,
-      maxLines: null,
-      keyboardType: TextInputType.multiline,
-      decoration: inputDecoration,
-      enabled: !disabled && !isProcessing,
-      // --- FIX 2: Force LTR typing using aliased import ---
-      textDirection: ui.TextDirection.ltr,
-      style: const TextStyle(fontSize: 14),
-    )
-        : TextFormField(
+    final inputWidget = TextFormField(
       initialValue: currentValue,
       onChanged: onChanged,
-      keyboardType: TextInputType.text,
+      keyboardType: TextInputType.multiline,
+      maxLines: null,
       decoration: inputDecoration,
       enabled: !disabled && !isProcessing,
-      // --- FIX 2: Force LTR typing using aliased import ---
       textDirection: ui.TextDirection.ltr,
       style: const TextStyle(fontSize: 14),
     );
@@ -418,7 +565,7 @@ class VoiceInput extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Padding(
-          padding: EdgeInsets.only(top: isTextarea ? 8.0 : 0),
+          padding: const EdgeInsets.only(top: 0),
           child: Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
@@ -458,15 +605,27 @@ class DischargeSummaryPage extends StatefulWidget {
   @override
   State<DischargeSummaryPage> createState() => _DischargeSummaryPageState();
 }
-
 class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
+  // NOTE: Assuming SupabaseConfig and its client are correctly imported/available
   final SupabaseClient supabase = SupabaseConfig.client;
-  // final GlobalKey _formKey = GlobalKey(); // Removed unused key
 
   late DischargeSummaryData _formData;
   ClinicalNotesData? _clinicalData;
   bool _isLoading = true;
   bool _isSaving = false;
+
+  // --- PiP Window State ---
+  String? _healthRecordId;
+  // Types DrawingGroup/PipSelectedPageData are now imported
+  List<DrawingGroup>? _allPatientGroups;
+  bool _isLoadingAllGroups = false;
+  bool _isPipWindowVisible = false;
+  PipSelectedPageData? _pipSelectedPageData;
+  Offset _pipPosition = const Offset(50, 50); // Initial position
+  Size _pipSize = const Size(400, 565); // A4 aspect ratio
+
+  // Mapping constant: NOW USING THE groupToColumnMap from the imported ipd_structure.dart
+  final Map<String, String> _groupToColumnMap = groupToColumnMap;
 
   // Audio/AI State
   bool _isRecording = false;
@@ -474,7 +633,7 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
   String? _isFieldRecording; // Field name currently recording
   String? _isFieldProcessing; // Field name currently processing
 
-  // Services (Simulated)
+  // --- USE REAL SERVICES ---
   final GeminiApiService _geminiService = GeminiApiService();
   final MicrophoneService _micService = MicrophoneService();
 
@@ -483,6 +642,13 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
     super.initState();
     _initializeFormData();
     _fetchDischargeData();
+  }
+
+  // --- ADD DISPOSE METHOD ---
+  @override
+  void dispose() {
+    _micService.dispose(); // Dispose the audio recorder
+    super.dispose();
   }
 
   void _initializeFormData() {
@@ -530,9 +696,11 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
       final response = await supabase
           .from("user_health_details")
           .select(
-          'dischare_summary_written, clinical_notes_data, patient_detail(address, age, gender)')
+          'id, dischare_summary_written, clinical_notes_data, patient_detail(address, age, gender)')
           .eq("ipd_registration_id", widget.ipdId)
           .single();
+
+      _healthRecordId = response['id'] as String?; // Capture health record ID
 
       final patientDataList = response['patient_detail'];
       Map<String, dynamic>? patientData;
@@ -598,6 +766,71 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
     }
   }
 
+  // --- PiP Functions ---
+  Future<void> _loadAllGroupsForPip() async {
+    if (_healthRecordId == null) return;
+    setState(() => _isLoadingAllGroups = true);
+    try {
+      final response = await supabase.rpc(
+        'get_group_page_metadata',
+        params: {'record_id': _healthRecordId!},
+      );
+
+      // Safely map dynamic list elements to DrawingGroup objects.
+      if (response is List) {
+        List<DrawingGroup> allGroups = (response as List<dynamic>)
+            .map((groupData) {
+          // Ensure each item is a Map<String, dynamic> before passing to fromJson
+          if (groupData is Map<String, dynamic>) {
+            return DrawingGroup.fromJson(groupData);
+          }
+          throw Exception('Invalid group data format in RPC response.');
+        })
+            .where((group) => group.pages.isNotEmpty)
+            .toList();
+        allGroups.sort((a, b) => a.groupName.compareTo(b.groupName));
+        setState(() {
+          _allPatientGroups = allGroups;
+        });
+      } else {
+        throw Exception(
+            'Unexpected response format from RPC: ${response.runtimeType}');
+      }
+    } catch (e) {
+      debugPrint('Error fetching all groups via RPC: $e');
+      if (mounted) {
+        _showSnackbar('Failed to load all groups: $e', isError: true);
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isLoadingAllGroups = false);
+      }
+    }
+  }
+
+  Future<void> _togglePipWindow() async {
+    if (_isPipWindowVisible) {
+      setState(() => _isPipWindowVisible = false);
+      return;
+    }
+
+    // Load groups if not already loaded
+    if (_allPatientGroups == null && !_isLoadingAllGroups) {
+      await _loadAllGroupsForPip();
+    }
+
+    // Check again in case fetch failed or is in progress
+    if (_allPatientGroups != null && _healthRecordId != null) {
+      setState(() {
+        _isPipWindowVisible = true;
+        // Setting _pipSelectedPageData to null is correct when opening the selector
+        _pipSelectedPageData = null;
+      });
+    } else if (!_isLoadingAllGroups) {
+      _showSnackbar('Could not load patient groups for reference window.', isError: true);
+    }
+  }
+
   // --- Input & Save Handlers ---
   void _handleInputChange(String value, String field) {
     setState(() {
@@ -639,7 +872,7 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
     }
   }
 
-  // --- Voice Fill Logic (Single Field) ---
+  // --- Voice Fill Logic (Omitted for brevity) ---
   void _toggleFieldRecording(String field, String fieldName) {
     if (_isFieldRecording == field) {
       _stopFieldRecording(field, fieldName);
@@ -713,7 +946,6 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
     }
   }
 
-  // --- Voice Fill Logic (Full Summary) ---
   Future<void> _startRecording() async {
     if (_isRecording || _isProcessingAudio || _isFieldRecording != null) {
       _showSnackbar("Please stop the current operation first.");
@@ -753,10 +985,11 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
       if (mounted) {
         setState(() {
           final currentMap = _formData.toJson();
-          // Merge AI data into form data, overwriting only non-empty strings
           aiData.forEach((key, value) {
             if (value != null && (value as String).isNotEmpty) {
-              currentMap[key] = value;
+              if (currentMap.containsKey(key)) {
+                currentMap[key] = value;
+              }
             }
           });
           _formData = DischargeSummaryData.fromJson(currentMap);
@@ -770,7 +1003,7 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
     }
   }
 
-  // --- Clinical Data Fetching ---
+  // --- Clinical Data Fetching (Omitted for brevity) ---
   void _handleFetchClinicalData(String targetField, dynamic sourceField) {
     if (_clinicalData == null) {
       _showSnackbar("No Clinical Notes Data available to fetch.");
@@ -803,7 +1036,8 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
     }
   }
 
-  // --- PDF Generation ---
+
+  // --- PDF Generation (Omitted for brevity) ---
   Future<void> _generateAndSavePdf() async {
     setState(() => _isSaving = true); // Use _isSaving to show loading
     _showSnackbar("Generating PDF...");
@@ -841,7 +1075,8 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
           crossAxisAlignment: pw.CrossAxisAlignment.start,
           children: [
             pw.Text(label,
-                style: pw.TextStyle(
+                style:
+                pw.TextStyle(
                     fontWeight: pw.FontWeight.bold, fontSize: 13)),
             pw.Divider(height: 5),
             pw.Text(value),
@@ -886,18 +1121,16 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
           _buildPdfSection(
               'Condition at time of Discharge:', data.conditionAtDischarge),
           _buildPdfSection('Discharge Medications:', data.dischargeMedications),
-          _buildPdfSection('Follow Up:', data.followUp),
-          _buildPdfSection('Discharge Instruction:', data.dischargeInstruction),
-          _buildPdfSection('Report immediately if:', data.reportImmediatelyIf),
-          pw.Divider(thickness: 2, height: 20),
-          _buildPdfRow('Summary Prepared by:', data.summaryPreparedBy),
-          _buildPdfRow('Summary Verified by:', data.summaryVerifiedBy),
-          _buildPdfRow('Summary Explained By:', data.summaryExplainedBy),
-          _buildPdfRow('Summary Explained To:', data.summaryExplainedTo),
-          pw.SizedBox(height: 20),
-          _buildPdfRow('Emergency Contact No.:', data.emergencyContact),
-          _buildPdfRow('Date:', data.date),
-          _buildPdfRow('Time:', data.time),
+          pw.Padding(
+              padding: const pw.EdgeInsets.only(bottom: 24),
+              child: pw.Row(
+                  mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+                  children: [
+                    pw.Text('Time:', style: pw.TextStyle(fontWeight: pw.FontWeight.bold)),
+                    pw.Text(data.time),
+                  ]
+              )
+          ),
         ],
       ),
     );
@@ -929,7 +1162,7 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
     }
   }
 
-  // --- Utility ---
+  // --- Utility (Omitted for brevity) ---
   void _showSnackbar(String message, {bool isError = false}) {
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -941,7 +1174,7 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
     }
   }
 
-  // --- Build Methods ---
+  // --- Build Methods (Applying strict casts for safety) ---
   @override
   Widget build(BuildContext context) {
     final isAnyRecordingOrProcessing = _isRecording ||
@@ -970,34 +1203,124 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
       appBar: AppBar(
         title: const Text('Discharge Summary'),
         backgroundColor: Colors.white,
-      ),
-      body: SingleChildScrollView(
-        child: Padding(
-          padding: const EdgeInsets.all(16.0),
-          // --- FIX: Removed the Form and _formKey as it was not being used ---
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              _buildPatientDetailsHeader(),
-              const SizedBox(height: 16),
-              const Center(
-                child: Text('DISCHARGE SUMMARY',
-                    style:
-                    TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
-              ),
-              const SizedBox(height: 16),
-              _buildFullSummaryVoiceControl(isAnyRecordingOrProcessing),
-              _buildTopSection(isAnyRecordingOrProcessing),
-              const Divider(thickness: 2, height: 32),
-              _buildBottomSection(isAnyRecordingOrProcessing),
-              const Divider(thickness: 2, height: 32),
-              _buildSignatureSection(isAnyRecordingOrProcessing),
-              const SizedBox(height: 16),
-              _buildContactDateSection(isAnyRecordingOrProcessing),
-              _buildActionButtons(isAnyRecordingOrProcessing),
-            ],
+        actions: [
+          // --- PiP Button Added ---
+          IconButton(
+            icon: Icon(Icons.picture_in_picture_alt_outlined,
+                color: _isPipWindowVisible ? Colors.red : Colors.indigo.shade600),
+            tooltip: 'Open Reference Window',
+            onPressed: _togglePipWindow,
           ),
-        ),
+          // ------------------------
+          IconButton(
+            onPressed: _isSaving || isAnyRecordingOrProcessing ? null : _handleSave,
+            icon: _isSaving
+                ? const SizedBox(
+                height: 18,
+                width: 18,
+                child: CircularProgressIndicator(
+                    strokeWidth: 2, color: Colors.white))
+                : const Icon(Icons.save, size: 18, color: Colors.indigo),
+            tooltip: 'Save Summary',
+          ),
+          IconButton(
+            onPressed:
+            _isSaving || isAnyRecordingOrProcessing ? null : _generateAndSavePdf,
+            icon: const Icon(Icons.picture_as_pdf, size: 18, color: Colors.indigo),
+            tooltip: 'Download PDF',
+          ),
+        ],
+      ),
+      body: LayoutBuilder(
+        builder: (context, constraints) {
+          return Stack(
+            children: [
+              SingleChildScrollView(
+                child: Padding(
+                  padding: const EdgeInsets.all(16.0),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      _buildPatientDetailsHeader(),
+                      const SizedBox(height: 16),
+                      const Center(
+                        child: Text('DISCHARGE SUMMARY',
+                            style: TextStyle(
+                                fontWeight: FontWeight.bold, fontSize: 18)),
+                      ),
+                      const SizedBox(height: 16),
+                      _buildFullSummaryVoiceControl(isAnyRecordingOrProcessing),
+                      _buildTopSection(isAnyRecordingOrProcessing),
+                      const Divider(thickness: 2, height: 32),
+                      _buildBottomSection(isAnyRecordingOrProcessing),
+                      const Divider(thickness: 2, height: 32),
+                      _buildSignatureSection(isAnyRecordingOrProcessing),
+                      const Divider(thickness: 2, height: 32),
+                      _buildContactDateSection(isAnyRecordingOrProcessing),
+                      _buildActionButtons(isAnyRecordingOrProcessing),
+                    ],
+                  ),
+                ),
+              ),
+
+              // --- PiP Window Integration (Applying Explicit Casts) ---
+              if (_isPipWindowVisible && _healthRecordId != null)
+                Positioned(
+                  left: _pipPosition.dx,
+                  top: _pipPosition.dy,
+                  child: PipReferenceWindow(
+                    key: const ValueKey('pip_discharge_window'),
+                    patientUhid: widget.uhid,
+                    // FIX 1: Explicitly cast the List type here
+                    allGroups: (_allPatientGroups ?? []) as List<DrawingGroup>,
+                    selectedPageData: _pipSelectedPageData,
+                    initialSize: _pipSize,
+                    healthRecordId: _healthRecordId!,
+                    groupToColumnMap: _groupToColumnMap,
+                    onClose: () {
+                      setState(() => _isPipWindowVisible = false);
+                    },
+                    onPageSelected: (dynamic group, dynamic page) {
+                      setState(() {
+                        // FIX 2: Explicitly cast and assign the tuple
+                        _pipSelectedPageData = (group as DrawingGroup, page as DrawingPage);
+                      });
+                    },
+                    onPositionChanged: (delta) {
+                      setState(() {
+                        final newX = (_pipPosition.dx + delta.dx).clamp(
+                            0.0, constraints.maxWidth - _pipSize.width);
+                        final newY = (_pipPosition.dy + delta.dy).clamp(
+                            0.0, constraints.maxHeight - _pipSize.height);
+                        _pipPosition = Offset(newX, newY);
+                      });
+                    },
+                    onSizeChanged: (delta) {
+                      setState(() {
+                        // Keep minimum size reasonable
+                        final newWidth = (_pipSize.width + delta.dx).clamp(300.0, constraints.maxWidth);
+                        // Using a dummy aspect ratio for non-canvas pages, or a fixed ratio.
+                        const double dummyAspectRatio = 1.414; // A4 ratio
+                        // Calculate a new height based on the new width and aspect ratio
+                        double newHeight = newWidth * dummyAspectRatio;
+
+                        // Clamp height to stay within screen bounds
+                        if (newHeight > constraints.maxHeight - _pipPosition.dy) {
+                          newHeight = constraints.maxHeight - _pipPosition.dy;
+                          // Recalculate width to maintain ratio
+                          final recalculatedWidth = newHeight / dummyAspectRatio;
+                          _pipSize = Size(recalculatedWidth.clamp(300.0, constraints.maxWidth), newHeight);
+                        } else {
+                          _pipSize = Size(newWidth, newHeight);
+                        }
+                      });
+                    },
+                  ),
+                ),
+              // ------------------------------------
+            ],
+          );
+        },
       ),
     );
   }
@@ -1155,8 +1478,6 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
           currentValue: _formData.provisionalDiagnosis,
           onChanged: (v) => _handleInputChange(v, 'provisionalDiagnosis'),
           disabled: _isProcessingAudio,
-          // MODIFIED: Changed from isTextarea: true to false
-          isTextarea: false,
           onVoiceFill: () => _toggleFieldRecording(
               'provisionalDiagnosis', 'Provisional Diagnosis'),
           isRecording: _isFieldRecording == 'provisionalDiagnosis',
@@ -1180,8 +1501,6 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
           currentValue: _formData.finalDiagnosis,
           onChanged: (v) => _handleInputChange(v, 'finalDiagnosis'),
           disabled: _isProcessingAudio,
-          // MODIFIED: Changed from isTextarea: true to false
-          isTextarea: false,
           onVoiceFill: () =>
               _toggleFieldRecording('finalDiagnosis', 'Final Diagnosis 1'),
           isRecording: _isFieldRecording == 'finalDiagnosis',
@@ -1193,8 +1512,6 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
           currentValue: _formData.finalDiagnosis2,
           onChanged: (v) => _handleInputChange(v, 'finalDiagnosis2'),
           disabled: _isProcessingAudio,
-          // MODIFIED: Changed from isTextarea: true to false
-          isTextarea: false,
           onVoiceFill: () =>
               _toggleFieldRecording('finalDiagnosis2', 'Final Diagnosis 2'),
           isRecording: _isFieldRecording == 'finalDiagnosis2',
@@ -1206,8 +1523,6 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
           currentValue: _formData.procedure,
           onChanged: (v) => _handleInputChange(v, 'procedure'),
           disabled: _isProcessingAudio,
-          // MODIFIED: Changed from isTextarea: true to false
-          isTextarea: false,
           onVoiceFill: () => _toggleFieldRecording('procedure', 'Procedure 1'),
           isRecording: _isFieldRecording == 'procedure',
           isProcessing: _isFieldProcessing == 'procedure',
@@ -1218,8 +1533,6 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
           currentValue: _formData.procedure2,
           onChanged: (v) => _handleInputChange(v, 'procedure2'),
           disabled: _isProcessingAudio,
-          // MODIFIED: Changed from isTextarea: true to false
-          isTextarea: false,
           onVoiceFill: () => _toggleFieldRecording('procedure2', 'Procedure 2'),
           isRecording: _isFieldRecording == 'procedure2',
           isProcessing: _isFieldProcessing == 'procedure2',
@@ -1230,8 +1543,6 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
           currentValue: _formData.historyOfPresentIllness,
           onChanged: (v) => _handleInputChange(v, 'historyOfPresentIllness'),
           disabled: _isProcessingAudio,
-          // MODIFIED: Changed from isTextarea: true to false
-          isTextarea: false,
           onVoiceFill: () => _toggleFieldRecording(
               'historyOfPresentIllness', 'History of Present Illness'),
           isRecording: _isFieldRecording == 'historyOfPresentIllness',
@@ -1253,12 +1564,21 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
           currentValue: _formData.investigations,
           onChanged: (v) => _handleInputChange(v, 'investigations'),
           disabled: _isProcessingAudio,
-          // MODIFIED: Changed from isTextarea: true to false
-          isTextarea: false,
           onVoiceFill: () =>
               _toggleFieldRecording('investigations', 'Investigations'),
           isRecording: _isFieldRecording == 'investigations',
           isProcessing: _isFieldProcessing == 'investigations',
+          isAnyRecordingOrProcessing: isAnyRecordingOrProcessing,
+        ),
+        VoiceInput(
+          fieldName: 'Treatment Given',
+          currentValue: _formData.treatmentGiven,
+          onChanged: (v) => _handleInputChange(v, 'treatmentGiven'),
+          disabled: _isProcessingAudio,
+          onVoiceFill: () =>
+              _toggleFieldRecording('treatmentGiven', 'Treatment Given'),
+          isRecording: _isFieldRecording == 'treatmentGiven',
+          isProcessing: _isFieldProcessing == 'treatmentGiven',
           isAnyRecordingOrProcessing: isAnyRecordingOrProcessing,
         ),
       ],
@@ -1274,8 +1594,6 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
           currentValue: _formData.hospitalCourse,
           onChanged: (v) => _handleInputChange(v, 'hospitalCourse'),
           disabled: _isProcessingAudio,
-          // MODIFIED: Changed from isTextarea: true to false
-          isTextarea: false,
           onVoiceFill: () =>
               _toggleFieldRecording('hospitalCourse', 'Hospital Course'),
           isRecording: _isFieldRecording == 'hospitalCourse',
@@ -1295,8 +1613,6 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
           currentValue: _formData.surgeryProcedureDetails,
           onChanged: (v) => _handleInputChange(v, 'surgeryProcedureDetails'),
           disabled: _isProcessingAudio,
-          // MODIFIED: Changed from isTextarea: true to false
-          isTextarea: false,
           onVoiceFill: () => _toggleFieldRecording(
               'surgeryProcedureDetails', 'Surgery / Procedure Details'),
           isRecording: _isFieldRecording == 'surgeryProcedureDetails',
@@ -1317,8 +1633,6 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
           currentValue: _formData.conditionAtDischarge,
           onChanged: (v) => _handleInputChange(v, 'conditionAtDischarge'),
           disabled: _isProcessingAudio,
-          // MODIFIED: Changed from isTextarea: true to false
-          isTextarea: false,
           onVoiceFill: () => _toggleFieldRecording(
               'conditionAtDischarge', 'Condition at time of Discharge'),
           isRecording: _isFieldRecording == 'conditionAtDischarge',
@@ -1330,8 +1644,6 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
           currentValue: _formData.dischargeMedications,
           onChanged: (v) => _handleInputChange(v, 'dischargeMedications'),
           disabled: _isProcessingAudio,
-          // MODIFIED: Changed from isTextarea: true to false
-          isTextarea: false,
           onVoiceFill: () => _toggleFieldRecording(
               'dischargeMedications', 'Discharge Medications'),
           isRecording: _isFieldRecording == 'dischargeMedications',
@@ -1343,8 +1655,6 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
           currentValue: _formData.followUp,
           onChanged: (v) => _handleInputChange(v, 'followUp'),
           disabled: _isProcessingAudio,
-          // MODIFIED: Changed from isTextarea: true to false
-          isTextarea: false,
           onVoiceFill: () => _toggleFieldRecording('followUp', 'Follow Up'),
           isRecording: _isFieldRecording == 'followUp',
           isProcessing: _isFieldProcessing == 'followUp',
@@ -1355,8 +1665,6 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
           currentValue: _formData.dischargeInstruction,
           onChanged: (v) => _handleInputChange(v, 'dischargeInstruction'),
           disabled: _isProcessingAudio,
-          // MODIFIED: Changed from isTextarea: true to false
-          isTextarea: false,
           onVoiceFill: () => _toggleFieldRecording(
               'dischargeInstruction', 'Discharge Instruction'),
           isRecording: _isFieldRecording == 'dischargeInstruction',
@@ -1368,8 +1676,6 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
           currentValue: _formData.reportImmediatelyIf,
           onChanged: (v) => _handleInputChange(v, 'reportImmediatelyIf'),
           disabled: _isProcessingAudio,
-          // MODIFIED: Changed from isTextarea: true to false
-          isTextarea: false,
           onVoiceFill: () => _toggleFieldRecording('reportImmediatelyIf',
               'Report immediately to hospital if you notice'),
           isRecording: _isFieldRecording == 'reportImmediatelyIf',
@@ -1413,11 +1719,7 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
               initialValue: _formData.toJson()[field],
               onChanged: (v) => _handleInputChange(v, field),
               enabled: !_isProcessingAudio && !isAnyRecordingOrProcessing,
-
-              // --- THE MISSING FIX APPLIED HERE ---
               textDirection: ui.TextDirection.ltr,
-              // -------------------------------------
-
               decoration: const InputDecoration(
                 isDense: true,
                 contentPadding: EdgeInsets.only(bottom: 8.0),

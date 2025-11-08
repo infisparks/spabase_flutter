@@ -12,8 +12,8 @@ import 'image_manipulation_helpers.dart';
 import 'patient_info_header_card.dart';
 import 'drawing_models.dart';
 import 'pdf_generator.dart';
-
-// (All helper classes like ImageCacheManager, PatientInfoModal, PdfGenerator, etc., are assumed to be in the imported files)
+// --- NEW IMPORT ---
+import 'floating_reference_window.dart'; // Import the new reusable file
 
 // Extension for list safety
 extension IterableX<T> on Iterable<T> {
@@ -91,6 +91,13 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
   List<DrawingGroup>? _allPatientGroups;
   bool _isLoadingAllGroups = false;
 
+  // --- UPDATED: State for PiP (Reference) Window ---
+  bool _isPipWindowVisible = false;
+  // Use the new type alias
+  PipSelectedPageData? _pipSelectedPageData;
+  Offset _pipPosition = const Offset(50, 50);
+  Size _pipSize = const Size(400, 565); // A4 aspect ratio
+
   static const Map<String, String> _groupToColumnMap = {
     'Indoor Patient Progress Digital': 'indoor_patient_progress_digital_data',
     'Daily Drug Chart': 'daily_drug_chart_data',
@@ -110,8 +117,8 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     'Indoor Patient File': 'indoor_patient_file_data',
     'Icu chart': 'icu_chart_data',
     'Transfer Summary': 'transfer_summary_data',
-    'Prescription Sheet':'prescription_sheet_data',
-    'Billing Consent':'billing_consent_data'
+    'Prescription Sheet': 'prescription_sheet_data',
+    'Billing Consent': 'billing_consent_data'
   };
   void _nextPage() {
     if (_viewablePages.length <= 1) return;
@@ -121,7 +128,8 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
 
   void _previousPage() {
     if (_viewablePages.length <= 1) return;
-    final newIndex = (_currentPageIndex - 1 + _viewablePages.length) % _viewablePages.length;
+    final newIndex = (_currentPageIndex - 1 + _viewablePages.length) %
+        _viewablePages.length;
     _navigateToPage(newIndex);
   }
 
@@ -256,14 +264,17 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
   Future<void> _loadHealthDetailsAndPage() async {
     // ... (implementation unchanged)
     if (!mounted) return;
-    final String? currentPageIdBeforeRefresh =
-    _viewablePages.isNotEmpty ? _viewablePages[_currentPageIndex].id : widget.pageId;
+    final String? currentPageIdBeforeRefresh = _viewablePages.isNotEmpty
+        ? _viewablePages[_currentPageIndex].id
+        : widget.pageId;
     setState(() => _isLoadingPrescription = true);
     try {
       final columnName =
           _groupToColumnMap[widget.groupName] ?? 'custom_groups_data';
       // Only select the specific column needed + custom_groups + id
-      final columnsToSelect = ['id', columnName, 'custom_groups_data'].toSet().join(','); // Use Set to avoid duplicates if columnName is custom_groups_data
+      final columnsToSelect = ['id', columnName, 'custom_groups_data']
+          .toSet()
+          .join(','); // Use Set to avoid duplicates if columnName is custom_groups_data
 
       final response = await supabase
           .from('user_health_details')
@@ -284,8 +295,10 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
 
         if (ipdResponse != null) {
           _ipdRegistrationDetails = ipdResponse;
-          _patientDetails = ipdResponse['patient_detail'] as Map<String, dynamic>? ?? {};
-          _bedDetails = ipdResponse['bed_management'] as Map<String, dynamic>? ?? {};
+          _patientDetails =
+              ipdResponse['patient_detail'] as Map<String, dynamic>? ?? {};
+          _bedDetails =
+              ipdResponse['bed_management'] as Map<String, dynamic>? ?? {};
           setState(() {
             _patientName = _patientDetails['name'] as String? ?? 'Patient Name N/A';
           });
@@ -299,7 +312,8 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
               .toList() ??
               [];
           _currentGroup = customGroups.firstWhere((g) => g.id == widget.groupId,
-              orElse: () => throw Exception("Custom group '${widget.groupId}' not found."));
+              orElse: () =>
+              throw Exception("Custom group '${widget.groupId}' not found."));
           _pagesInCurrentGroup = _currentGroup!.pages;
         } else {
           final rawPages = response[columnName] ?? [];
@@ -321,7 +335,8 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
           startPage = _pagesInCurrentGroup.firstWhere(
                   (p) => p.id == currentPageIdBeforeRefresh);
         } catch (e) {
-          throw Exception("Start page '$currentPageIdBeforeRefresh' not found in group '${_currentGroup?.groupName}'. Available pages: ${_pagesInCurrentGroup.map((p)=> p.id).join(', ')}");
+          throw Exception(
+              "Start page '$currentPageIdBeforeRefresh' not found in group '${_currentGroup?.groupName}'. Available pages: ${_pagesInCurrentGroup.map((p) => p.id).join(', ')}");
         }
 
 // --- FIX: Use the new helper to correctly determine the base prefix ---
@@ -342,17 +357,20 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
           _pageController.dispose();
           _pageController = PageController(initialPage: _currentPageIndex);
         } else {
-          throw Exception("Starting page '$currentPageIdBeforeRefresh' could not be located in the filtered viewable pages for prefix '$pagePrefix'.");
+          throw Exception(
+              "Starting page '$currentPageIdBeforeRefresh' could not be located in the filtered viewable pages for prefix '$pagePrefix'.");
         }
         _setupRealtimeSubscription();
       } else {
-        throw Exception("No health record found for IPD ${widget.ipdId} and UHID ${widget.uhid}.");
+        throw Exception(
+            "No health record found for IPD ${widget.ipdId} and UHID ${widget.uhid}.");
       }
     } catch (e) {
       debugPrint('Error loading health details: $e');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-            content: Text('Failed to load details: ${e.toString()}', maxLines: 3),
+            content: Text('Failed to load details: ${e.toString()}',
+                maxLines: 3),
             backgroundColor: Colors.red));
       }
     } finally {
@@ -438,7 +456,8 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
       if (columnName != null) {
         dataToSave[columnName] =
             _pagesInCurrentGroup.map((page) => page.toJson()).toList();
-      } else { // Custom Group
+      } else {
+        // Custom Group
         // Fetch current custom groups first to avoid overwriting other groups
         final response = await supabase
             .from('user_health_details')
@@ -447,7 +466,8 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
             .single();
         final rawCustomGroups = response['custom_groups_data'] ?? [];
         final List<DrawingGroup> customGroups = (rawCustomGroups as List?)
-            ?.map((json) => DrawingGroup.fromJson(json as Map<String, dynamic>))
+            ?.map(
+                (json) => DrawingGroup.fromJson(json as Map<String, dynamic>))
             .toList() ??
             [];
         // Find the index of the group we are currently editing
@@ -461,9 +481,11 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
           // If it does, maybe add the new group? Or throw error.
           // For now, let's add it (assuming _currentGroup is correctly populated)
           if (_currentGroup != null) {
-            customGroups.add(_currentGroup!.copyWith(pages: _pagesInCurrentGroup));
+            customGroups
+                .add(_currentGroup!.copyWith(pages: _pagesInCurrentGroup));
           } else {
-            throw Exception("Custom group '${widget.groupId}' not found for saving and _currentGroup is null.");
+            throw Exception(
+                "Custom group '${widget.groupId}' not found for saving and _currentGroup is null.");
           }
         }
         dataToSave['custom_groups_data'] =
@@ -544,8 +566,8 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     // ... (implementation unchanged)
     if (_isLoadingStamps) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Loading stamps...')));
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('Loading stamps...')));
       }
       return;
     }
@@ -602,8 +624,8 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
                       child: Container(
                         decoration: BoxDecoration(
                           borderRadius: BorderRadius.circular(8),
-                          border:
-                          Border.all(color: mediumGreyText.withOpacity(0.5)),
+                          border: Border.all(
+                              color: mediumGreyText.withOpacity(0.5)),
                         ),
                         child: ClipRRect(
                           borderRadius: BorderRadius.circular(8),
@@ -616,7 +638,8 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
                                   child: CircularProgressIndicator(
                                       value: loadingProgress.expectedTotalBytes !=
                                           null
-                                          ? loadingProgress.cumulativeBytesLoaded /
+                                          ? loadingProgress
+                                          .cumulativeBytesLoaded /
                                           loadingProgress.expectedTotalBytes!
                                           : null));
                             },
@@ -858,8 +881,8 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
                       child: Container(
                         decoration: BoxDecoration(
                           borderRadius: BorderRadius.circular(8),
-                          border:
-                          Border.all(color: mediumGreyText.withOpacity(0.5)),
+                          border: Border.all(
+                              color: mediumGreyText.withOpacity(0.5)),
                         ),
                         child: ClipRRect(
                           borderRadius: BorderRadius.circular(8),
@@ -872,7 +895,8 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
                                   child: CircularProgressIndicator(
                                       value: loadingProgress.expectedTotalBytes !=
                                           null
-                                          ? loadingProgress.cumulativeBytesLoaded /
+                                          ? loadingProgress
+                                          .cumulativeBytesLoaded /
                                           loadingProgress.expectedTotalBytes!
                                           : null));
                             },
@@ -902,8 +926,8 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     if (!_isPointOnCanvas(transformedPosition)) return;
 
     final currentPage = _viewablePages[_currentPageIndex];
-    setState(
-            () => _isStylusInteraction = details.kind == ui.PointerDeviceKind.stylus);
+    setState(() =>
+    _isStylusInteraction = details.kind == ui.PointerDeviceKind.stylus);
 
     if (_selectedTool == DrawingTool.lasso) {
       setState(() {
@@ -918,8 +942,11 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
       bool hitSelectedImage = false;
 
       if (selectedImage != null) {
-        final imageRect = Rect.fromLTWH(selectedImage.position.dx,
-            selectedImage.position.dy, selectedImage.width, selectedImage.height)
+        final imageRect = Rect.fromLTWH(
+            selectedImage.position.dx,
+            selectedImage.position.dy,
+            selectedImage.width,
+            selectedImage.height)
             .inflate(5);
         if (imageRect.contains(transformedPosition)) {
           hitSelectedImage = true;
@@ -947,8 +974,7 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
               colorValue: _currentColor.value,
               strokeWidth: _strokeWidth,
               // --- MODIFIED: Capture pressure ---
-              pressure: _isPressureSensitive ? [details.pressure] : null
-          );
+              pressure: _isPressureSensitive ? [details.pressure] : null);
           _viewablePages[_currentPageIndex] =
               currentPage.copyWith(lines: [...currentPage.lines, newLine]);
         });
@@ -999,9 +1025,7 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
 
           // --- MODIFIED: Pass new pressures to copyWith ---
           updatedLines.last = lastLine.copyWith(
-              points: newPoints,
-              pressure: newPressures
-          );
+              points: newPoints, pressure: newPressures);
 
           _viewablePages[_currentPageIndex] =
               currentPage.copyWith(lines: updatedLines);
@@ -1290,8 +1314,8 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
       if (!remove) linesToKeep.add(line);
     }
     if (changed) {
-      setState(() =>
-      _viewablePages[_currentPageIndex] = currentPage.copyWith(lines: linesToKeep));
+      setState(() => _viewablePages[_currentPageIndex] =
+          currentPage.copyWith(lines: linesToKeep));
     }
   }
 
@@ -1384,8 +1408,9 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
                           color: isSelected ? primaryBlue : mediumGreyText),
                       title: Text(page.pageName,
                           style: TextStyle(
-                              fontWeight:
-                              isSelected ? FontWeight.bold : FontWeight.normal,
+                              fontWeight: isSelected
+                                  ? FontWeight.bold
+                                  : FontWeight.normal,
                               color: isSelected ? primaryBlue : darkText)),
                       selected: isSelected,
                       selectedTileColor: primaryBlue.withOpacity(0.1),
@@ -1394,13 +1419,13 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
                       onTap: () {
                         Navigator.pop(context);
                         final tappedPage = _pagesInCurrentGroup[index];
-                        if (tappedPage.id == _viewablePages[_currentPageIndex].id)
-                          return;
+                        if (tappedPage.id ==
+                            _viewablePages[_currentPageIndex].id) return;
                         final tappedPrefix =
                         tappedPage.pageName.split('(')[0].trim();
                         final newViewablePages = _pagesInCurrentGroup
                             .where((p) =>
-                        p.pageName.split('(')[0].trim() == tappedPrefix)
+                        _getBasePagePrefix(p.pageName) == tappedPrefix)
                             .toList();
                         final newPageIndex = newViewablePages
                             .indexWhere((p) => p.id == tappedPage.id);
@@ -1431,7 +1456,8 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
   }
 
   // --- MODIFIED: For All Groups Modal (using RPC) ---
-  Future<void> _fetchAllGroupsAndPages(StateSetter modalSetState) async { // Added modalSetState parameter
+  Future<void> _fetchAllGroupsAndPages(StateSetter modalSetState) async {
+    // Added modalSetState parameter
     if (_healthRecordId == null) return;
     modalSetState(() => _isLoadingAllGroups = true); // Use modalSetState
     try {
@@ -1442,7 +1468,8 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
 
       if (response is List) {
         List<DrawingGroup> allGroups = response
-            .map((groupData) => DrawingGroup.fromJson(groupData as Map<String, dynamic>))
+            .map((groupData) =>
+            DrawingGroup.fromJson(groupData as Map<String, dynamic>))
             .where((group) => group.pages.isNotEmpty)
             .toList();
         allGroups.sort((a, b) => a.groupName.compareTo(b.groupName));
@@ -1451,29 +1478,31 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
         modalSetState(() {
           _allPatientGroups = allGroups;
         });
-
       } else {
-        throw Exception('Unexpected response format from RPC: ${response.runtimeType}');
+        throw Exception(
+            'Unexpected response format from RPC: ${response.runtimeType}');
       }
-
     } catch (e) {
       debugPrint('Error fetching all groups via RPC: $e');
       if (mounted) {
         // Use modal's context if possible, otherwise use page's context
-        BuildContext currentContext = context; // Assuming this is the main page context
+        BuildContext currentContext =
+            context; // Assuming this is the main page context
         try {
           // Attempt to close modal from its own context if error occurs during fetch
           // If modal isn't open, this might throw, hence the try-catch
           if (Navigator.canPop(currentContext)) Navigator.of(currentContext).pop();
         } catch (_) {}
 
-        ScaffoldMessenger.of(this.context).showSnackBar(SnackBar( // Use this.context for ScaffoldMessenger
+        ScaffoldMessenger.of(this.context).showSnackBar(SnackBar(
+          // Use this.context for ScaffoldMessenger
             content: Text('Failed to load all groups: $e'),
             backgroundColor: Colors.red));
       }
     } finally {
       // Use modalSetState to update loading state
-      if (mounted) { // Check if the main widget is still mounted
+      if (mounted) {
+        // Check if the main widget is still mounted
         modalSetState(() {
           _isLoadingAllGroups = false;
         });
@@ -1481,11 +1510,75 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     }
   }
 
+  // --- NEW: Helper to fetch all groups for the PiP window ---
+  Future<void> _loadAllGroupsForPip() async {
+    if (_healthRecordId == null) return;
+    setState(() => _isLoadingAllGroups = true);
+    try {
+      final response = await supabase.rpc(
+        'get_group_page_metadata',
+        params: {'record_id': _healthRecordId!},
+      );
+
+      if (response is List) {
+        List<DrawingGroup> allGroups = response
+            .map((groupData) =>
+            DrawingGroup.fromJson(groupData as Map<String, dynamic>))
+            .where((group) => group.pages.isNotEmpty)
+            .toList();
+        allGroups.sort((a, b) => a.groupName.compareTo(b.groupName));
+        setState(() {
+          _allPatientGroups = allGroups;
+        });
+      } else {
+        throw Exception(
+            'Unexpected response format from RPC: ${response.runtimeType}');
+      }
+    } catch (e) {
+      debugPrint('Error fetching all groups via RPC: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text('Failed to load all groups: $e'),
+            backgroundColor: Colors.red));
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isLoadingAllGroups = false);
+      }
+    }
+  }
+
+  // --- NEW: Toggle the PiP (Reference) Window ---
+  Future<void> _togglePipWindow() async {
+    if (_isPipWindowVisible) {
+      setState(() => _isPipWindowVisible = false);
+      return;
+    }
+
+    // Load groups if not already loaded
+    if (_allPatientGroups == null && !_isLoadingAllGroups) {
+      await _loadAllGroupsForPip();
+    }
+
+    // Check again in case fetch failed or is in progress
+    if (_allPatientGroups != null) {
+      setState(() {
+        _isPipWindowVisible = true;
+        _pipSelectedPageData = null; // Start with no page selected
+      });
+    } else if (!_isLoadingAllGroups) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Could not load patient groups for reference window.'),
+          backgroundColor: Colors.red));
+    }
+  }
+
 
   void _navigateToNewPage(DrawingGroup group, DrawingPage page) {
     // ... (implementation unchanged)
     if (page.id == _viewablePages[_currentPageIndex].id) {
-      if (Navigator.canPop(context)) Navigator.of(context).pop(); // Just close the modal
+      if (Navigator.canPop(context))
+        Navigator.of(context).pop(); // Just close the modal
       return;
     }
     if (Navigator.canPop(context)) Navigator.of(context).pop();
@@ -1538,16 +1631,23 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
                       children: [
                         if (selectedGroup != null)
                           IconButton(
-                            icon: const Icon(Icons.arrow_back_ios, color: darkText, size: 20),
-                            onPressed: () => modalSetState(() => selectedGroup = null),
+                            icon: const Icon(Icons.arrow_back_ios,
+                                color: darkText, size: 20),
+                            onPressed: () =>
+                                modalSetState(() => selectedGroup = null),
                           )
                         else
                           const SizedBox(width: 48), // Placeholder
                         Expanded(
                           child: Text(
-                            selectedGroup == null ? 'All Groups' : selectedGroup!.groupName,
+                            selectedGroup == null
+                                ? 'All Groups'
+                                : selectedGroup!.groupName,
                             textAlign: TextAlign.center,
-                            style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: darkText),
+                            style: const TextStyle(
+                                fontSize: 18,
+                                fontWeight: FontWeight.bold,
+                                color: darkText),
                           ),
                         ),
                         IconButton(
@@ -1565,10 +1665,12 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
                       child: _buildModalContent(
                         context,
                         selectedGroup,
-                            (DrawingGroup group) { // onGroupTap
+                            (DrawingGroup group) {
+                          // onGroupTap
                           modalSetState(() => selectedGroup = group);
                         },
-                            (DrawingPage page) { // onPageTap
+                            (DrawingPage page) {
+                          // onPageTap
                           if (selectedGroup != null) {
                             _navigateToNewPage(selectedGroup!, page);
                           }
@@ -1620,8 +1722,7 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
                 child: const Text('Retry'),
               )
             ],
-          )
-      );
+          ));
     }
     if (currentGroups.isEmpty) {
       return const Center(child: Text('No groups found for this patient.'));
@@ -1631,7 +1732,8 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     // Show Page List
     if (selectedGroup != null) {
       // Find the selected group in the latest fetched list
-      final groupToShow = IterableX(currentGroups).firstWhereOrNull((g) => g.id == selectedGroup.id);
+      final groupToShow = IterableX(currentGroups)
+          .firstWhereOrNull((g) => g.id == selectedGroup.id);
       if (groupToShow == null || groupToShow.pages.isEmpty) {
         return const Center(child: Text('No pages found in this group.'));
       }
@@ -1642,16 +1744,20 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
         itemCount: pages.length,
         itemBuilder: (context, index) {
           final page = pages[index];
-          final bool isSelected = page.id == widget.pageId && groupToShow.id == widget.groupId;
+          final bool isSelected =
+              page.id == widget.pageId && groupToShow.id == widget.groupId;
           return ListTile(
-            leading: Icon(Icons.description_outlined, color: isSelected ? primaryBlue : mediumGreyText),
+            leading: Icon(Icons.description_outlined,
+                color: isSelected ? primaryBlue : mediumGreyText),
             title: Text(page.pageName,
                 style: TextStyle(
-                    fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                    fontWeight:
+                    isSelected ? FontWeight.bold : FontWeight.normal,
                     color: isSelected ? primaryBlue : darkText)),
             selected: isSelected,
             selectedTileColor: primaryBlue.withOpacity(0.1),
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+            shape:
+            RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
             onTap: () => onPageTap(page),
           );
         },
@@ -1666,15 +1772,19 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
           final group = currentGroups[index];
           final bool isCurrentGroup = group.id == widget.groupId;
           return ListTile(
-            leading: Icon(Icons.folder_open_outlined, color: isCurrentGroup ? primaryBlue : mediumGreyText),
+            leading: Icon(Icons.folder_open_outlined,
+                color: isCurrentGroup ? primaryBlue : mediumGreyText),
             title: Text(group.groupName,
                 style: TextStyle(
-                    fontWeight: isCurrentGroup ? FontWeight.bold : FontWeight.normal,
+                    fontWeight:
+                    isCurrentGroup ? FontWeight.bold : FontWeight.normal,
                     color: isCurrentGroup ? primaryBlue : darkText)),
-            trailing: const Icon(Icons.arrow_forward_ios, size: 16, color: mediumGreyText),
+            trailing: const Icon(Icons.arrow_forward_ios,
+                size: 16, color: mediumGreyText),
             selected: isCurrentGroup,
             selectedTileColor: primaryBlue.withOpacity(0.1),
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+            shape:
+            RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
             onTap: () => onGroupTap(group),
           );
         },
@@ -1702,36 +1812,42 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     if (_isLoadingPrescription) {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
-    if (_viewablePages.isEmpty && _currentGroup != null && _currentGroup!.pages.isEmpty) {
+    if (_viewablePages.isEmpty &&
+        _currentGroup != null &&
+        _currentGroup!.pages.isEmpty) {
       return Scaffold(
         appBar: AppBar(
-            leading: IconButton(icon: const Icon(Icons.arrow_back), onPressed: _handleBackButton),
+            leading: IconButton(
+                icon: const Icon(Icons.arrow_back),
+                onPressed: _handleBackButton),
             title: Text(_currentGroup!.groupName),
             actions: [
               IconButton(
-                icon: const Icon(Icons.collections_bookmark_outlined, color: primaryBlue),
+                icon: const Icon(Icons.collections_bookmark_outlined,
+                    color: primaryBlue),
                 tooltip: 'All Groups',
                 onPressed: _showAllGroupsAndPagesModal,
               ),
               const SizedBox(width: 8),
-            ]
-        ),
+            ]),
         body: Center(
             child: Padding(
                 padding: const EdgeInsets.all(16.0),
-                child: Text("No viewable pages found in '${_currentGroup!.groupName}'. Check if the page ID '${widget.pageId}' exists or if pages are correctly named.",
+                child: Text(
+                    "No viewable pages found in '${_currentGroup!.groupName}'. Check if the page ID '${widget.pageId}' exists or if pages are correctly named.",
                     textAlign: TextAlign.center))),
       );
     }
     if (_viewablePages.isEmpty) {
       return Scaffold(
         appBar: AppBar(
-            leading: IconButton(icon: const Icon(Icons.arrow_back), onPressed: _handleBackButton),
-            title: const Text("Error")
-        ),
+            leading: IconButton(
+                icon: const Icon(Icons.arrow_back),
+                onPressed: _handleBackButton),
+            title: const Text("Error")),
         body: const Center(
             child: Padding(
-                padding: EdgeInsets.all(16.0),
+                padding: const EdgeInsets.all(16.0),
                 child: Text("Page data could not be loaded or found.",
                     textAlign: TextAlign.center))),
       );
@@ -1755,8 +1871,13 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
           title: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(_patientName, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-              Text("${currentPageData.pageName} (${currentPageData.groupName})", style: const TextStyle(fontSize: 12, color: mediumGreyText)),
+              Text(_patientName,
+                  style: const TextStyle(
+                      fontSize: 16, fontWeight: FontWeight.bold)),
+              Text(
+                  "${currentPageData.pageName} (${currentPageData.groupName})",
+                  style:
+                  const TextStyle(fontSize: 12, color: mediumGreyText)),
             ],
           ),
           backgroundColor: Colors.white,
@@ -1767,8 +1888,17 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
               tooltip: 'Patient Details',
               onPressed: _showPatientDetailsModal,
             ),
+            // --- UPDATED: PiP Window Button (No change here) ---
             IconButton(
-                icon: const Icon(Icons.collections_bookmark_outlined, color: primaryBlue),
+              icon: Icon(Icons.picture_in_picture_alt_outlined,
+                  color: _isPipWindowVisible ? Colors.red : primaryBlue),
+              tooltip: 'Open Reference Window',
+              onPressed: _togglePipWindow,
+            ),
+            // --- END UPDATED ---
+            IconButton(
+                icon: const Icon(Icons.collections_bookmark_outlined,
+                    color: primaryBlue),
                 tooltip: 'All Groups',
                 onPressed: _showAllGroupsAndPagesModal),
             IconButton(
@@ -1777,7 +1907,8 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
                 onPressed: _showFolderPageSelector),
             if (_viewablePages.length > 1) ...[
               IconButton(
-                icon: const Icon(Icons.arrow_back_ios_new, color: primaryBlue, size: 20),
+                icon: const Icon(Icons.arrow_back_ios_new,
+                    color: primaryBlue, size: 20),
                 tooltip: 'Previous Page',
                 onPressed: _previousPage,
               ),
@@ -1785,7 +1916,8 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
                 padding: const EdgeInsets.only(left: 4.0, right: 4.0),
                 child: Center(
                   child: ActionChip(
-                    onPressed: _showFolderPageSelector, // Still opens the selector on tap
+                    onPressed:
+                    _showFolderPageSelector, // Still opens the selector on tap
                     label: Text(
                       "${_currentPageIndex + 1}/${_viewablePages.length}",
                       style: const TextStyle(
@@ -1800,33 +1932,30 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
                 ),
               ),
               IconButton(
-                icon: const Icon(Icons.arrow_forward_ios, color: primaryBlue, size: 20),
+                icon: const Icon(Icons.arrow_forward_ios,
+                    color: primaryBlue, size: 20),
                 tooltip: 'Next Page',
                 onPressed: _nextPage,
               ),
             ],
-              Padding(
-                padding: const EdgeInsets.only(right: 8.0),
-                child: ActionChip(
-                  onPressed: () => _navigateToPage((_currentPageIndex + 1) % _viewablePages.length),
-                  avatar: const Icon(Icons.arrow_forward_ios, size: 14, color: primaryBlue),
-                  label: Text("${_currentPageIndex + 1}/${_viewablePages.length}", style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: primaryBlue)),
-                  backgroundColor: primaryBlue.withOpacity(0.15),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-                ),
-              ),
             _buildPageActionsMenu(),
             IconButton(
-              icon: const Icon(Icons.picture_as_pdf_rounded, color: primaryBlue),
+              icon: const Icon(Icons.picture_as_pdf_rounded,
+                  color: primaryBlue),
               tooltip: 'Download Group as PDF',
               onPressed: _isSaving ? null : _downloadGroupAsPdf,
             ),
             IconButton(
               icon: _isSaving
-                  ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: primaryBlue))
+                  ? const SizedBox(
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(
+                      strokeWidth: 2, color: primaryBlue))
                   : const Icon(Icons.save_alt_rounded, color: primaryBlue),
               tooltip: "Save and Refresh",
-              onPressed: _isSaving ? null : () => _savePrescriptionData(isManualSave: true),
+              onPressed:
+              _isSaving ? null : () => _savePrescriptionData(isManualSave: true),
             ),
             const SizedBox(width: 8),
           ],
@@ -1834,7 +1963,8 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
             preferredSize: const Size.fromHeight(48),
             child: Container(
               color: Colors.white,
-              padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 4.0),
+              padding:
+              const EdgeInsets.symmetric(horizontal: 12.0, vertical: 4.0),
               child: Row(children: [
                 Expanded(child: _buildDrawingToolbar()),
                 _buildPanToolbar()
@@ -1878,15 +2008,19 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
                         drawingPage: _viewablePages[index],
                         selectedImageId: _selectedImageId,
                         redrawNotifier: _redrawNotifier,
-                        lassoPoints: index == _currentPageIndex ? _lassoPoints : [],
+                        lassoPoints:
+                        index == _currentPageIndex ? _lassoPoints : [],
                         transformationController: _transformationController,
                         panScaleEnabled: panScaleEnabled,
                         isEnhancedHandwriting: _isEnhancedHandwriting,
                         // --- ADDED: Pass pressure state ---
                         isPressureSensitive: _isPressureSensitive,
                         onTap: (details) {
-                          if (_selectedTool == DrawingTool.image && !_isStylusInteraction && !_isMovingSelectedImage) {
-                            _handleCanvasTap(_transformToCanvasCoordinates(details.localPosition));
+                          if (_selectedTool == DrawingTool.image &&
+                              !_isStylusInteraction &&
+                              !_isMovingSelectedImage) {
+                            _handleCanvasTap(_transformToCanvasCoordinates(
+                                details.localPosition));
                           }
                         },
                       );
@@ -1895,6 +2029,60 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
                 ),
                 if (_selectedImageId != null) _buildImageOverlayControls(),
                 _buildFloatingCopyPasteButton(),
+
+                // --- UPDATED: Use the imported PiP Widget ---
+                if (_isPipWindowVisible)
+                  Positioned(
+                    left: _pipPosition.dx,
+                    top: _pipPosition.dy,
+                    child: PipReferenceWindow(
+                      key: const ValueKey('pip_window'),
+                      patientUhid: widget.uhid,
+                      allGroups: _allPatientGroups ?? [],
+                      selectedPageData: _pipSelectedPageData,
+                      initialSize: _pipSize,
+                      healthRecordId: _healthRecordId!,
+                      groupToColumnMap: _groupToColumnMap,
+                      onClose: () {
+                        setState(() => _isPipWindowVisible = false);
+                      },
+                      onPageSelected: (group, page) {
+                        setState(() => _pipSelectedPageData = (group, page));
+                      },
+                      onPositionChanged: (delta) {
+                        setState(() {
+                          final newX = (_pipPosition.dx + delta.dx).clamp(
+                              0.0, constraints.maxWidth - _pipSize.width);
+                          final newY = (_pipPosition.dy + delta.dy).clamp(
+                              0.0, constraints.maxHeight - _pipSize.height);
+                          _pipPosition = Offset(newX, newY);
+                        });
+                      },
+                      onSizeChanged: (delta) {
+                        setState(() {
+                          // Ensure size doesn't go outside boundaries
+                          final newWidth = (_pipSize.width + delta.dx).clamp(
+                              300.0, constraints.maxWidth - _pipPosition.dx);
+                          // Maintain A4 aspect ratio
+                          final newHeight =
+                              (newWidth / canvasWidth) * canvasHeight;
+
+                          // Check bottom boundary
+                          if (newHeight >
+                              constraints.maxHeight - _pipPosition.dy) {
+                            _pipSize = Size(
+                                ((constraints.maxHeight - _pipPosition.dy) /
+                                    canvasHeight) *
+                                    canvasWidth,
+                                constraints.maxHeight - _pipPosition.dy);
+                          } else {
+                            _pipSize = Size(newWidth, newHeight);
+                          }
+                        });
+                      },
+                    ),
+                  ),
+                // --- END UPDATED ---
               ],
             );
           },
@@ -1931,11 +2119,18 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     // ... (implementation unchanged)
     return PopupMenuButton<String>(
       onSelected: (String value) {
-        if (value == 'copy_full') _copyPageContent();
-        else if (value == 'paste') _pastePageContent();
-        else if (value == 'camera') _pickAndUploadImage(ImageSource.camera);
-        else if (value == 'gallery') _pickAndUploadImage(ImageSource.gallery);
-        else if (value == 'uploaded') _showUploadedImagesSelector();
+        if (value == 'copy_full')
+          _copyPageContent();
+        else if (value == 'paste')
+          _pastePageContent();
+        else if (value == 'clear_copy')
+          _clearCopiedContent(); // <-- ADDED
+        else if (value == 'camera')
+          _pickAndUploadImage(ImageSource.camera);
+        else if (value == 'gallery')
+          _pickAndUploadImage(ImageSource.gallery);
+        else if (value == 'uploaded')
+          _showUploadedImagesSelector();
         else if (value == 'stamp') _showStampSelectorModal();
       },
       icon: const Icon(Icons.more_vert, color: primaryBlue),
@@ -1952,11 +2147,13 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
               child: ListTile(
                   leading: Icon(Icons.paste_rounded),
                   title: Text('Paste on Page'))),
-        const PopupMenuItem<String>( // <-- NEW CLEAR OPTION IN MENU
-            value: 'clear_copy',
-            child: ListTile(
-                leading: Icon(Icons.delete_sweep_outlined, color: Colors.red),
-                title: Text('Clear Copied Content', style: TextStyle(color: Colors.red)))),
+        if (_copiedPageData != null) // <-- ADDED
+          const PopupMenuItem<String>(
+              value: 'clear_copy',
+              child: ListTile(
+                  leading: Icon(Icons.delete_sweep_outlined, color: Colors.red),
+                  title: Text('Clear Copied Content',
+                      style: TextStyle(color: Colors.red)))),
         const PopupMenuDivider(),
         const PopupMenuItem<String>(
             value: 'camera',
@@ -2001,10 +2198,14 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
                 _selectedImageId = null;
                 _isMovingSelectedImage = false;
                 _lassoPoints = [];
-                if (index == 0) _selectedTool = DrawingTool.pen;
-                else if (index == 1) _selectedTool = DrawingTool.eraser;
-                else if (index == 2) _selectedTool = DrawingTool.image;
-                else _selectedTool = DrawingTool.lasso;
+                if (index == 0)
+                  _selectedTool = DrawingTool.pen;
+                else if (index == 1)
+                  _selectedTool = DrawingTool.eraser;
+                else if (index == 2)
+                  _selectedTool = DrawingTool.image;
+                else
+                  _selectedTool = DrawingTool.lasso;
               });
             },
             borderRadius: BorderRadius.circular(8),
@@ -2083,7 +2284,8 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
 
           const SizedBox(width: 8),
 
-          if (_selectedTool != DrawingTool.image && _selectedTool != DrawingTool.lasso)
+          if (_selectedTool != DrawingTool.image &&
+              _selectedTool != DrawingTool.lasso)
             ...[
               Colors.black,
               Colors.blue,
@@ -2112,7 +2314,8 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
             ),
           const SizedBox(width: 24),
           IconButton(
-              icon: const Icon(Icons.undo_rounded, color: primaryBlue, size: 22),
+              icon:
+              const Icon(Icons.undo_rounded, color: primaryBlue, size: 22),
               onPressed: _undoLastAction,
               tooltip: "Undo"),
           // IconButton(
@@ -2173,10 +2376,9 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
       ),
     );
   }
-
 }
 
-// --- WIDGET TO MANAGE CANVAS AND TEMPLATE IMAGE ---
+// --- WIDGET TO MANAGE CANVAS AND TEMPLATE IMAGE (Unchanged, except for removing PiP widgets) ---
 class _PrescriptionCanvasPage extends StatefulWidget {
   // ... (implementation unchanged) ...
   final DrawingPage drawingPage;
@@ -2238,7 +2440,8 @@ class _PrescriptionCanvasPageState extends State<_PrescriptionCanvasPage>
 
   Future<void> _loadAllImages() async {
     // 1. Load Template Image
-    final String fullTemplateUrl = _getFullImageUrl(widget.drawingPage.templateImageUrl);
+    final String fullTemplateUrl =
+    _getFullImageUrl(widget.drawingPage.templateImageUrl);
     ui.Image? templateImage;
     if (fullTemplateUrl.isNotEmpty) {
       try {
@@ -2256,14 +2459,16 @@ class _PrescriptionCanvasPageState extends State<_PrescriptionCanvasPage>
     for (var drawingImage in widget.drawingPage.images) {
       // Use compute if image loading is CPU intensive, but here network/cache is the bottle neck, so just concurrent loading is fine.
       futures.add(() async {
-        final cachedImage = ImageCacheManager.getCachedImage(drawingImage.imageUrl);
+        final cachedImage =
+        ImageCacheManager.getCachedImage(drawingImage.imageUrl);
         if (cachedImage != null) {
           newLoadedDrawingImages[drawingImage.id] = cachedImage;
           return;
         }
 
         try {
-          final loadedImage = await ImageCacheManager.loadImage(drawingImage.imageUrl);
+          final loadedImage =
+          await ImageCacheManager.loadImage(drawingImage.imageUrl);
           if (loadedImage != null) {
             newLoadedDrawingImages[drawingImage.id] = loadedImage;
           }
@@ -2292,7 +2497,8 @@ class _PrescriptionCanvasPageState extends State<_PrescriptionCanvasPage>
     super.build(context);
 
     // Show a loading indicator if the template isn't loaded yet
-    if (widget.drawingPage.templateImageUrl.isNotEmpty && _templateUiImage == null) {
+    if (widget.drawingPage.templateImageUrl.isNotEmpty &&
+        _templateUiImage == null) {
       return const Center(child: CircularProgressIndicator());
     }
 
@@ -2325,7 +2531,7 @@ class _PrescriptionCanvasPageState extends State<_PrescriptionCanvasPage>
   }
 }
 
-// --- CUSTOM PAINTER CLASS ---
+// --- CUSTOM PAINTER CLASS (Unchanged) ---
 class PrescriptionPainter extends CustomPainter {
   final DrawingPage drawingPage;
   final ui.Image? templateUiImage;
@@ -2350,8 +2556,7 @@ class PrescriptionPainter extends CustomPainter {
         required this.isEnhancedHandwriting,
         required this.isPressureSensitive, // --- ADDED ---
         // **OPTIMIZATION: Initialize with the loaded map**
-        required this.loadedDrawingImages
-      })
+        required this.loadedDrawingImages})
       : super(repaint: redrawNotifier);
 
   @override
@@ -2462,7 +2667,8 @@ class PrescriptionPainter extends CustomPainter {
           _simplifier.simplify(line.points, _simplificationTolerance);
 
           if (pointsToDraw.length > 1) {
-            final path = Path()..moveTo(pointsToDraw.first.dx, pointsToDraw.first.dy);
+            final path = Path()
+              ..moveTo(pointsToDraw.first.dx, pointsToDraw.first.dy);
 
             if (pointsToDraw.length < 3) {
               path.lineTo(pointsToDraw.last.dx, pointsToDraw.last.dy);
@@ -2484,7 +2690,8 @@ class PrescriptionPainter extends CustomPainter {
           }
         } else {
           // Standard raw line drawing
-          final path = Path()..moveTo(line.points.first.dx, line.points.first.dy);
+          final path = Path()
+            ..moveTo(line.points.first.dx, line.points.first.dy);
           for (int i = 1; i < line.points.length; i++) {
             path.lineTo(line.points[i].dx, line.points[i].dy);
           }
@@ -2501,7 +2708,8 @@ class PrescriptionPainter extends CustomPainter {
         ..strokeWidth = 2.0
         ..strokeCap = StrokeCap.round
         ..style = PaintingStyle.stroke;
-      final lassoPath = Path()..moveTo(lassoPoints.first.dx, lassoPoints.first.dy);
+      final lassoPath = Path()
+        ..moveTo(lassoPoints.first.dx, lassoPoints.first.dy);
       for (int i = 1; i < lassoPoints.length; i++) {
         lassoPath.lineTo(lassoPoints[i].dx, lassoPoints[i].dy);
       }
@@ -2524,8 +2732,7 @@ class PrescriptionPainter extends CustomPainter {
 // --- HELPER CLASS FOR STROKE SIMPLIFICATION (Unchanged) ---
 // This is used by the 'isEnhancedHandwriting' feature
 class RdpSimplifier {
-  double _getPerpendicularDistance(
-      Offset p, Offset p1, Offset p2) {
+  double _getPerpendicularDistance(Offset p, Offset p1, Offset p2) {
     double dx = p2.dx - p1.dx;
     double dy = p2.dy - p1.dy;
 
@@ -2556,8 +2763,8 @@ class RdpSimplifier {
     return sqrt(dx * dx + dy * dy);
   }
 
-  void _simplify(List<Offset> points, double tolerance,
-      List<Offset> out, int start, int end) {
+  void _simplify(List<Offset> points, double tolerance, List<Offset> out,
+      int start, int end) {
     if (start + 1 >= end) {
       return;
     }
