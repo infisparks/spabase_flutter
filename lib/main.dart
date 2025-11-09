@@ -44,7 +44,7 @@ class AppUpdateWrapper extends StatefulWidget {
 class _AppUpdateWrapperState extends State<AppUpdateWrapper> {
   // Define the current version of *this* app.
   // If this version doesn't match the one in Supabase, the popup will show.
-  static const String _currentVersion = "V5"; // <-- This line was changed
+  static const String _currentVersion = "V6"; // <-- This line was changed
 
   @override
   void initState() {
