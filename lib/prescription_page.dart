@@ -105,6 +105,121 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
   final SupabaseClient supabase = SupabaseConfig.client;
   final ImagePicker _picker = ImagePicker();
 
+// --- AUTO-FILL CONFIGURATION (Calibrated for Medford Indoor Patient File) ---
+  // Canvas Size: 1000 x 1414
+  static final Map<String, Map<String, double>> _indoorFileLayout = {
+    // Line 1: Patient Name
+    'patient_name':   {'x': 191, 'y': 730, 'width': 400},
+
+    // Line 3: Age / Sex / Date / Time
+    'age':            {'x': 108, 'y': 815, 'width': 80},
+    'sex':            {'x': 215, 'y': 815, 'width': 80},
+    'admission_date': {'x': 445, 'y': 815, 'width': 200},
+    'admission_time': {'x': 745, 'y': 815, 'width': 100},
+
+    // Line 4: UHID / IPD / Address
+    'uhid':           {'x': 156, 'y': 852, 'width': 200},
+    'ipd_no':         {'x': 461, 'y': 852, 'width': 180},
+    'address':        {'x': 740, 'y': 852, 'width': 200}, // Very small space on form
+
+    // Overflow Address (Placed slightly below if needed, or you can map it to S/o line)
+    'address_line_2': {'x': 73,  'y': 893, 'width': 900},
+
+    // Line 5: Contact No
+    'contact':        {'x': 175, 'y': 937, 'width': 400},
+
+    // Line 6: Consultant
+    'consultant':     {'x': 233, 'y': 979, 'width': 450},
+
+    // Line 7: Bed / Referred Dr
+    'bed_details':    {'x': 210, 'y': 1021, 'width': 300},
+    'referred_dr':    {'x': 570, 'y': 1021, 'width': 300},
+  };
+// --- 2. NEW: PASTE THIS ENTIRE FUNCTION ---
+  void _autoFillIndoorPatientFile() {
+    // Only run for "Indoor Patient File" and only if the page is empty
+    if (widget.groupName != 'Indoor Patient File') return;
+    if (_viewablePages.isEmpty || _viewablePages[_currentPageIndex].texts.isNotEmpty) return;
+
+    // Prepare Data safely
+    final String name = _patientDetails['name'] ?? '';
+    final String age = _patientDetails['age']?.toString() ?? '';
+    final String sex = _patientDetails['gender'] ?? '';
+    final String uhid = widget.uhid;
+    final String ipd = widget.ipdId.toString();
+    final String mobile = _patientDetails['number']?.toString() ?? '';
+    final String consultant = _ipdRegistrationDetails['under_care_of_doctor'] ?? '';
+
+    String address = _patientDetails['address'] ?? '';
+    if (address.isEmpty) address = _ipdRegistrationDetails['relative_address'] ?? '';
+
+    String admDate = _ipdRegistrationDetails['admission_date']?.toString() ?? '';
+    String admTime = _ipdRegistrationDetails['admission_time']?.toString() ?? '';
+    String room = _bedDetails['room_type']?.toString() ?? '';
+    String bedNo = _bedDetails['bed_number']?.toString() ?? '';
+    // Combine them with a " / " as you requested
+    final String bed = "$room / $bedNo";
+    final String referredBy = _ipdRegistrationDetails['admission_source'] ?? '';
+
+    List<DrawingText> newTexts = [];
+
+    void addText(String key, String value) {
+      if (value.isEmpty || !_indoorFileLayout.containsKey(key)) return;
+      final config = _indoorFileLayout[key]!;
+      newTexts.add(DrawingText(
+        id: generateUniqueId(),
+        text: value,
+        position: Offset(config['x']!, config['y']!),
+        colorValue: Colors.black.value,
+        fontSize: 22.0,
+      ));
+    }
+
+    addText('patient_name', name);
+    addText('age', age);
+    addText('sex', sex);
+    addText('admission_date', admDate);
+    addText('admission_time', admTime);
+    addText('uhid', uhid);
+    addText('ipd_no', ipd);
+    addText('contact', mobile);
+    addText('consultant', consultant);
+    addText('bed_details', bed);
+    addText('referred_dr', referredBy);
+
+    // Address logic
+    if (address.isNotEmpty) {
+      final config1 = _indoorFileLayout['address']!;
+      final config2 = _indoorFileLayout['address_line_2']!;
+      int charsPerLine1 = (config1['width']! / 12).floor();
+
+      if (address.length <= charsPerLine1) {
+        addText('address', address);
+      } else {
+        int splitIndex = address.lastIndexOf(' ', charsPerLine1);
+        if (splitIndex == -1) splitIndex = charsPerLine1;
+        addText('address', address.substring(0, splitIndex));
+
+        newTexts.add(DrawingText(
+          id: generateUniqueId(),
+          text: address.substring(splitIndex).trim(),
+          position: Offset(config2['x']!, config2['y']!),
+          colorValue: Colors.black.value,
+          fontSize: 22.0,
+        ));
+      }
+    }
+
+    if (newTexts.isNotEmpty) {
+      setState(() {
+        final currentPage = _viewablePages[_currentPageIndex];
+        _viewablePages[_currentPageIndex] = currentPage.copyWith(
+            texts: [...currentPage.texts, ...newTexts]
+        );
+      });
+      _savePrescriptionData(); // Auto-save
+    }
+  }
   // --- Data State ---
   List<DrawingPage> _viewablePages = [];
   int _currentPageIndex = 0;
@@ -231,12 +346,22 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     // 4. Fallback (e.g., OT form, Consent names, or Custom names without numbers)
     return baseName;
   }
+
   // --- Drawing State ---
   Color _currentColor = Colors.black;
   double _strokeWidth = 2.0;
   DrawingTool _selectedTool = DrawingTool.pen;
   bool _isEnhancedHandwriting = false;
   bool _isPressureSensitive = false; // --- ADDED: For pressure sensitivity
+  bool _isVelocitySensitive = false; // --- ADDED: For velocity sensitivity
+  Duration _lastMoveTimestamp = Duration.zero; // --- ADDED: For velocity calculation
+
+  // --- ADDED: Velocity calculation constants ---
+  // Tuned to feel natural: pixels per microsecond
+  static const double _kMinDrawVelocity = 0.0005;
+  static const double _kMaxDrawVelocity = 0.008;
+  // --- END ADDED ---
+
   List<Offset> _lassoPoints = [];
 
   // --- Image Manipulation State ---
@@ -298,8 +423,8 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
 
   // --- Data Loading, Saving, and Realtime ---
 
+// --- 3. UPDATE: REPLACE YOUR EXISTING FUNCTION WITH THIS ONE ---
   Future<void> _loadHealthDetailsAndPage() async {
-    // ... (implementation unchanged)
     if (!mounted) return;
     final String? currentPageIdBeforeRefresh = _viewablePages.isNotEmpty
         ? _viewablePages[_currentPageIndex].id
@@ -308,10 +433,9 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     try {
       final columnName =
           _groupToColumnMap[widget.groupName] ?? 'custom_groups_data';
-      // Only select the specific column needed + custom_groups + id
       final columnsToSelect = ['id', columnName, 'custom_groups_data']
           .toSet()
-          .join(','); // Use Set to avoid duplicates if columnName is custom_groups_data
+          .join(',');
 
       final response = await supabase
           .from('user_health_details')
@@ -359,32 +483,18 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
               DrawingPage.fromJson(json as Map<String, dynamic>))
               .toList() ??
               [];
-          // For standard groups, the ID and groupName are the same from the map key
           _currentGroup = DrawingGroup(
               id: widget.groupName,
               groupName: widget.groupName,
               pages: _pagesInCurrentGroup);
         }
 
-        // Find the starting page within the loaded group
-        DrawingPage startPage;
-        try {
-          startPage = _pagesInCurrentGroup.firstWhere(
-                  (p) => p.id == currentPageIdBeforeRefresh);
-        } catch (e) {
-          throw Exception(
-              "Start page '$currentPageIdBeforeRefresh' not found in group '${_currentGroup?.groupName}'. Available pages: ${_pagesInCurrentGroup.map((p) => p.id).join(', ')}");
-        }
-
-// --- FIX: Use the new helper to correctly determine the base prefix ---
-        String basePagePrefix = _getBasePagePrefix(startPage.pageName);
-        debugPrint("Filtering pages based on prefix: $basePagePrefix");
+        String basePagePrefix = _getBasePagePrefix(_pagesInCurrentGroup.firstWhere(
+                (p) => p.id == currentPageIdBeforeRefresh).pageName);
 
         _viewablePages = _pagesInCurrentGroup
             .where((p) => _getBasePagePrefix(p.pageName) == basePagePrefix)
             .toList();
-// --- END FIX ---
-
 
         int initialIndex =
         _viewablePages.indexWhere((p) => p.id == currentPageIdBeforeRefresh);
@@ -393,23 +503,20 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
           _currentPageIndex = initialIndex;
           _pageController.dispose();
           _pageController = PageController(initialPage: _currentPageIndex);
-        } else {
-          throw Exception(
-              "Starting page '$currentPageIdBeforeRefresh' could not be located in the filtered viewable pages for prefix '$pagePrefix'.");
         }
+
+        // --- NEW: TRIGGER AUTO FILL HERE ---
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) {
+            _autoFillIndoorPatientFile();
+          }
+        });
+        // ----------------------------------
+
         _setupRealtimeSubscription();
-      } else {
-        throw Exception(
-            "No health record found for IPD ${widget.ipdId} and UHID ${widget.uhid}.");
       }
     } catch (e) {
-      debugPrint('Error loading health details: $e');
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-            content: Text('Failed to load details: ${e.toString()}',
-                maxLines: 3),
-            backgroundColor: Colors.red));
-      }
+      debugPrint('Error: $e');
     } finally {
       if (mounted) setState(() => _isLoadingPrescription = false);
     }
@@ -1014,14 +1121,22 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     }
 
     if (_isPenOnlyMode && _isStylusInteraction) {
+      // --- ADDED: Store initial timestamp for velocity ---
+      _lastMoveTimestamp = details.timeStamp;
+      // --- END ADDED ---
+
       if (_selectedTool == DrawingTool.pen) {
         setState(() {
           final newLine = DrawingLine(
               points: [transformedPosition],
               colorValue: _currentColor.value,
               strokeWidth: _strokeWidth,
-              // --- MODIFIED: Capture pressure ---
-              pressure: _isPressureSensitive ? [details.pressure] : null);
+              // --- MODIFIED: Capture pressure OR velocity ---
+              pressure: _isPressureSensitive
+                  ? [details.pressure]
+                  : (_isVelocitySensitive ? [0.5] : null) // Start with neutral pressure
+            // --- END MODIFIED ---
+          );
           _viewablePages[_currentPageIndex] =
               currentPage.copyWith(lines: [...currentPage.lines, newLine]);
         });
@@ -1074,11 +1189,37 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
           final lastLine = currentPage.lines.last;
           final newPoints = [...lastLine.points, transformedPosition];
 
-          // --- MODIFIED: Capture pressure ---
+          // --- MODIFIED: Capture pressure OR velocity ---
           List<double>? newPressures = lastLine.pressure;
           if (_isPressureSensitive) {
-            // Ensure pressure list exists and add new pressure
+            // 1. Use real stylus pressure
             newPressures = [...(lastLine.pressure ?? []), details.pressure];
+          } else if (_isVelocitySensitive) {
+            // 2. Calculate and use velocity-based "pressure"
+            final timeDelta = details.timeStamp - _lastMoveTimestamp;
+            double currentVelocity = 0.0;
+            // Avoid division by zero if events are too fast
+            if (timeDelta.inMicroseconds > 0) {
+              currentVelocity = details.delta.distance / timeDelta.inMicroseconds;
+            }
+            _lastMoveTimestamp = details.timeStamp;
+
+            // Normalize velocity: 0.0 (slow) to 1.0 (fast)
+            final normalizedVelocity = ((currentVelocity - _kMinDrawVelocity) /
+                (_kMaxDrawVelocity - _kMinDrawVelocity))
+                .clamp(0.0, 1.0);
+
+            // Inverse: Slow (0.0) -> Wide (1.0), Fast (1.0) -> Thin (0.0)
+            final fakePressure = 1.0 - normalizedVelocity;
+
+            // Smooth it with the previous value to avoid jitters
+            final lastPressure = newPressures?.last ?? 0.5;
+            final smoothedPressure = (lastPressure * 0.6) + (fakePressure * 0.4);
+
+            newPressures = [
+              ...(lastLine.pressure ?? []),
+              smoothedPressure.clamp(0.0, 1.0) // Ensure it stays in bounds
+            ];
           }
           // --- END MODIFIED ---
 
@@ -2234,6 +2375,7 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
                         isEnhancedHandwriting: _isEnhancedHandwriting,
                         // --- ADDED: Pass pressure state and pasted transform data ---
                         isPressureSensitive: _isPressureSensitive,
+                        isVelocitySensitive: _isVelocitySensitive, // --- ADDED ---
                         pastedTransformData: index == _currentPageIndex ? _pastedTransformData : null, // Pass only to current page
                         // --- END ADDED ---
                         onTap: (details) {
@@ -2481,7 +2623,7 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
                 ));
               },
             ),
-            // --- ADDED: Pressure Sensitivity Toggle ---
+            // --- MODIFIED: Pressure Sensitivity Toggle (Added mutual exclusion) ---
             IconButton(
               icon: Icon(
                 Icons.opacity, // Icon implying "dark and light"
@@ -2494,6 +2636,9 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
               onPressed: _isTransformingPastedContent ? null : () {
                 setState(() {
                   _isPressureSensitive = !_isPressureSensitive;
+                  // --- ADDED: Mutual exclusion ---
+                  if (_isPressureSensitive) _isVelocitySensitive = false;
+                  // --- END ADDED ---
                   _redrawNotifier.value = 1 - _redrawNotifier.value;
                 });
                 HapticFeedback.lightImpact();
@@ -2506,6 +2651,37 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
                 ));
               },
             ),
+            // --- END MODIFIED ---
+
+            // --- ADDED: Velocity Sensitivity Toggle ---
+            IconButton(
+              icon: Icon(
+                Icons.double_arrow_rounded, // Icon implying speed/flow
+                color: _isVelocitySensitive ? primaryBlue : mediumGreyText,
+                size: 22,
+              ),
+              tooltip: _isVelocitySensitive
+                  ? 'Velocity-based Width (ON)'
+                  : 'Velocity-based Width (OFF)',
+              onPressed: _isTransformingPastedContent ? null : () {
+                setState(() {
+                  _isVelocitySensitive = !_isVelocitySensitive;
+                  // --- ADDED: Mutual exclusion ---
+                  if (_isVelocitySensitive) _isPressureSensitive = false;
+                  // --- END ADDED ---
+                  _redrawNotifier.value = 1 - _redrawNotifier.value;
+                });
+                HapticFeedback.lightImpact();
+                ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                  content: Text(_isVelocitySensitive
+                      ? 'Velocity-based Width Activated'
+                      : 'Velocity-based Width Deactivated'),
+                  backgroundColor: primaryBlue,
+                  duration: const Duration(seconds: 2),
+                ));
+              },
+            ),
+            // --- END ADDED ---
           ],
 
           const SizedBox(width: 8),
@@ -2616,6 +2792,7 @@ class _PrescriptionCanvasPage extends StatefulWidget {
   final ValueChanged<TapUpDetails> onTap;
   final bool isEnhancedHandwriting;
   final bool isPressureSensitive; // --- ADDED ---
+  final bool isVelocitySensitive; // --- ADDED ---
   final _PastedTransformData? pastedTransformData; // --- ADDED ---
 
   const _PrescriptionCanvasPage({
@@ -2628,6 +2805,7 @@ class _PrescriptionCanvasPage extends StatefulWidget {
     required this.onTap,
     required this.isEnhancedHandwriting,
     required this.isPressureSensitive, // --- ADDED ---
+    required this.isVelocitySensitive, // --- ADDED ---
     this.pastedTransformData, // --- ADDED ---
   });
 
@@ -2746,21 +2924,29 @@ class _PrescriptionCanvasPageState extends State<_PrescriptionCanvasPage>
       boundaryMargin: const EdgeInsets.all(double.infinity),
       child: GestureDetector(
         onTapUp: widget.onTap,
-        child: CustomPaint(
-          painter: PrescriptionPainter(
-            drawingPage: widget.drawingPage,
-            templateUiImage: _templateUiImage,
-            // **OPTIMIZATION: Pass the pre-loaded image map**
-            loadedDrawingImages: _loadedDrawingImages,
-            selectedImageId: widget.selectedImageId,
-            redrawNotifier: widget.redrawNotifier,
-            lassoPoints: widget.lassoPoints,
-            isEnhancedHandwriting: widget.isEnhancedHandwriting,
-            isPressureSensitive: widget.isPressureSensitive, // --- ADDED ---
-            pastedTransformData: widget.pastedTransformData, // --- ADDED ---
+        // --- ADD THIS LISTENER WRAPPER ---
+        child: Listener(
+          onPointerDown: (details) {
+            // This prints the exact X and Y to your "Run" console when you tap
+            print("COORDINATES: x: ${details.localPosition.dx.round()}, y: ${details.localPosition.dy.round()}");
+          },
+          child: CustomPaint(
+            painter: PrescriptionPainter(
+              drawingPage: widget.drawingPage,
+              templateUiImage: _templateUiImage,
+              loadedDrawingImages: _loadedDrawingImages,
+              selectedImageId: widget.selectedImageId,
+              redrawNotifier: widget.redrawNotifier,
+              lassoPoints: widget.lassoPoints,
+              isEnhancedHandwriting: widget.isEnhancedHandwriting,
+              isPressureSensitive: widget.isPressureSensitive,
+              isVelocitySensitive: widget.isVelocitySensitive,
+              pastedTransformData: widget.pastedTransformData,
+            ),
+            child: const SizedBox(width: canvasWidth, height: canvasHeight),
           ),
-          child: const SizedBox(width: canvasWidth, height: canvasHeight),
         ),
+        // ---------------------------------
       ),
     );
   }
@@ -2777,6 +2963,7 @@ class PrescriptionPainter extends CustomPainter {
   final List<Offset> lassoPoints;
   final bool isEnhancedHandwriting;
   final bool isPressureSensitive; // --- ADDED ---
+  final bool isVelocitySensitive; // --- ADDED ---
   final _PastedTransformData? pastedTransformData; // --- ADDED ---
 
   final RdpSimplifier _simplifier = RdpSimplifier();
@@ -2791,10 +2978,16 @@ class PrescriptionPainter extends CustomPainter {
         required this.lassoPoints,
         required this.isEnhancedHandwriting,
         required this.isPressureSensitive, // --- ADDED ---
+        required this.isVelocitySensitive, // --- ADDED ---
         required this.loadedDrawingImages,
         this.pastedTransformData // --- ADDED ---
       })
       : super(repaint: redrawNotifier);
+
+
+
+
+
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -2807,19 +3000,13 @@ class PrescriptionPainter extends CustomPainter {
           fit: BoxFit.contain,
           alignment: Alignment.center);
     } else {
-      // Draw a white background if there's no template image
       canvas.drawRect(Rect.fromLTWH(0, 0, size.width, size.height),
           Paint()..color = Colors.white);
-      // Fallback to the original grey loading indicator style
-      canvas.drawRect(Rect.fromLTWH(0, 0, size.width, size.height),
-          Paint()..color = Colors.grey[200]!);
     }
 
     // 2. Draw Images
     for (var image in drawingPage.images) {
-      // **OPTIMIZATION: Get pre-loaded image directly from the map**
       final cachedImage = loadedDrawingImages[image.id];
-
       final destRect = Rect.fromLTWH(
           image.position.dx, image.position.dy, image.width, image.height);
 
@@ -2831,15 +3018,8 @@ class PrescriptionPainter extends CustomPainter {
             fit: BoxFit.contain,
             alignment: Alignment.topLeft);
       } else {
-        // Draw placeholder if image is still loading (should be rare now)
-        canvas.drawRect(destRect, Paint()..color = Colors.grey.withOpacity(0.5));
-        final textPainter = TextPainter(
-          text: const TextSpan(
-              text: 'Loading...',
-              style: TextStyle(color: Colors.black, fontSize: 14)),
-          textDirection: TextDirection.ltr,
-        )..layout();
-        textPainter.paint(canvas, image.position.translate(5, 5));
+        canvas.drawRect(
+            destRect, Paint()..color = Colors.grey.withOpacity(0.5));
       }
 
       if (image.id == selectedImageId) {
@@ -2851,46 +3031,36 @@ class PrescriptionPainter extends CustomPainter {
       }
     }
 
-    // 3. Draw Lines/Drawings
-    // --- MODIFIED: To handle pressure sensitivity ---
+    // 3. Draw Lines (Handwriting)
     for (var line in drawingPage.lines) {
-      if (line.points.length <= 1) continue; // Skip empty/single-point lines
+      if (line.points.length <= 1) continue;
 
-      // Check if pressure data is available and the mode is on
-      final bool usePressure = isPressureSensitive &&
+      bool usePressure = (isPressureSensitive || isVelocitySensitive) &&
           line.pressure != null &&
           line.pressure!.length == line.points.length;
 
       if (usePressure) {
-        // --- ADDED: Pressure-sensitive drawing logic ---
-        // Vary stroke width based on pressure
         final double minWidth = line.strokeWidth * 0.4;
         final double maxWidth = line.strokeWidth * 2.0;
         final points = line.points;
         final pressures = line.pressure!;
         final tempPaint = Paint()
           ..color = Color(line.colorValue)
-          ..strokeCap = StrokeCap.round // Round cap helps fill gaps
+          ..strokeCap = StrokeCap.round
           ..style = PaintingStyle.stroke;
 
         for (int i = 0; i < points.length - 1; i++) {
           final p1 = points[i];
           final p2 = points[i + 1];
-          // Average pressure of the segment, clamped between 0.0 and 1.0
-          final avgPressure =
-          ((pressures[i] + pressures[i + 1]) / 2).clamp(0.0, 1.0);
-
-          // Interpolate the stroke width
+          final avgPressure = ((pressures[i] + pressures[i + 1]) / 2).clamp(0.0, 1.0);
           final newWidth = ui.lerpDouble(minWidth, maxWidth, avgPressure)!;
 
-          // Only draw if width is visible
           if (newWidth > 0.1) {
             tempPaint.strokeWidth = newWidth;
             canvas.drawLine(p1, p2, tempPaint);
           }
         }
       } else {
-        // --- ORIGINAL logic for non-pressure drawing ---
         final paint = Paint()
           ..color = Color(line.colorValue)
           ..strokeWidth = line.strokeWidth
@@ -2899,24 +3069,18 @@ class PrescriptionPainter extends CustomPainter {
           ..style = PaintingStyle.stroke;
 
         if (isEnhancedHandwriting) {
-          // Use RDP simplification for smoother curves
           final List<Offset> pointsToDraw =
           _simplifier.simplify(line.points, _simplificationTolerance);
-
           if (pointsToDraw.length > 1) {
             final path = Path()
               ..moveTo(pointsToDraw.first.dx, pointsToDraw.first.dy);
-
             if (pointsToDraw.length < 3) {
               path.lineTo(pointsToDraw.last.dx, pointsToDraw.last.dy);
             } else {
               var p1 = pointsToDraw[0];
               var p2 = pointsToDraw[1];
               for (int i = 1; i < pointsToDraw.length - 1; i++) {
-                final midPoint = Offset(
-                  (p1.dx + p2.dx) / 2,
-                  (p1.dy + p2.dy) / 2,
-                );
+                final midPoint = Offset((p1.dx + p2.dx) / 2, (p1.dy + p2.dy) / 2);
                 path.quadraticBezierTo(p1.dx, p1.dy, midPoint.dx, midPoint.dy);
                 p1 = pointsToDraw[i];
                 p2 = pointsToDraw[i + 1];
@@ -2926,7 +3090,6 @@ class PrescriptionPainter extends CustomPainter {
             canvas.drawPath(path, paint);
           }
         } else {
-          // Standard raw line drawing
           final path = Path()
             ..moveTo(line.points.first.dx, line.points.first.dy);
           for (int i = 1; i < line.points.length; i++) {
@@ -2936,16 +3099,34 @@ class PrescriptionPainter extends CustomPainter {
         }
       }
     }
-    // --- END MODIFIED SECTION ---
 
-    // 4. Draw Pasted Content (Temporary, being positioned)
+    // 4. Draw Texts (THIS IS THE FIX FOR DISPLAYING TEXT)
+    for (var textItem in drawingPage.texts) {
+      final textSpan = TextSpan(
+        text: textItem.text,
+        style: TextStyle(
+          color: Color(textItem.colorValue),
+          fontSize: textItem.fontSize,
+          fontWeight: FontWeight.bold, // Makes it look like typed form data
+          fontFamily: 'Arial',
+        ),
+      );
+      final textPainter = TextPainter(
+        text: textSpan,
+        textDirection: TextDirection.ltr,
+      );
+      textPainter.layout();
+      // Draw the text at the exact position defined in the map
+      textPainter.paint(canvas, textItem.position);
+    }
+
+    // 5. Draw Paste / Lasso Overlay (Existing Logic)
     if (pastedTransformData != null) {
       canvas.save();
-      // Apply translation to the entire pasted content block
       canvas.translate(pastedTransformData!.offset.dx, pastedTransformData!.offset.dy);
       final double scale = pastedTransformData!.scale;
 
-      // A. Draw Pasted Lines
+      // Draw Pasted Lines
       for (var line in pastedTransformData!.lines) {
         final paint = Paint()
           ..color = Color(line.colorValue).withOpacity(0.8)
@@ -2953,98 +3134,35 @@ class PrescriptionPainter extends CustomPainter {
           ..strokeCap = StrokeCap.round
           ..strokeJoin = StrokeJoin.round
           ..style = PaintingStyle.stroke;
-
-        final path = Path()
-          ..moveTo(line.points.first.dx * scale, line.points.first.dy * scale);
+        final path = Path()..moveTo(line.points.first.dx * scale, line.points.first.dy * scale);
         for (int i = 1; i < line.points.length; i++) {
           path.lineTo(line.points[i].dx * scale, line.points[i].dy * scale);
         }
         canvas.drawPath(path, paint);
       }
-
-      // B. Draw Pasted Images
+      // Draw Pasted Images (simplified for preview)
       for (var image in pastedTransformData!.images) {
         final cachedImage = loadedDrawingImages[image.id];
         final destRect = Rect.fromLTWH(
-          image.position.dx * scale,
-          image.position.dy * scale,
-          image.width * scale,
-          image.height * scale,
+          image.position.dx * scale, image.position.dy * scale,
+          image.width * scale, image.height * scale,
         );
-
         if (cachedImage != null) {
-          paintImage(
-            canvas: canvas,
-            rect: destRect,
-            image: cachedImage,
-            fit: BoxFit.contain,
-            alignment: Alignment.topLeft,
-          );
+          paintImage(canvas: canvas, rect: destRect, image: cachedImage, fit: BoxFit.contain, alignment: Alignment.topLeft);
         } else {
-          // Placeholder for loading image
           canvas.drawRect(destRect, Paint()..color = Colors.blueGrey.withOpacity(0.3));
         }
       }
-
-      // C. Draw Bounding Box/Border around all pasted content
-      final allPoints = [
-        ...pastedTransformData!.lines.expand((l) => l.points.map((p) => p * scale)),
-        ...pastedTransformData!.images.expand((i) => [
-          i.position * scale,
-          i.position * scale + Offset(i.width * scale, 0),
-          i.position * scale + Offset(0, i.height * scale),
-          i.position * scale + Offset(i.width * scale, i.height * scale),
-        ])
-      ];
-
-      if (allPoints.isNotEmpty) {
-        // Calculate the bounding box for the entire pasted group
-        double minX = allPoints.map((p) => p.dx).reduce(min);
-        double minY = allPoints.map((p) => p.dy).reduce(min);
-        double maxX = allPoints.map((p) => p.dx).reduce(max);
-        double maxY = allPoints.map((p) => p.dy).reduce(max);
-
-        final bounds = Rect.fromLTRB(minX, minY, maxX, maxY);
-
-        // Dashed stroke for the border
-        final borderPaint = Paint()
-          ..color = Colors.green.withOpacity(0.8)
-          ..strokeWidth = 3.0
-          ..style = PaintingStyle.stroke;
-
-        const double dashWidth = 8.0;
-        const double dashSpace = 5.0;
-
-        Path dashedPath = Path();
-        for (double d = 0; d < bounds.width; d += dashWidth + dashSpace) {
-          dashedPath.moveTo(bounds.left + d, bounds.top);
-          dashedPath.lineTo(bounds.left + d + dashWidth.clamp(0, bounds.width - d), bounds.top);
-          dashedPath.moveTo(bounds.left + d, bounds.bottom);
-          dashedPath.lineTo(bounds.left + d + dashWidth.clamp(0, bounds.width - d), bounds.bottom);
-        }
-        for (double d = 0; d < bounds.height; d += dashWidth + dashSpace) {
-          dashedPath.moveTo(bounds.left, bounds.top + d);
-          dashedPath.lineTo(bounds.left, bounds.top + d + dashWidth.clamp(0, bounds.height - d));
-          dashedPath.moveTo(bounds.right, bounds.top + d);
-          dashedPath.lineTo(bounds.right, bounds.top + d + dashWidth.clamp(0, bounds.height - d));
-        }
-
-        canvas.drawPath(dashedPath.shift(const Offset(-4, -4)), borderPaint); // Shifted in for padding
-      }
-
       canvas.restore();
     }
 
-
-    // 5. Draw Lasso Line
     if (lassoPoints.length > 1 && pastedTransformData == null) {
       final lassoPaint = Paint()
         ..color = primaryBlue
         ..strokeWidth = 2.0
         ..strokeCap = StrokeCap.round
         ..style = PaintingStyle.stroke;
-      final lassoPath = Path()
-        ..moveTo(lassoPoints.first.dx, lassoPoints.first.dy);
+      final lassoPath = Path()..moveTo(lassoPoints.first.dx, lassoPoints.first.dy);
       for (int i = 1; i < lassoPoints.length; i++) {
         lassoPath.lineTo(lassoPoints[i].dx, lassoPoints[i].dy);
       }
@@ -3060,6 +3178,7 @@ class PrescriptionPainter extends CustomPainter {
         oldDelegate.lassoPoints.length != lassoPoints.length ||
         oldDelegate.isEnhancedHandwriting != isEnhancedHandwriting ||
         oldDelegate.isPressureSensitive != isPressureSensitive || // --- ADDED ---
+        oldDelegate.isVelocitySensitive != isVelocitySensitive || // --- ADDED ---
         oldDelegate.loadedDrawingImages.length != loadedDrawingImages.length ||
         oldDelegate.pastedTransformData != pastedTransformData; // --- ADDED ---
   }

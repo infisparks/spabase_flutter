@@ -4,7 +4,6 @@ import 'package:flutter/material.dart';
 // --- Utility Functions ---
 
 String generateUniqueId() {
-  // Generates a unique ID for new elements
   return DateTime.now().microsecondsSinceEpoch.toString() +
       Random().nextInt(100000).toString();
 }
@@ -50,18 +49,17 @@ List<Offset> simplify(List<Offset> points, double epsilon) {
 
 // --- Data Models ---
 
+// 1. DrawingLine
 class DrawingLine {
   final List<Offset> points;
   final int colorValue;
   final double strokeWidth;
-  // FIX: Added nullable pressure field
   final List<double>? pressure;
 
   DrawingLine({
     required this.points,
     required this.colorValue,
     required this.strokeWidth,
-    // FIX: Added to constructor
     this.pressure,
   });
 
@@ -71,16 +69,13 @@ class DrawingLine {
     final color = (json['colorValue'] as num?)?.toInt() ?? Colors.black.value;
     final width = (json['strokeWidth'] as num?)?.toDouble() ?? 2.0;
 
-    // FIX: Deserialize pressure list (stored as List<num> and converted to List<double>)
     final pressureList = (json['pressure'] as List?)
         ?.whereType<num>()
         .map((e) => e.toDouble())
         .toList();
 
-
     if (pointsData is List && pointsData.isNotEmpty) {
       if (pointsData[0] is Map) {
-        // OLD UNCOMPRESSED FORMAT
         for (var pointJson in pointsData) {
           if (pointJson is Map) {
             pointsList.add(Offset(
@@ -90,7 +85,6 @@ class DrawingLine {
           }
         }
       } else if (pointsData[0] is num) {
-        // NEW COMPRESSED FORMAT (Delta Encoded Integers)
         if (pointsData.length >= 2) {
           double lastX = (pointsData[0] as num).toDouble() / 100.0;
           double lastY = (pointsData[1] as num).toDouble() / 100.0;
@@ -111,7 +105,7 @@ class DrawingLine {
       points: pointsList,
       colorValue: color,
       strokeWidth: width,
-      pressure: pressureList, // FIX: Added pressure
+      pressure: pressureList,
     );
   }
 
@@ -119,17 +113,14 @@ class DrawingLine {
     final jsonMap = {
       'colorValue': colorValue,
       'strokeWidth': strokeWidth,
-      // FIX: Added pressure to JSON output
       'pressure': pressure,
     };
 
-    // Compression logic for points
     if (points.isEmpty) {
       jsonMap['points'] = [];
       return jsonMap;
     }
 
-    // Optimization: Simplify points before compression/storage
     final simplifiedPoints = simplify(points, 0.2);
     if (simplifiedPoints.isEmpty) {
       jsonMap['points'] = [];
@@ -159,18 +150,18 @@ class DrawingLine {
     List<Offset>? points,
     int? colorValue,
     double? strokeWidth,
-    // FIX: Added pressure to copyWith
     List<double>? pressure,
   }) {
     return DrawingLine(
       points: points ?? this.points,
       colorValue: colorValue ?? this.colorValue,
       strokeWidth: strokeWidth ?? this.strokeWidth,
-      pressure: pressure ?? this.pressure, // FIX: Added pressure
+      pressure: pressure ?? this.pressure,
     );
   }
 }
 
+// 2. DrawingImage
 class DrawingImage {
   final String id;
   final String imageUrl;
@@ -226,6 +217,61 @@ class DrawingImage {
   }
 }
 
+// --- 3. DrawingText (THIS WAS MISSING) ---
+class DrawingText {
+  final String id;
+  final String text;
+  final Offset position;
+  final int colorValue;
+  final double fontSize;
+
+  DrawingText({
+    required this.id,
+    required this.text,
+    required this.position,
+    required this.colorValue,
+    required this.fontSize,
+  });
+
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'text': text,
+    'position': {'dx': position.dx, 'dy': position.dy},
+    'colorValue': colorValue,
+    'fontSize': fontSize,
+  };
+
+  factory DrawingText.fromJson(Map<String, dynamic> json) {
+    final positionJson = json['position'] as Map<String, dynamic>? ?? {'dx': 0.0, 'dy': 0.0};
+    return DrawingText(
+      id: json['id'] as String? ?? generateUniqueId(),
+      text: json['text'] as String? ?? '',
+      position: Offset(
+        (positionJson['dx'] as num?)?.toDouble() ?? 0.0,
+        (positionJson['dy'] as num?)?.toDouble() ?? 0.0,
+      ),
+      colorValue: (json['colorValue'] as num?)?.toInt() ?? Colors.black.value,
+      fontSize: (json['fontSize'] as num?)?.toDouble() ?? 16.0,
+    );
+  }
+
+  DrawingText copyWith({
+    String? text,
+    Offset? position,
+    int? colorValue,
+    double? fontSize,
+  }) {
+    return DrawingText(
+      id: id,
+      text: text ?? this.text,
+      position: position ?? this.position,
+      colorValue: colorValue ?? this.colorValue,
+      fontSize: fontSize ?? this.fontSize,
+    );
+  }
+}
+
+// 4. DrawingPage (UPDATED TO INCLUDE texts)
 class DrawingPage {
   final String id;
   final int pageNumber;
@@ -234,6 +280,7 @@ class DrawingPage {
   final String templateImageUrl;
   final List<DrawingLine> lines;
   final List<DrawingImage> images;
+  final List<DrawingText> texts; // <--- ADDED THIS
 
   DrawingPage({
     required this.id,
@@ -243,6 +290,7 @@ class DrawingPage {
     required this.templateImageUrl,
     this.lines = const [],
     this.images = const [],
+    this.texts = const [], // <--- ADDED THIS
   });
 
   DrawingPage copyWith({
@@ -253,6 +301,7 @@ class DrawingPage {
     String? templateImageUrl,
     List<DrawingLine>? lines,
     List<DrawingImage>? images,
+    List<DrawingText>? texts, // <--- ADDED THIS
   }) {
     return DrawingPage(
       id: id ?? this.id,
@@ -262,6 +311,7 @@ class DrawingPage {
       templateImageUrl: templateImageUrl ?? this.templateImageUrl,
       lines: lines ?? this.lines,
       images: images ?? this.images,
+      texts: texts ?? this.texts, // <--- ADDED THIS
     );
   }
 
@@ -282,6 +332,11 @@ class DrawingPage {
           .map((imageJson) => DrawingImage.fromJson(imageJson))
           .toList() ??
           [],
+      texts: (json['texts'] as List<dynamic>?) // <--- ADDED THIS
+          ?.whereType<Map<String, dynamic>>()
+          .map((textJson) => DrawingText.fromJson(textJson))
+          .toList() ??
+          [],
     );
   }
 
@@ -294,10 +349,12 @@ class DrawingPage {
       'templateImageUrl': templateImageUrl,
       'lines': lines.map((line) => line.toJson()).toList(),
       'images': images.map((image) => image.toJson()).toList(),
+      'texts': texts.map((text) => text.toJson()).toList(), // <--- ADDED THIS
     };
   }
 }
 
+// 5. DrawingGroup
 class DrawingGroup {
   final String id;
   final String groupName;
@@ -343,6 +400,7 @@ class DrawingGroup {
   }
 }
 
+// 6. StampImage
 class StampImage {
   final int id;
   final String name;
