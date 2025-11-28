@@ -3,10 +3,10 @@ import 'package:flutter/services.dart';
 import 'dart:ui' as ui;
 import 'dart:async';
 import 'dart:math'; // Added for sqrt()
-
+import 'package:image_cropper/image_cropper.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:image_picker/image_picker.dart';
-
+import 'app_clipboard.dart'; // Import the new file
 import 'supabase_config.dart';
 import 'image_manipulation_helpers.dart';
 import 'patient_info_header_card.dart';
@@ -107,34 +107,338 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
 
 // --- AUTO-FILL CONFIGURATION (Calibrated for Medford Indoor Patient File) ---
   // Canvas Size: 1000 x 1414
+
+// --- NEW FUNCTION: Refresh and Update Current Page ---
+  Future<void> _refreshAndApplyDetails() async {
+    setState(() => _isLoadingPrescription = true);
+
+    try {
+      // 1. Fetch latest data from server
+      final ipdResponse = await supabase
+          .from('ipd_registration')
+          .select('*, patient_detail(*), bed_management(*)')
+          .eq('uhid', widget.uhid)
+          .eq('ipd_id', widget.ipdId)
+          .maybeSingle();
+
+      if (ipdResponse != null) {
+        // 2. Update local state variables
+        setState(() {
+          _ipdRegistrationDetails = ipdResponse;
+          _patientDetails =
+              ipdResponse['patient_detail'] as Map<String, dynamic>? ?? {};
+          _bedDetails =
+              ipdResponse['bed_management'] as Map<String, dynamic>? ?? {};
+          _patientName = _patientDetails['name'] as String? ?? 'N/A';
+        });
+
+        // 3. Determine which layout to use
+        Map<String, Map<String, double>>? targetLayout;
+        final String gName = widget.groupName.toLowerCase();
+
+        if (widget.groupName == 'Indoor Patient File') {
+          targetLayout = _indoorFileLayout;
+        } else if (gName.contains('progress') ||
+            gName.contains('nursing notes') ||
+            gName.contains('dr visit') ||
+            gName.contains('glucose') ||
+            gName.contains('patient charges') ||
+            gName.contains('tpr') ||
+            gName.contains('clinical notes')) {
+          targetLayout = _progressNoteLayout;
+        }
+
+        if (targetLayout != null) {
+          _applyNewDetailsToPage(targetLayout);
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                content: Text('Details refreshed from server and updated!'),
+                backgroundColor: Colors.green));
+          }
+        } else {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                content: Text('No auto-fill layout available for this page.'),
+                backgroundColor: Colors.orange));
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint("Error refreshing details: $e");
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text('Error refreshing data: $e'),
+            backgroundColor: Colors.red));
+      }
+    } finally {
+      if (mounted) setState(() => _isLoadingPrescription = false);
+    }
+  }
+
+  void _applyNewDetailsToPage(Map<String, Map<String, double>> layout) {
+    // 1. Prepare Data Strings
+    final String name = _patientDetails['name'] ?? '';
+
+    String fullUhid = widget.uhid;
+    final String uhid = fullUhid.length > 5
+        ? fullUhid.substring(fullUhid.length - 5)
+        : fullUhid;
+
+    final String ipd = widget.ipdId.toString();
+    final String ageVal = _patientDetails['age']?.toString() ?? '';
+    final String sexVal = _patientDetails['gender'] ?? '';
+    final String ageSex = "$ageVal / $sexVal";
+    final String doa = _ipdRegistrationDetails['admission_date']?.toString() ?? '';
+    final String admTime = _ipdRegistrationDetails['admission_time']?.toString() ?? '';
+    final String consultant = _ipdRegistrationDetails['under_care_of_doctor'] ?? '';
+    String room = _bedDetails['room_type']?.toString() ?? '';
+    String bedNo = _bedDetails['bed_number']?.toString() ?? '';
+    final String soWoDo = _ipdRegistrationDetails['so_wo_do'] ?? '';
+    final String roomWard = "$room / $bedNo";
+    final String contact = _patientDetails['number']?.toString() ?? '';
+    String address = _patientDetails['address'] ?? '';
+    if (address.isEmpty) address = _ipdRegistrationDetails['relative_address'] ?? '';
+    final String referredBy = _ipdRegistrationDetails['admission_source'] ?? '';
+
+
+    // 2. Get Current Texts
+    final currentPage = _viewablePages[_currentPageIndex];
+    List<DrawingText> currentTexts = List.from(currentPage.texts);
+
+    // 3. Remove OLD auto-filled texts
+    // We identify them by checking if they are at the exact coordinates defined in the layout
+    for (var config in layout.values) {
+      final targetPos = Offset(config['x']!, config['y']!);
+      currentTexts.removeWhere((t) =>
+      (t.position.dx - targetPos.dx).abs() < 1.0 &&
+          (t.position.dy - targetPos.dy).abs() < 1.0);
+
+      // Also remove the overflow address line if it exists
+      if (_indoorFileLayout.containsKey('address_line_2')) {
+        final addr2Config = _indoorFileLayout['address_line_2']!;
+        final addr2Pos = Offset(addr2Config['x']!, addr2Config['y']!);
+        currentTexts.removeWhere((t) =>
+        (t.position.dx - addr2Pos.dx).abs() < 1.0 &&
+            (t.position.dy - addr2Pos.dy).abs() < 1.0);
+      }
+    }
+
+    // 4. Create NEW texts
+    List<DrawingText> newTexts = [];
+    void addText(String key, String value) {
+      if (value.isEmpty || !layout.containsKey(key)) return;
+      final config = layout[key]!;
+      newTexts.add(DrawingText(
+        id: generateUniqueId(),
+        text: value,
+        position: Offset(config['x']!, config['y']!),
+        colorValue: Colors.black.value,
+        fontSize: 15.0,
+      ));
+    }
+
+    // Add fields (Checks against layout map, so safe for both layouts)
+    addText('patient_name', name);
+    addText('so_wo_do', soWoDo); // <-- ADD THIS LINE
+    addText('age', (layout == _indoorFileLayout) ? ageVal : ageSex); // Indoor file splits age/sex
+    addText('sex', sexVal);
+    addText('uhid', uhid);
+    addText('room_ward', roomWard);
+    addText('bed_details', roomWard); // Indoor file uses this key
+    addText('ipd_no', ipd);
+    addText('doa', doa);
+    addText('admission_date', doa); // Indoor file uses this key
+    addText('admission_time', admTime);
+    addText('consultant', consultant);
+    addText('contact', contact);
+    addText('referred_dr', referredBy);
+
+    // Special Address Logic for Indoor File
+    if (layout == _indoorFileLayout && address.isNotEmpty) {
+      final config1 = _indoorFileLayout['address']!;
+      final config2 = _indoorFileLayout['address_line_2']!;
+      int charsPerLine1 = (config1['width']! / 12).floor();
+
+      if (address.length <= charsPerLine1) {
+        addText('address', address);
+      } else {
+        int splitIndex = address.lastIndexOf(' ', charsPerLine1);
+        if (splitIndex == -1) splitIndex = charsPerLine1;
+        addText('address', address.substring(0, splitIndex));
+
+        // Add line 2 manually
+        newTexts.add(DrawingText(
+          id: generateUniqueId(),
+          text: address.substring(splitIndex).trim(),
+          position: Offset(config2['x']!, config2['y']!),
+          colorValue: Colors.black.value,
+          fontSize: 15.0,
+        ));
+      }
+    }
+
+    // 5. Merge and Save
+    currentTexts.addAll(newTexts);
+
+    setState(() {
+      _viewablePages[_currentPageIndex] = currentPage.copyWith(texts: currentTexts);
+    });
+    _savePrescriptionData();
+  }
+
+  static final Map<String, Map<String, double>> _progressNoteLayout = {
+    // ADJUST 'x' AND 'y' TO MATCH YOUR TEMPLATE LINES
+    'patient_name': {'x': 194, 'y': 228},
+    'uhid':         {'x': 500, 'y': 258},
+
+    'room_ward':    {'x': 200, 'y': 258},
+    'ipd_no':       {'x': 682, 'y': 258},
+    'age':          {'x': 834, 'y': 228},
+    'doa':          {'x': 808, 'y': 258},
+    'consultant':   {'x': 155, 'y': 289},
+  };
+
+
+
   static final Map<String, Map<String, double>> _indoorFileLayout = {
     // Line 1: Patient Name
-    'patient_name':   {'x': 191, 'y': 730, 'width': 400},
-
+    'patient_name':   {'x': 191, 'y': 740, 'width': 400},
+    'so_wo_do':       {'x': 194, 'y': 780, 'width': 200},
     // Line 3: Age / Sex / Date / Time
-    'age':            {'x': 108, 'y': 815, 'width': 80},
-    'sex':            {'x': 215, 'y': 815, 'width': 80},
-    'admission_date': {'x': 445, 'y': 815, 'width': 200},
-    'admission_time': {'x': 745, 'y': 815, 'width': 100},
+    'age':            {'x': 113, 'y': 823, 'width': 80},
+    'sex':            {'x': 215, 'y': 823, 'width': 80},
+    'admission_date': {'x': 445, 'y': 823, 'width': 200},
+    'admission_time': {'x': 745, 'y': 823, 'width': 100},
 
     // Line 4: UHID / IPD / Address
-    'uhid':           {'x': 156, 'y': 852, 'width': 200},
-    'ipd_no':         {'x': 461, 'y': 852, 'width': 180},
-    'address':        {'x': 740, 'y': 852, 'width': 200}, // Very small space on form
+    'uhid':           {'x': 156, 'y': 862, 'width': 200},
+    'ipd_no':         {'x': 461, 'y': 862, 'width': 180},
+    'address':        {'x': 740, 'y': 862, 'width': 300}, // Very small space on form
 
     // Overflow Address (Placed slightly below if needed, or you can map it to S/o line)
-    'address_line_2': {'x': 73,  'y': 893, 'width': 900},
+    'address_line_2': {'x': 73,  'y': 903, 'width': 1000},
 
     // Line 5: Contact No
-    'contact':        {'x': 175, 'y': 937, 'width': 400},
+    'contact':        {'x': 175, 'y': 947, 'width': 400},
 
     // Line 6: Consultant
-    'consultant':     {'x': 233, 'y': 979, 'width': 450},
+    'consultant':     {'x': 233, 'y': 989, 'width': 450},
 
     // Line 7: Bed / Referred Dr
-    'bed_details':    {'x': 210, 'y': 1021, 'width': 300},
-    'referred_dr':    {'x': 570, 'y': 1021, 'width': 300},
+    'bed_details':    {'x': 214, 'y': 1031, 'width': 300},
+    'referred_dr':    {'x': 574, 'y': 1031, 'width': 300},
   };
+  Future<CroppedFile?> _cropImage(XFile pickedFile) async {
+    return await ImageCropper().cropImage(
+      sourcePath: pickedFile.path,
+      // Compress quality to keep uploads fast
+      compressQuality: 80,
+      // UI Settings for Android and iOS
+      uiSettings: [
+        AndroidUiSettings(
+          toolbarTitle: 'Crop & Rotate',
+          toolbarColor: primaryBlue,
+          toolbarWidgetColor: Colors.white,
+          initAspectRatio: CropAspectRatioPreset.original,
+          lockAspectRatio: false,
+        ),
+        IOSUiSettings(
+          title: 'Crop & Rotate',
+        ),
+      ],
+    );
+  }
+
+
+  // --- UPDATED FUNCTION TO HANDLE MULTIPLE GROUPS ---
+  void _autoFillCommonPages() {
+    final String groupNameLower = widget.groupName.toLowerCase();
+
+    // 1. Check if the current group is one of the allowed types
+    bool isAllowedGroup = groupNameLower.contains('progress') ||
+        groupNameLower.contains('nursing notes') ||
+        groupNameLower.contains('dr visit') ||
+        groupNameLower.contains('glucose') ||
+
+        groupNameLower.contains('patient charges');
+        // groupNameLower.contains('tpr');
+
+    if (!isAllowedGroup) return;
+
+    if (_viewablePages.isEmpty) return;
+
+    // 2. Prepare Data
+    final String name = _patientDetails['name'] ?? '';
+
+    // UHID (Last 5 digits)
+    String fullUhid = widget.uhid;
+    final String uhid = fullUhid.length > 5
+        ? fullUhid.substring(fullUhid.length - 5)
+        : fullUhid;
+
+    final String ipd = widget.ipdId.toString();
+    final String ageVal = _patientDetails['age']?.toString() ?? '';
+    final String sexVal = _patientDetails['gender'] ?? '';
+    final String soWoDo = _ipdRegistrationDetails['so_wo_do'] ?? '';
+    final String ageSex = "$ageVal / $sexVal";
+    final String doa = _ipdRegistrationDetails['admission_date']?.toString() ?? '';
+    final String consultant = _ipdRegistrationDetails['under_care_of_doctor'] ?? '';
+
+    String room = _bedDetails['room_type']?.toString() ?? '';
+    String bedNo = _bedDetails['bed_number']?.toString() ?? '';
+    final String roomWard = "$room / $bedNo";
+
+    bool dataChanged = false;
+    List<DrawingPage> updatedPages = [..._viewablePages];
+
+    // 3. Loop through ALL pages in this group
+    for (int i = 0; i < updatedPages.length; i++) {
+      // Only fill if the page is currently empty (has no text)
+      if (updatedPages[i].texts.isNotEmpty) continue;
+
+      List<DrawingText> newTexts = [];
+
+      void addText(String key, String value) {
+        // Uses the SAME layout (_progressNoteLayout) for all these groups
+        if (value.isEmpty || !_progressNoteLayout.containsKey(key)) return;
+        final config = _progressNoteLayout[key]!;
+        newTexts.add(DrawingText(
+          id: generateUniqueId(),
+          text: value,
+          position: Offset(config['x']!, config['y']!),
+          colorValue: Colors.black.value,
+          fontSize: 15.0,
+        ));
+      }
+
+      addText('patient_name', name);
+      addText('age', ageSex);
+      addText('so_wo_do', soWoDo); // Now this will work
+      addText('uhid', uhid);
+      addText('room_ward', roomWard);
+      addText('ipd_no', ipd);
+      addText('doa', doa);
+      addText('consultant', consultant);
+
+      if (newTexts.isNotEmpty) {
+        updatedPages[i] = updatedPages[i].copyWith(texts: newTexts);
+        dataChanged = true;
+      }
+    }
+
+    // 4. Save if any page was updated
+    if (dataChanged) {
+      setState(() {
+        _viewablePages = updatedPages;
+      });
+      _savePrescriptionData();
+    }
+  }
+
+    // 4. Save if any page was updated
+
+
+
 // --- 2. NEW: PASTE THIS ENTIRE FUNCTION ---
   void _autoFillIndoorPatientFile() {
     // Only run for "Indoor Patient File" and only if the page is empty
@@ -143,6 +447,7 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
 
     // Prepare Data safely
     final String name = _patientDetails['name'] ?? '';
+    final String soWoDo = _ipdRegistrationDetails['so_wo_do'] ?? '';
     final String age = _patientDetails['age']?.toString() ?? '';
     final String sex = _patientDetails['gender'] ?? '';
     final String uhid = widget.uhid;
@@ -171,7 +476,7 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
         text: value,
         position: Offset(config['x']!, config['y']!),
         colorValue: Colors.black.value,
-        fontSize: 22.0,
+        fontSize: 15.0,
       ));
     }
 
@@ -179,6 +484,7 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     addText('age', age);
     addText('sex', sex);
     addText('admission_date', admDate);
+    addText('so_wo_do', soWoDo); // <-- ADD THIS LINE
     addText('admission_time', admTime);
     addText('uhid', uhid);
     addText('ipd_no', ipd);
@@ -205,7 +511,7 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
           text: address.substring(splitIndex).trim(),
           position: Offset(config2['x']!, config2['y']!),
           colorValue: Colors.black.value,
-          fontSize: 22.0,
+          fontSize: 15.0,
         ));
       }
     }
@@ -226,7 +532,7 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
   String? _healthRecordId;
   DrawingGroup? _currentGroup;
   List<DrawingPage> _pagesInCurrentGroup = [];
-  _CopiedPageData? _copiedPageData;
+  // _CopiedPageData? _copiedPageData;
   List<UploadedImage> _userUploadedImages = [];
   List<StampImage> _stamps = [];
   String _patientName = 'Loading Patient Name...';
@@ -286,9 +592,9 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
 
   void _clearCopiedContent() {
     HapticFeedback.mediumImpact();
-    setState(() {
-      _copiedPageData = null;
-    });
+    // REPLACE:
+    AppClipboard().clear();
+
     ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
         content: Text('Copied content cleared.'),
         backgroundColor: Colors.red,
@@ -296,19 +602,12 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
   }
 
   Widget _buildFloatingCopyPasteButton() {
-    // Hide this button when paste transformation is active
-    if (_copiedPageData == null || _isTransformingPastedContent) {
+    // REPLACE CHECK:
+    if (!AppClipboard().hasData || _isTransformingPastedContent) {
       return const SizedBox.shrink();
     }
 
-    // Determine if content is available (copied lines or images)
-    final bool hasContent = (_copiedPageData?.lines.isNotEmpty ?? false) ||
-        (_copiedPageData?.images.isNotEmpty ?? false);
-
-    if (!hasContent) {
-      return const SizedBox.shrink();
-    }
-
+    // Determine if content is available (Logic handled by AppClipboard now)
     return Positioned(
       bottom: 20,
       right: 20,
@@ -348,19 +647,16 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
   }
 
   // --- Drawing State ---
+  // --- Drawing State ---
   Color _currentColor = Colors.black;
   double _strokeWidth = 2.0;
   DrawingTool _selectedTool = DrawingTool.pen;
-  bool _isEnhancedHandwriting = false;
-  bool _isPressureSensitive = false; // --- ADDED: For pressure sensitivity
-  bool _isVelocitySensitive = false; // --- ADDED: For velocity sensitivity
-  Duration _lastMoveTimestamp = Duration.zero; // --- ADDED: For velocity calculation
 
-  // --- ADDED: Velocity calculation constants ---
-  // Tuned to feel natural: pixels per microsecond
-  static const double _kMinDrawVelocity = 0.0005;
-  static const double _kMaxDrawVelocity = 0.008;
-  // --- END ADDED ---
+  // REMOVED: _isEnhancedHandwriting, _isVelocitySensitive, _lastMoveTimestamp
+  // KEPT: Pressure Sensitivity
+  bool _isPressureSensitive = false;
+
+  // REMOVED: Velocity constants (_kMinDrawVelocity, etc.)
 
   List<Offset> _lassoPoints = [];
 
@@ -396,11 +692,13 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     _fetchUserUploadedImages();
     _fetchStamps();
     _transformationController.addListener(_onTransformUpdated);
+    AppClipboard().hasDataNotifier.addListener(_onClipboardChanged);
   }
 
   @override
   void dispose() {
     _isDisposed = true;
+    AppClipboard().hasDataNotifier.removeListener(_onClipboardChanged);
     _debounceTimer?.cancel();
     if (_healthRecordChannel != null) {
       supabase.removeChannel(_healthRecordChannel!);
@@ -412,7 +710,9 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     ImageCacheManager.clear();
     super.dispose();
   }
-
+  void _onClipboardChanged() {
+    if (mounted) setState(() {});
+  }
   String _getFullImageUrl(String relativePath) {
     if (relativePath.isEmpty) return '';
     if (relativePath.startsWith('http')) return relativePath;
@@ -429,7 +729,9 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     final String? currentPageIdBeforeRefresh = _viewablePages.isNotEmpty
         ? _viewablePages[_currentPageIndex].id
         : widget.pageId;
+
     setState(() => _isLoadingPrescription = true);
+
     try {
       final columnName =
           _groupToColumnMap[widget.groupName] ?? 'custom_groups_data';
@@ -505,10 +807,11 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
           _pageController = PageController(initialPage: _currentPageIndex);
         }
 
-        // --- NEW: TRIGGER AUTO FILL HERE ---
+        // --- MOVED: Trigger Auto Fill HERE (After data is loaded) ---
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (mounted) {
             _autoFillIndoorPatientFile();
+            _autoFillCommonPages();
           }
         });
         // ----------------------------------
@@ -827,53 +1130,62 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
   }
 
   Future<void> _pickAndUploadImage(ImageSource source) async {
-    // ... (implementation unchanged)
-    final XFile? pickedFile = await _picker.pickImage(source: source);
+    try {
+      // 1. Pick the image
+      final XFile? pickedFile = await _picker.pickImage(source: source);
+      if (pickedFile == null) return; // User cancelled picking
 
-    if (pickedFile != null) {
+      // 2. Crop the image
+      final CroppedFile? croppedFile = await _cropImage(pickedFile);
+      if (croppedFile == null) return; // User cancelled cropping
+
       setState(() => _isSaving = true);
-      try {
-        final imageFile = await pickedFile.readAsBytes();
-        final fileName =
-            '${generateUniqueId()}.${pickedFile.path.split('.').last}';
-        final storagePath = 'public/images/${widget.uhid}/$fileName';
 
-        await supabase.storage.from(kSupabaseBucketName).uploadBinary(
-          storagePath,
-          imageFile,
-          fileOptions: const FileOptions(cacheControl: '3600', upsert: false),
-        );
+      // 3. Prepare upload using the CROPPED file
+      final imageBytes = await croppedFile.readAsBytes();
+      final fileName = '${generateUniqueId()}.${pickedFile.path.split('.').last}'; // Keep original extension
+      final storagePath = 'public/images/${widget.uhid}/$fileName';
 
-        final publicUrl =
-        supabase.storage.from(kSupabaseBucketName).getPublicUrl(storagePath);
+      // 4. Upload to Supabase
+      await supabase.storage.from(kSupabaseBucketName).uploadBinary(
+        storagePath,
+        imageBytes,
+        fileOptions: const FileOptions(cacheControl: '3600', upsert: false),
+      );
 
-        _addImageToCanvas(publicUrl);
-        await _fetchUserUploadedImages();
+      // 5. Get URL and Add to Canvas
+      final publicUrl = supabase.storage
+          .from(kSupabaseBucketName)
+          .getPublicUrl(storagePath);
 
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-              content: Text('Image uploaded and added!'),
-              backgroundColor: Colors.green));
-        }
-      } on StorageException catch (e) {
-        debugPrint('Supabase Storage Error: ${e.message}');
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-              content: Text('Image upload failed: ${e.message}'),
-              backgroundColor: Colors.red));
-        }
-      } catch (e) {
-        debugPrint('General Image Error: $e');
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-              content: Text('Image handling failed: $e'),
-              backgroundColor: Colors.red));
-        }
-      } finally {
-        if (mounted) setState(() => _isSaving = false);
+      _addImageToCanvas(publicUrl);
+
+      // Refresh the "Uploaded Images" list in the background
+      await _fetchUserUploadedImages();
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text('Image cropped and uploaded successfully!'),
+            backgroundColor: Colors.green));
       }
+    } on StorageException catch (e) {
+      debugPrint('Supabase Storage Error: ${e.message}');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text('Upload failed: ${e.message}'),
+            backgroundColor: Colors.red));
+      }
+    } catch (e) {
+      debugPrint('General Image Error: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text('Error: $e'), backgroundColor: Colors.red));
+      }
+    } finally {
+      if (mounted) setState(() => _isSaving = false);
     }
   }
+
 
   void _addImageToCanvas(String publicUrl) {
     // ... (implementation unchanged)
@@ -1062,9 +1374,14 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     );
   }
 
+
+
+
+
+
+
   // --- Pointer and Interaction Handlers ---
   void _handlePointerDown(PointerDownEvent details) {
-    // ... (implementation unchanged)
     final transformedPosition =
     _transformToCanvasCoordinates(details.localPosition);
     if (!_isPointOnCanvas(transformedPosition)) return;
@@ -1073,15 +1390,11 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     setState(() =>
     _isStylusInteraction = details.kind == ui.PointerDeviceKind.stylus);
 
-    // --- ADDED: Handle Paste Transformation Drag Start ---
+    // Handle Paste Transformation Drag Start
     if (_isTransformingPastedContent) {
-      // Find where the drag starts relative to the content's origin
-      // This is used to maintain the relative position during the drag move
       _pasteDragStartLocal = transformedPosition - _pastedTransformData!.offset;
-      return; // Consume the event for movement
+      return;
     }
-    // --- END ADDED ---
-
 
     if (_selectedTool == DrawingTool.lasso) {
       setState(() {
@@ -1109,7 +1422,8 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
 
       if (hitSelectedImage) {
         if (_isMovingSelectedImage) {
-          _dragStartCanvasPosition = transformedPosition - selectedImage!.position;
+          _dragStartCanvasPosition =
+              transformedPosition - selectedImage!.position;
         } else {
           _handleCanvasTap(transformedPosition);
         }
@@ -1121,21 +1435,14 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     }
 
     if (_isPenOnlyMode && _isStylusInteraction) {
-      // --- ADDED: Store initial timestamp for velocity ---
-      _lastMoveTimestamp = details.timeStamp;
-      // --- END ADDED ---
-
       if (_selectedTool == DrawingTool.pen) {
         setState(() {
           final newLine = DrawingLine(
-              points: [transformedPosition],
-              colorValue: _currentColor.value,
-              strokeWidth: _strokeWidth,
-              // --- MODIFIED: Capture pressure OR velocity ---
-              pressure: _isPressureSensitive
-                  ? [details.pressure]
-                  : (_isVelocitySensitive ? [0.5] : null) // Start with neutral pressure
-            // --- END MODIFIED ---
+            points: [transformedPosition],
+            colorValue: _currentColor.value,
+            strokeWidth: _strokeWidth,
+            // UPDATED: Only check pressure sensitivity
+            pressure: _isPressureSensitive ? [details.pressure] : null,
           );
           _viewablePages[_currentPageIndex] =
               currentPage.copyWith(lines: [...currentPage.lines, newLine]);
@@ -1144,30 +1451,33 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     }
   }
 
+
+
+
+
+
+
   void _handlePointerMove(PointerMoveEvent details) {
-    // ... (implementation unchanged)
     final transformedPosition =
     _transformToCanvasCoordinates(details.localPosition);
     if (!_isPointOnCanvas(transformedPosition)) return;
 
-    // --- ADDED: Handle Paste Transformation Drag Move ---
+    // Handle Paste Transformation Drag Move
     if (_isTransformingPastedContent && _pasteDragStartLocal != null) {
       final newOffset = transformedPosition - _pasteDragStartLocal!;
-
       setState(() {
         _pastedTransformData = _pastedTransformData!.copyWith(
           offset: newOffset,
         );
-        _redrawNotifier.value = 1 - _redrawNotifier.value; // Force redraw
+        _redrawNotifier.value = 1 - _redrawNotifier.value;
       });
       return;
     }
-    // --- END ADDED ---
 
     if (_selectedTool == DrawingTool.lasso) {
       setState(() {
         _lassoPoints = [..._lassoPoints, transformedPosition];
-        _redrawNotifier.value = 1 - _redrawNotifier.value; // Force redraw of lasso
+        _redrawNotifier.value = 1 - _redrawNotifier.value;
       });
       return;
     }
@@ -1189,43 +1499,13 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
           final lastLine = currentPage.lines.last;
           final newPoints = [...lastLine.points, transformedPosition];
 
-          // --- MODIFIED: Capture pressure OR velocity ---
+          // UPDATED: Only capture pressure if enabled, remove velocity logic
           List<double>? newPressures = lastLine.pressure;
           if (_isPressureSensitive) {
-            // 1. Use real stylus pressure
             newPressures = [...(lastLine.pressure ?? []), details.pressure];
-          } else if (_isVelocitySensitive) {
-            // 2. Calculate and use velocity-based "pressure"
-            final timeDelta = details.timeStamp - _lastMoveTimestamp;
-            double currentVelocity = 0.0;
-            // Avoid division by zero if events are too fast
-            if (timeDelta.inMicroseconds > 0) {
-              currentVelocity = details.delta.distance / timeDelta.inMicroseconds;
-            }
-            _lastMoveTimestamp = details.timeStamp;
-
-            // Normalize velocity: 0.0 (slow) to 1.0 (fast)
-            final normalizedVelocity = ((currentVelocity - _kMinDrawVelocity) /
-                (_kMaxDrawVelocity - _kMinDrawVelocity))
-                .clamp(0.0, 1.0);
-
-            // Inverse: Slow (0.0) -> Wide (1.0), Fast (1.0) -> Thin (0.0)
-            final fakePressure = 1.0 - normalizedVelocity;
-
-            // Smooth it with the previous value to avoid jitters
-            final lastPressure = newPressures?.last ?? 0.5;
-            final smoothedPressure = (lastPressure * 0.6) + (fakePressure * 0.4);
-
-            newPressures = [
-              ...(lastLine.pressure ?? []),
-              smoothedPressure.clamp(0.0, 1.0) // Ensure it stays in bounds
-            ];
           }
-          // --- END MODIFIED ---
 
           final updatedLines = List<DrawingLine>.from(currentPage.lines);
-
-          // --- MODIFIED: Pass new pressures to copyWith ---
           updatedLines.last = lastLine.copyWith(
               points: newPoints, pressure: newPressures);
 
@@ -1237,7 +1517,6 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
       }
     }
   }
-
   void _handlePointerUp(PointerUpEvent details) {
     // ... (implementation unchanged)
 
@@ -1302,9 +1581,11 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     });
   }
 
+
+
+
   // --- Utility & Action Methods ---
   void _copySelectedContent() {
-    // ... (implementation unchanged)
     if (_lassoPoints.length < 3) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
           content: Text('Draw a closed shape to copy content.'),
@@ -1313,10 +1594,8 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
       return;
     }
 
-    // The second line is the problem: it uses the last point's Y-coordinate for ALL intermediate points.
     final path = Path()..moveTo(_lassoPoints.first.dx, _lassoPoints.first.dy);
     for (int i = 1; i < _lassoPoints.length; i++) {
-      // FIX: Use the current point's coordinates (dx, dy)
       path.lineTo(_lassoPoints[i].dx, _lassoPoints[i].dy);
     }
     path.close();
@@ -1325,32 +1604,26 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     final copiedLines = <DrawingLine>[];
     final copiedImages = <DrawingImage>[];
 
-    // 2. COPY LINES (New Robust Logic)
-    // The 'oversampling' step dramatically increases hit accuracy.
-    const double samplingDistance = 5.0; // Check a point every 5 pixels
+    // 2. COPY LINES
+    const double samplingDistance = 5.0;
 
     for (var line in currentPage.lines) {
       bool foundIntersection = false;
       final points = line.points;
 
-      // A. Check actual recorded points (simple check)
       if (points.any((p) => path.contains(p))) {
         foundIntersection = true;
       } else {
-        // B. Check oversampled points (robust check)
         for (int i = 0; i < points.length - 1; i++) {
           final p1 = points[i];
           final p2 = points[i + 1];
           final distance = (p2 - p1).distance;
 
-          // Only oversample segments longer than the sampling distance
           if (distance > samplingDistance) {
             final int steps = (distance / samplingDistance).ceil();
             for (int j = 1; j < steps; j++) {
-              // Linear interpolation (LERP) to find an intermediate point
               final double t = j / steps;
               final intermediatePoint = Offset.lerp(p1, p2, t)!;
-
               if (path.contains(intermediatePoint)) {
                 foundIntersection = true;
                 break;
@@ -1366,12 +1639,10 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
       }
     }
 
-    // 3. COPY IMAGES (Original Logic - this is generally correct)
+    // 3. COPY IMAGES
     for (var image in currentPage.images) {
       final imageRect = Rect.fromLTWH(
           image.position.dx, image.position.dy, image.width, image.height);
-
-      // Check if the center of the image is inside the lasso path
       final imageCenter = imageRect.center;
       if (path.contains(imageCenter)) {
         copiedImages.add(image.copyWith());
@@ -1386,12 +1657,11 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
       return;
     }
 
-    setState(() {
-      _copiedPageData = _CopiedPageData(
-        lines: copiedLines,
-        images: copiedImages,
-      );
-    });
+    // REPLACE SAVING LOGIC:
+    AppClipboard().setData(CopiedPageData(
+      lines: copiedLines,
+      images: copiedImages,
+    ));
 
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
         content: Text(
@@ -1423,15 +1693,15 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
   }
 
   void _copyPageContent() {
-    // ... (implementation unchanged)
     if (_viewablePages.isEmpty) return;
     final currentPage = _viewablePages[_currentPageIndex];
-    setState(() {
-      _copiedPageData = _CopiedPageData(
-        lines: currentPage.lines.map((line) => line.copyWith()).toList(),
-        images: currentPage.images.map((image) => image.copyWith()).toList(),
-      );
-    });
+
+    // REPLACE SAVING LOGIC:
+    AppClipboard().setData(CopiedPageData(
+      lines: currentPage.lines.map((line) => line.copyWith()).toList(),
+      images: currentPage.images.map((image) => image.copyWith()).toList(),
+    ));
+
     ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
         content: Text('Full page content copied!'),
         backgroundColor: Colors.green,
@@ -1439,7 +1709,10 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
   }
 
   void _pastePageContent() {
-    if (_copiedPageData == null) {
+    // REPLACE GETTING LOGIC:
+    final clipboardData = AppClipboard().getData();
+
+    if (clipboardData == null) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
           content: Text('Nothing to paste.'),
           backgroundColor: Colors.orange,
@@ -1448,25 +1721,23 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     }
     if (_viewablePages.isEmpty) return;
 
-    // 1. Assign new unique IDs to pasted images to avoid ID conflicts
-    final pastedImagesWithNewIds = _copiedPageData!.images
+    // 1. Assign new unique IDs to pasted images
+    final pastedImagesWithNewIds = clipboardData.images
         .map((imageToCopy) => imageToCopy.copyWith(id: generateUniqueId()))
         .toList();
 
     // 2. Set the state to start transforming the pasted content
     setState(() {
-      // FIX: Set initial offset to Offset.zero so the content appears at its original location
       _pastedTransformData = _PastedTransformData(
-        // Copy lines and images directly (they will be offset/scaled by the painter)
-        lines: _copiedPageData!.lines.map((line) => line.copyWith()).toList(),
+        lines: clipboardData.lines.map((line) => line.copyWith()).toList(),
         images: pastedImagesWithNewIds,
-        offset: Offset.zero, // Default to original copy position (0,0 offset)
+        offset: Offset.zero,
         scale: 1.0,
       );
       _isTransformingPastedContent = true;
-      _selectedTool = DrawingTool.image; // Use Image tool for manipulation
-      _selectedImageId = null; // Clear image selection
-      _isMovingSelectedImage = false; // Clear moving state
+      _selectedTool = DrawingTool.image;
+      _selectedImageId = null;
+      _isMovingSelectedImage = false;
     });
 
     ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
@@ -1514,6 +1785,10 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
       _isTransformingPastedContent = false;
       _selectedTool = DrawingTool.pen; // Return to default tool
     });
+
+
+
+
 
     _debouncedSave();
     ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
@@ -2247,6 +2522,22 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
               tooltip: 'Patient Details',
               onPressed: _showPatientDetailsModal,
             ),
+
+            // --- NEW BUTTON: REFRESH DETAILS ---
+            IconButton(
+              icon: const Icon(Icons.sync, color: Colors.orange),
+              tooltip: 'Refresh & Update Details from Server',
+              onPressed: _isLoadingPrescription ? null : _refreshAndApplyDetails,
+            ),
+            // -----------------------------------
+
+            // ... existing PiP button ...
+            IconButton(
+              icon: Icon(Icons.picture_in_picture_alt_outlined,
+                  color: _isPipWindowVisible ? Colors.red : primaryBlue),
+              tooltip: 'Open Reference Window',
+              onPressed: _togglePipWindow,
+            ),
             // --- UPDATED: PiP Window Button (No change here) ---
             IconButton(
               icon: Icon(Icons.picture_in_picture_alt_outlined,
@@ -2372,12 +2663,11 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
                         index == _currentPageIndex ? _lassoPoints : [],
                         transformationController: _transformationController,
                         panScaleEnabled: panScaleEnabled,
-                        isEnhancedHandwriting: _isEnhancedHandwriting,
-                        // --- ADDED: Pass pressure state and pasted transform data ---
+                        // --- UPDATED ARGUMENTS ---
                         isPressureSensitive: _isPressureSensitive,
-                        isVelocitySensitive: _isVelocitySensitive, // --- ADDED ---
-                        pastedTransformData: index == _currentPageIndex ? _pastedTransformData : null, // Pass only to current page
-                        // --- END ADDED ---
+                        pastedTransformData: index == _currentPageIndex ? _pastedTransformData : null,
+                        // REMOVED: isEnhancedHandwriting, isVelocitySensitive
+                        // -------------------------
                         onTap: (details) {
                           if (!_isTransformingPastedContent && _selectedTool == DrawingTool.image &&
                               !_isStylusInteraction &&
@@ -2483,7 +2773,6 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
   }
 
   Widget _buildPageActionsMenu() {
-    // ... (implementation unchanged)
     return PopupMenuButton<String>(
       onSelected: (String value) {
         if (value == 'copy_full')
@@ -2491,7 +2780,7 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
         else if (value == 'paste')
           _pastePageContent();
         else if (value == 'clear_copy')
-          _clearCopiedContent(); // <-- ADDED
+          _clearCopiedContent();
         else if (value == 'camera')
           _pickAndUploadImage(ImageSource.camera);
         else if (value == 'gallery')
@@ -2508,13 +2797,14 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
             child: ListTile(
                 leading: Icon(Icons.copy_all_rounded),
                 title: Text('Copy Full Page'))),
-        if (_copiedPageData != null)
+        // REPLACE CHECKS:
+        if (AppClipboard().hasData)
           const PopupMenuItem<String>(
               value: 'paste',
               child: ListTile(
                   leading: Icon(Icons.paste_rounded),
                   title: Text('Paste on Page'))),
-        if (_copiedPageData != null) // <-- ADDED
+        if (AppClipboard().hasData)
           const PopupMenuItem<String>(
               value: 'clear_copy',
               child: ListTile(
@@ -2545,15 +2835,16 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     );
   }
 
+
+
+
   Widget _buildDrawingToolbar() {
-    // --- MODIFIED: Added Pressure Sensitive Button ---
     return SingleChildScrollView(
       scrollDirection: Axis.horizontal,
       child: Row(
         mainAxisAlignment: MainAxisAlignment.start,
         children: [
           ToggleButtons(
-            // Disable while transforming paste content
             onPressed: _isTransformingPastedContent ? null : (index) {
               HapticFeedback.selectionClick();
               setState(() {
@@ -2598,35 +2889,10 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
           const SizedBox(width: 8),
 
           if (_selectedTool == DrawingTool.pen) ...[
-            // Enhanced Handwriting (Smoothing)
+            // KEPT: Pressure Sensitivity Toggle Only
             IconButton(
               icon: Icon(
-                _isEnhancedHandwriting ? Icons.auto_awesome : Icons.timeline,
-                color: _isEnhancedHandwriting ? primaryBlue : mediumGreyText,
-                size: 22,
-              ),
-              tooltip: _isEnhancedHandwriting
-                  ? 'Good Handwriting Mode (ON)'
-                  : 'Normal Handwriting Mode (OFF)',
-              onPressed: _isTransformingPastedContent ? null : () {
-                setState(() {
-                  _isEnhancedHandwriting = !_isEnhancedHandwriting;
-                  _redrawNotifier.value = 1 - _redrawNotifier.value;
-                });
-                HapticFeedback.lightImpact();
-                ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-                  content: Text(_isEnhancedHandwriting
-                      ? 'Good Handwriting Mode Activated'
-                      : 'Normal Handwriting Mode Activated'),
-                  backgroundColor: primaryBlue,
-                  duration: const Duration(seconds: 2),
-                ));
-              },
-            ),
-            // --- MODIFIED: Pressure Sensitivity Toggle (Added mutual exclusion) ---
-            IconButton(
-              icon: Icon(
-                Icons.opacity, // Icon implying "dark and light"
+                Icons.opacity,
                 color: _isPressureSensitive ? primaryBlue : mediumGreyText,
                 size: 22,
               ),
@@ -2636,9 +2902,6 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
               onPressed: _isTransformingPastedContent ? null : () {
                 setState(() {
                   _isPressureSensitive = !_isPressureSensitive;
-                  // --- ADDED: Mutual exclusion ---
-                  if (_isPressureSensitive) _isVelocitySensitive = false;
-                  // --- END ADDED ---
                   _redrawNotifier.value = 1 - _redrawNotifier.value;
                 });
                 HapticFeedback.lightImpact();
@@ -2651,37 +2914,6 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
                 ));
               },
             ),
-            // --- END MODIFIED ---
-
-            // --- ADDED: Velocity Sensitivity Toggle ---
-            IconButton(
-              icon: Icon(
-                Icons.double_arrow_rounded, // Icon implying speed/flow
-                color: _isVelocitySensitive ? primaryBlue : mediumGreyText,
-                size: 22,
-              ),
-              tooltip: _isVelocitySensitive
-                  ? 'Velocity-based Width (ON)'
-                  : 'Velocity-based Width (OFF)',
-              onPressed: _isTransformingPastedContent ? null : () {
-                setState(() {
-                  _isVelocitySensitive = !_isVelocitySensitive;
-                  // --- ADDED: Mutual exclusion ---
-                  if (_isVelocitySensitive) _isPressureSensitive = false;
-                  // --- END ADDED ---
-                  _redrawNotifier.value = 1 - _redrawNotifier.value;
-                });
-                HapticFeedback.lightImpact();
-                ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-                  content: Text(_isVelocitySensitive
-                      ? 'Velocity-based Width Activated'
-                      : 'Velocity-based Width Deactivated'),
-                  backgroundColor: primaryBlue,
-                  duration: const Duration(seconds: 2),
-                ));
-              },
-            ),
-            // --- END ADDED ---
           ],
 
           const SizedBox(width: 8),
@@ -2720,11 +2952,6 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
               const Icon(Icons.undo_rounded, color: primaryBlue, size: 22),
               onPressed: _isTransformingPastedContent ? null : _undoLastAction,
               tooltip: "Undo"),
-          // IconButton(
-          //     icon: const Icon(Icons.delete_sweep_rounded,
-          //         color: primaryBlue, size: 22),
-          //     onPressed: _clearAllDrawings,
-          //     tooltip: "Clear All"),
         ],
       ),
     );
@@ -2782,7 +3009,6 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
 
 // --- WIDGET TO MANAGE CANVAS AND TEMPLATE IMAGE (Unchanged, except for removing PiP widgets) ---
 class _PrescriptionCanvasPage extends StatefulWidget {
-  // ... (implementation unchanged) ...
   final DrawingPage drawingPage;
   final String? selectedImageId;
   final ValueNotifier<int> redrawNotifier;
@@ -2790,10 +3016,9 @@ class _PrescriptionCanvasPage extends StatefulWidget {
   final TransformationController transformationController;
   final bool panScaleEnabled;
   final ValueChanged<TapUpDetails> onTap;
-  final bool isEnhancedHandwriting;
-  final bool isPressureSensitive; // --- ADDED ---
-  final bool isVelocitySensitive; // --- ADDED ---
-  final _PastedTransformData? pastedTransformData; // --- ADDED ---
+  // REMOVED: isEnhancedHandwriting, isVelocitySensitive
+  final bool isPressureSensitive;
+  final _PastedTransformData? pastedTransformData;
 
   const _PrescriptionCanvasPage({
     required this.drawingPage,
@@ -2803,10 +3028,9 @@ class _PrescriptionCanvasPage extends StatefulWidget {
     required this.transformationController,
     required this.panScaleEnabled,
     required this.onTap,
-    required this.isEnhancedHandwriting,
-    required this.isPressureSensitive, // --- ADDED ---
-    required this.isVelocitySensitive, // --- ADDED ---
-    this.pastedTransformData, // --- ADDED ---
+    // REMOVED arguments
+    required this.isPressureSensitive,
+    this.pastedTransformData,
   });
 
   @override
@@ -2938,9 +3162,9 @@ class _PrescriptionCanvasPageState extends State<_PrescriptionCanvasPage>
               selectedImageId: widget.selectedImageId,
               redrawNotifier: widget.redrawNotifier,
               lassoPoints: widget.lassoPoints,
-              isEnhancedHandwriting: widget.isEnhancedHandwriting,
+
               isPressureSensitive: widget.isPressureSensitive,
-              isVelocitySensitive: widget.isVelocitySensitive,
+
               pastedTransformData: widget.pastedTransformData,
             ),
             child: const SizedBox(width: canvasWidth, height: canvasHeight),
@@ -2952,23 +3176,22 @@ class _PrescriptionCanvasPageState extends State<_PrescriptionCanvasPage>
   }
 }
 
+
+
+
+
+
 // --- CUSTOM PAINTER CLASS (Modified to draw temporary pasted content) ---
 class PrescriptionPainter extends CustomPainter {
   final DrawingPage drawingPage;
   final ui.Image? templateUiImage;
-  // **OPTIMIZATION: Accept pre-loaded image map**
   final Map<String, ui.Image> loadedDrawingImages;
   final String? selectedImageId;
   final ValueNotifier<int> redrawNotifier;
   final List<Offset> lassoPoints;
-  final bool isEnhancedHandwriting;
-  final bool isPressureSensitive; // --- ADDED ---
-  final bool isVelocitySensitive; // --- ADDED ---
-  final _PastedTransformData? pastedTransformData; // --- ADDED ---
-
-  final RdpSimplifier _simplifier = RdpSimplifier();
-  final double _simplificationTolerance = 0.75;
-
+  // REMOVED: isEnhancedHandwriting, isVelocitySensitive
+  final bool isPressureSensitive;
+  final _PastedTransformData? pastedTransformData;
 
   PrescriptionPainter(
       {required this.drawingPage,
@@ -2976,18 +3199,12 @@ class PrescriptionPainter extends CustomPainter {
         required this.redrawNotifier,
         this.selectedImageId,
         required this.lassoPoints,
-        required this.isEnhancedHandwriting,
-        required this.isPressureSensitive, // --- ADDED ---
-        required this.isVelocitySensitive, // --- ADDED ---
+        // REMOVED: isEnhancedHandwriting, isVelocitySensitive
+        required this.isPressureSensitive,
         required this.loadedDrawingImages,
-        this.pastedTransformData // --- ADDED ---
+        this.pastedTransformData
       })
       : super(repaint: redrawNotifier);
-
-
-
-
-
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -3035,11 +3252,13 @@ class PrescriptionPainter extends CustomPainter {
     for (var line in drawingPage.lines) {
       if (line.points.length <= 1) continue;
 
-      bool usePressure = (isPressureSensitive || isVelocitySensitive) &&
+      // Check if pressure data exists and mode is on
+      bool usePressure = isPressureSensitive &&
           line.pressure != null &&
           line.pressure!.length == line.points.length;
 
       if (usePressure) {
+        // PRESSURE SENSITIVE DRAWING
         final double minWidth = line.strokeWidth * 0.4;
         final double maxWidth = line.strokeWidth * 2.0;
         final points = line.points;
@@ -3061,6 +3280,7 @@ class PrescriptionPainter extends CustomPainter {
           }
         }
       } else {
+        // DEFAULT DRAWING (No smoothing, just lines)
         final paint = Paint()
           ..color = Color(line.colorValue)
           ..strokeWidth = line.strokeWidth
@@ -3068,46 +3288,23 @@ class PrescriptionPainter extends CustomPainter {
           ..strokeJoin = StrokeJoin.round
           ..style = PaintingStyle.stroke;
 
-        if (isEnhancedHandwriting) {
-          final List<Offset> pointsToDraw =
-          _simplifier.simplify(line.points, _simplificationTolerance);
-          if (pointsToDraw.length > 1) {
-            final path = Path()
-              ..moveTo(pointsToDraw.first.dx, pointsToDraw.first.dy);
-            if (pointsToDraw.length < 3) {
-              path.lineTo(pointsToDraw.last.dx, pointsToDraw.last.dy);
-            } else {
-              var p1 = pointsToDraw[0];
-              var p2 = pointsToDraw[1];
-              for (int i = 1; i < pointsToDraw.length - 1; i++) {
-                final midPoint = Offset((p1.dx + p2.dx) / 2, (p1.dy + p2.dy) / 2);
-                path.quadraticBezierTo(p1.dx, p1.dy, midPoint.dx, midPoint.dy);
-                p1 = pointsToDraw[i];
-                p2 = pointsToDraw[i + 1];
-              }
-              path.lineTo(p2.dx, p2.dy);
-            }
-            canvas.drawPath(path, paint);
-          }
-        } else {
-          final path = Path()
-            ..moveTo(line.points.first.dx, line.points.first.dy);
-          for (int i = 1; i < line.points.length; i++) {
-            path.lineTo(line.points[i].dx, line.points[i].dy);
-          }
-          canvas.drawPath(path, paint);
+        final path = Path()
+          ..moveTo(line.points.first.dx, line.points.first.dy);
+        for (int i = 1; i < line.points.length; i++) {
+          path.lineTo(line.points[i].dx, line.points[i].dy);
         }
+        canvas.drawPath(path, paint);
       }
     }
 
-    // 4. Draw Texts (THIS IS THE FIX FOR DISPLAYING TEXT)
+    // 4. Draw Texts
     for (var textItem in drawingPage.texts) {
       final textSpan = TextSpan(
         text: textItem.text,
         style: TextStyle(
           color: Color(textItem.colorValue),
           fontSize: textItem.fontSize,
-          fontWeight: FontWeight.bold, // Makes it look like typed form data
+          fontWeight: FontWeight.bold,
           fontFamily: 'Arial',
         ),
       );
@@ -3116,11 +3313,10 @@ class PrescriptionPainter extends CustomPainter {
         textDirection: TextDirection.ltr,
       );
       textPainter.layout();
-      // Draw the text at the exact position defined in the map
       textPainter.paint(canvas, textItem.position);
     }
 
-    // 5. Draw Paste / Lasso Overlay (Existing Logic)
+    // 5. Draw Paste / Lasso Overlay
     if (pastedTransformData != null) {
       canvas.save();
       canvas.translate(pastedTransformData!.offset.dx, pastedTransformData!.offset.dy);
@@ -3140,7 +3336,7 @@ class PrescriptionPainter extends CustomPainter {
         }
         canvas.drawPath(path, paint);
       }
-      // Draw Pasted Images (simplified for preview)
+      // Draw Pasted Images
       for (var image in pastedTransformData!.images) {
         final cachedImage = loadedDrawingImages[image.id];
         final destRect = Rect.fromLTWH(
@@ -3176,11 +3372,10 @@ class PrescriptionPainter extends CustomPainter {
         oldDelegate.templateUiImage != templateUiImage ||
         oldDelegate.selectedImageId != selectedImageId ||
         oldDelegate.lassoPoints.length != lassoPoints.length ||
-        oldDelegate.isEnhancedHandwriting != isEnhancedHandwriting ||
-        oldDelegate.isPressureSensitive != isPressureSensitive || // --- ADDED ---
-        oldDelegate.isVelocitySensitive != isVelocitySensitive || // --- ADDED ---
+        // REMOVED CHECKS
+        oldDelegate.isPressureSensitive != isPressureSensitive ||
         oldDelegate.loadedDrawingImages.length != loadedDrawingImages.length ||
-        oldDelegate.pastedTransformData != pastedTransformData; // --- ADDED ---
+        oldDelegate.pastedTransformData != pastedTransformData;
   }
 }
 

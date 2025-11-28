@@ -6,7 +6,7 @@ import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
 import 'package:http/http.dart' as http;
 import 'drawing_models.dart';
-import 'ipd_structure.dart'; // <-- IMPORTED the structure file
+import 'ipd_structure.dart';
 
 // Helper extension for list safety
 extension IterableX<T> on Iterable<T> {
@@ -20,7 +20,6 @@ extension IterableX<T> on Iterable<T> {
 
 class PdfGenerator {
   static const String kBaseImageUrl = 'https://apimmedford.infispark.in/';
-  // These constants define the SOURCE coordinate space from the Flutter app's canvas.
   static const double kSourceCanvasWidth = 1000;
   static const double kSourceCanvasHeight = 1414;
 
@@ -32,15 +31,13 @@ class PdfGenerator {
     return finalUri.toString();
   }
 
-  /// --- NEW FUNCTION TO DOWNLOAD THE ENTIRE PATIENT RECORD ---
+  /// --- DOWNLOAD FULL PATIENT RECORD ---
   static Future<void> downloadFullRecordAsPdf({
     required BuildContext context,
     required SupabaseClient supabase,
     required String? healthRecordId,
-    // --- ADDED: New parameters for filename ---
     required String patientName,
     required String uhid,
-    // --- END ADDED ---
   }) async {
     if (healthRecordId == null) {
       if (context.mounted) {
@@ -51,12 +48,9 @@ class PdfGenerator {
       return;
     }
 
-    // --- ADDED: Create the PDF filename ---
-    // Replaces spaces/special characters in name with an underscore
     final String safePatientName =
     patientName.replaceAll(RegExp(r'[^a-zA-Z0-9]+'), '_');
     final String pdfName = '${safePatientName}_${uhid}.pdf';
-    // --- END ADDED ---
 
     showDialog(
       context: context,
@@ -79,14 +73,12 @@ class PdfGenerator {
     );
 
     try {
-      // Define all columns to fetch, based on ipd_structure.dart
       final List<String> allDataColumns = [
         'id',
-        ...allGroupColumnNames, // From ipd_structure.dart
+        ...allGroupColumnNames,
         'custom_groups_data',
       ];
 
-      // Fetch all group data in one call
       final response = await supabase
           .from('user_health_details')
           .select(allDataColumns.join(','))
@@ -95,7 +87,7 @@ class PdfGenerator {
 
       final List<DrawingPage> allPages = [];
 
-      // 1. Add pages from default groups, in the order defined by ipdGroupStructure
+      // 1. Add pages from default groups
       for (final config in ipdGroupStructure) {
         final columnName = config.columnName;
         if (response.containsKey(columnName)) {
@@ -128,7 +120,6 @@ class PdfGenerator {
         throw Exception("No pages found in this record to download.");
       }
 
-      // --- PDF Generation Logic (Same as your original function) ---
       final doc = pw.Document();
 
       Future<Uint8List?> _fetchImageBytes(String url) async {
@@ -144,14 +135,24 @@ class PdfGenerator {
       }
 
       for (final pageData in allPages) {
+        // A. Fetch Background Template
         final templateImageBytes =
         await _fetchImageBytes(_getFullImageUrl(pageData.templateImageUrl));
-        if (templateImageBytes == null) {
-          debugPrint(
-              "Skipping page ${pageData.pageName} due to missing template.");
-          continue;
-        }
+        if (templateImageBytes == null) continue;
         final templateImage = pw.MemoryImage(templateImageBytes);
+
+        // B. Fetch Added Images (Stamps/Photos)
+        final Map<String, pw.MemoryImage> embeddedImages = {};
+        for (final img in pageData.images) {
+          // Ensure we have a valid URL. If stored relatively, use helper.
+          String url = img.imageUrl;
+          if (!url.startsWith('http')) url = _getFullImageUrl(url);
+
+          final imgBytes = await _fetchImageBytes(url);
+          if (imgBytes != null) {
+            embeddedImages[img.imageUrl] = pw.MemoryImage(imgBytes);
+          }
+        }
 
         final dynamicPageFormat = PdfPageFormat(
           templateImage.width!.toDouble(),
@@ -159,17 +160,7 @@ class PdfGenerator {
           marginAll: 0,
         );
 
-        final Map<String, pw.MemoryImage> embeddedImages = {};
-        // This is a placeholder for DrawingImage, which seems to be missing
-        // from your DrawingPage model in main.dart. If you add images
-        // back to DrawingPage, this loop will work.
-        // for (final img in pageData.images) {
-        //   final imgBytes = await _fetchImageBytes(img.imageUrl);
-        //   if (imgBytes != null) {
-        //     embeddedImages[img.imageUrl] = pw.MemoryImage(imgBytes);
-        //   }
-        // }
-
+        // Calculate Scale Logic
         final double imageWidth = templateImage.width!.toDouble();
         final double imageHeight = templateImage.height!.toDouble();
         final double canvasAspectRatio =
@@ -204,22 +195,44 @@ class PdfGenerator {
               return pw.Stack(
                 alignment: pw.Alignment.topLeft,
                 children: [
+                  // 1. Background Template
                   pw.Image(templateImage, fit: pw.BoxFit.fill),
-                  // Placeholder for images, if you add them back:
-                  // ...pageData.images
-                  //     .where((img) => embeddedImages.containsKey(img.imageUrl))
-                  //     .map((image) {
-                  //   return pw.Positioned(
-                  //     left: (image.position.dx - offsetX) * scaleX,
-                  //     top: (image.position.dy - offsetY) * scaleY,
-                  //     child: pw.Image(
-                  //       embeddedImages[image.imageUrl]!,
-                  //       width: image.width * scaleX,
-                  //       height: image.height * scaleY,
-                  //       fit: pw.BoxFit.contain,
-                  //     ),
-                  //   );
-                  // }).toList(),
+
+                  // 2. Added Images (Stamps/Photos)
+                  ...pageData.images.map((image) {
+                    if (!embeddedImages.containsKey(image.imageUrl)) {
+                      return pw.SizedBox();
+                    }
+                    return pw.Positioned(
+                      left: (image.position.dx - offsetX) * scaleX,
+                      top: (image.position.dy - offsetY) * scaleY,
+                      child: pw.Image(
+                        embeddedImages[image.imageUrl]!,
+                        width: image.width * scaleX,
+                        height: image.height * scaleY,
+                        fit: pw.BoxFit.fill,
+                      ),
+                    );
+                  }).toList(),
+
+                  // 3. Auto-filled Texts
+                  if (pageData.texts.isNotEmpty)
+                    ...pageData.texts.map((textItem) {
+                      return pw.Positioned(
+                        left: (textItem.position.dx - offsetX) * scaleX,
+                        top: (textItem.position.dy - offsetY) * scaleY,
+                        child: pw.Text(
+                          textItem.text,
+                          style: pw.TextStyle(
+                            fontSize: textItem.fontSize * scaleX,
+                            color: PdfColor.fromInt(textItem.colorValue),
+                            fontWeight: pw.FontWeight.bold,
+                          ),
+                        ),
+                      );
+                    }).toList(),
+
+                  // 4. Handwritten Lines
                   pw.Positioned.fill(
                     child: pw.CustomPaint(
                       painter: (PdfGraphics canvas, PdfPoint size) {
@@ -229,8 +242,7 @@ class PdfGenerator {
                           canvas
                             ..saveContext()
                             ..setStrokeColor(PdfColor.fromInt(line.colorValue))
-                            ..setLineWidth(
-                                line.strokeWidth * scaleX) // Scale stroke
+                            ..setLineWidth(line.strokeWidth * scaleX)
                             ..setLineCap(PdfLineCap.round);
 
                           final firstPoint = line.points.first;
@@ -241,8 +253,7 @@ class PdfGenerator {
 
                           canvas.moveTo(
                             transformedFirstX,
-                            size.y -
-                                transformedFirstY, // Invert Y-axis for PDF
+                            size.y - transformedFirstY,
                           );
 
                           for (int i = 1; i < line.points.length; i++) {
@@ -251,8 +262,7 @@ class PdfGenerator {
                             final transformedY = (point.dy - offsetY) * scaleY;
                             canvas.lineTo(
                               transformedX,
-                              size.y -
-                                  transformedY, // Invert Y-axis for PDF
+                              size.y - transformedY,
                             );
                           }
                           canvas.strokePath();
@@ -271,9 +281,7 @@ class PdfGenerator {
       if (context.mounted) Navigator.of(context).pop();
 
       await Printing.layoutPdf(
-        // --- ADDED: Use the 'name' parameter ---
         name: pdfName,
-        // --- END ADDED ---
         onLayout: (PdfPageFormat format) async => doc.save(),
       );
     } catch (e) {
@@ -287,7 +295,7 @@ class PdfGenerator {
     }
   }
 
-  /// --- Original function to download a single group ---
+  /// --- DOWNLOAD SINGLE GROUP AS PDF ---
   static Future<void> downloadGroupAsPdf({
     required BuildContext context,
     required SupabaseClient supabase,
@@ -346,8 +354,7 @@ class PdfGenerator {
             ?.map((g) => DrawingGroup.fromJson(g))
             .toList() ??
             [];
-        final currentGroup =
-        allGroups.firstWhereOrNull((g) => g.id == groupId);
+        final currentGroup = allGroups.firstWhereOrNull((g) => g.id == groupId);
         rawPages = currentGroup?.pages.map((p) => p.toJson()).toList();
       }
 
@@ -375,14 +382,24 @@ class PdfGenerator {
       }
 
       for (final pageData in allPages) {
+        // A. Fetch Background Template
         final templateImageBytes =
         await _fetchImageBytes(_getFullImageUrl(pageData.templateImageUrl));
-        if (templateImageBytes == null) {
-          debugPrint(
-              "Skipping page ${pageData.pageName} due to missing template.");
-          continue;
-        }
+        if (templateImageBytes == null) continue;
         final templateImage = pw.MemoryImage(templateImageBytes);
+
+        // B. Fetch Added Images (Stamps/Photos)
+        final Map<String, pw.MemoryImage> embeddedImages = {};
+        for (final img in pageData.images) {
+          // Ensure we have a valid URL
+          String url = img.imageUrl;
+          if (!url.startsWith('http')) url = _getFullImageUrl(url);
+
+          final imgBytes = await _fetchImageBytes(url);
+          if (imgBytes != null) {
+            embeddedImages[img.imageUrl] = pw.MemoryImage(imgBytes);
+          }
+        }
 
         final dynamicPageFormat = PdfPageFormat(
           templateImage.width!.toDouble(),
@@ -390,20 +407,8 @@ class PdfGenerator {
           marginAll: 0,
         );
 
-        final Map<String, pw.MemoryImage> embeddedImages = {};
-        // Placeholder for images
-        // for (final img in pageData.images) {
-        //   final imgBytes = await _fetchImageBytes(img.imageUrl);
-        //   if (imgBytes != null) {
-        //     embeddedImages[img.imageUrl] = pw.MemoryImage(imgBytes);
-        //   }
-        // }
-
-        // --- ✅ FIX START: COORDINATE TRANSFORMATION LOGIC ---
-        // This logic reverses the `BoxFit.contain` effect from the Flutter UI.
         final double imageWidth = templateImage.width!.toDouble();
         final double imageHeight = templateImage.height!.toDouble();
-
         final double canvasAspectRatio =
             kSourceCanvasWidth / kSourceCanvasHeight;
         final double imageAspectRatio = imageWidth / imageHeight;
@@ -413,27 +418,20 @@ class PdfGenerator {
         double offsetX;
         double offsetY;
 
-        // Calculate the size and position of the image as it was displayed
-        // within the source canvas in the Flutter app.
         if (imageAspectRatio > canvasAspectRatio) {
-          // Letterboxed: Image is wider than canvas ratio. Width is constrained.
           sourceContentWidth = kSourceCanvasWidth;
           sourceContentHeight = kSourceCanvasWidth / imageAspectRatio;
           offsetX = 0;
           offsetY = (kSourceCanvasHeight - sourceContentHeight) / 2.0;
         } else {
-          // Pillarboxed: Image is taller than canvas ratio. Height is constrained.
           sourceContentHeight = kSourceCanvasHeight;
           sourceContentWidth = kSourceCanvasHeight * imageAspectRatio;
           offsetX = (kSourceCanvasWidth - sourceContentWidth) / 2.0;
           offsetY = 0;
         }
 
-        // These are the final scaling factors to map from the content area
-        // of the source canvas to the final PDF page size.
         final double scaleX = imageWidth / sourceContentWidth;
         final double scaleY = imageHeight / sourceContentHeight;
-        // --- ✅ FIX END ---
 
         doc.addPage(
           pw.Page(
@@ -443,22 +441,44 @@ class PdfGenerator {
               return pw.Stack(
                 alignment: pw.Alignment.topLeft,
                 children: [
+                  // 1. Background
                   pw.Image(templateImage, fit: pw.BoxFit.fill),
-                  // ...pageData.images
-                  //     .where((img) => embeddedImages.containsKey(img.imageUrl))
-                  //     .map((image) {
-                  //   // Apply the transformation to image position and size
-                  //   return pw.Positioned(
-                  //     left: (image.position.dx - offsetX) * scaleX,
-                  //     top: (image.position.dy - offsetY) * scaleY,
-                  //     child: pw.Image(
-                  //       embeddedImages[image.imageUrl]!,
-                  //       width: image.width * scaleX,
-                  //       height: image.height * scaleY,
-                  //       fit: pw.BoxFit.contain,
-                  //     ),
-                  //   );
-                  // }).toList(),
+
+                  // 2. Added Images
+                  ...pageData.images.map((image) {
+                    if (!embeddedImages.containsKey(image.imageUrl)) {
+                      return pw.SizedBox();
+                    }
+                    return pw.Positioned(
+                      left: (image.position.dx - offsetX) * scaleX,
+                      top: (image.position.dy - offsetY) * scaleY,
+                      child: pw.Image(
+                        embeddedImages[image.imageUrl]!,
+                        width: image.width * scaleX,
+                        height: image.height * scaleY,
+                        fit: pw.BoxFit.fill,
+                      ),
+                    );
+                  }).toList(),
+
+                  // 3. Auto-filled Texts
+                  if (pageData.texts.isNotEmpty)
+                    ...pageData.texts.map((textItem) {
+                      return pw.Positioned(
+                        left: (textItem.position.dx - offsetX) * scaleX,
+                        top: (textItem.position.dy - offsetY) * scaleY,
+                        child: pw.Text(
+                          textItem.text,
+                          style: pw.TextStyle(
+                            fontSize: textItem.fontSize * scaleX,
+                            color: PdfColor.fromInt(textItem.colorValue),
+                            fontWeight: pw.FontWeight.bold,
+                          ),
+                        ),
+                      );
+                    }).toList(),
+
+                  // 4. Lines
                   pw.Positioned.fill(
                     child: pw.CustomPaint(
                       painter: (PdfGraphics canvas, PdfPoint size) {
@@ -468,11 +488,9 @@ class PdfGenerator {
                           canvas
                             ..saveContext()
                             ..setStrokeColor(PdfColor.fromInt(line.colorValue))
-                            ..setLineWidth(
-                                line.strokeWidth * scaleX) // Scale stroke
+                            ..setLineWidth(line.strokeWidth * scaleX)
                             ..setLineCap(PdfLineCap.round);
 
-                          // Transform the first point and move to it
                           final firstPoint = line.points.first;
                           final transformedFirstX =
                               (firstPoint.dx - offsetX) * scaleX;
@@ -481,19 +499,16 @@ class PdfGenerator {
 
                           canvas.moveTo(
                             transformedFirstX,
-                            size.y -
-                                transformedFirstY, // Invert Y-axis for PDF
+                            size.y - transformedFirstY,
                           );
 
-                          // Transform all subsequent points and draw lines to them
                           for (int i = 1; i < line.points.length; i++) {
                             final point = line.points[i];
                             final transformedX = (point.dx - offsetX) * scaleX;
                             final transformedY = (point.dy - offsetY) * scaleY;
                             canvas.lineTo(
                               transformedX,
-                              size.y -
-                                  transformedY, // Invert Y-axis for PDF
+                              size.y - transformedY,
                             );
                           }
                           canvas.strokePath();
@@ -525,4 +540,3 @@ class PdfGenerator {
     }
   }
 }
-
