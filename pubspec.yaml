@@ -40,18 +40,13 @@ dev_dependencies:
 flutter:
   uses-material-design: true
 
+  # MOVE IT HERE: Indented strictly under 'flutter'
+  assets:
+    - assets/letterhead.png
 
+# Keep flutter_launcher_icons separate at the bottom
 flutter_launcher_icons:
   android: true
   ios: true
-  image_path: "assets/icon/app_icon.png" # Path to your master icon
+  image_path: "assets/icon/app_icon.png"
   min_sdk_android: 21
-  # Add this assets section
-  assets:
-    - assets/
-    - assets/prescription1.png
-    - assets/prescription2.png
-    - assets/prescription3.png
-    - assets/prescription4.png
-    - assets/prescription5.png
-    - assets/prescription6.png

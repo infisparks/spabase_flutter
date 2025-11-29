@@ -3182,6 +3182,7 @@ class _PrescriptionCanvasPageState extends State<_PrescriptionCanvasPage>
 
 
 // --- CUSTOM PAINTER CLASS (Modified to draw temporary pasted content) ---
+// --- CUSTOM PAINTER CLASS (Updated for Smooth Curves) ---
 class PrescriptionPainter extends CustomPainter {
   final DrawingPage drawingPage;
   final ui.Image? templateUiImage;
@@ -3189,22 +3190,19 @@ class PrescriptionPainter extends CustomPainter {
   final String? selectedImageId;
   final ValueNotifier<int> redrawNotifier;
   final List<Offset> lassoPoints;
-  // REMOVED: isEnhancedHandwriting, isVelocitySensitive
   final bool isPressureSensitive;
   final _PastedTransformData? pastedTransformData;
 
-  PrescriptionPainter(
-      {required this.drawingPage,
-        this.templateUiImage,
-        required this.redrawNotifier,
-        this.selectedImageId,
-        required this.lassoPoints,
-        // REMOVED: isEnhancedHandwriting, isVelocitySensitive
-        required this.isPressureSensitive,
-        required this.loadedDrawingImages,
-        this.pastedTransformData
-      })
-      : super(repaint: redrawNotifier);
+  PrescriptionPainter({
+    required this.drawingPage,
+    this.templateUiImage,
+    required this.redrawNotifier,
+    this.selectedImageId,
+    required this.lassoPoints,
+    required this.isPressureSensitive,
+    required this.loadedDrawingImages,
+    this.pastedTransformData,
+  }) : super(repaint: redrawNotifier);
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -3250,7 +3248,7 @@ class PrescriptionPainter extends CustomPainter {
 
     // 3. Draw Lines (Handwriting)
     for (var line in drawingPage.lines) {
-      if (line.points.length <= 1) continue;
+      if (line.points.isEmpty) continue;
 
       // Check if pressure data exists and mode is on
       bool usePressure = isPressureSensitive &&
@@ -3258,7 +3256,7 @@ class PrescriptionPainter extends CustomPainter {
           line.pressure!.length == line.points.length;
 
       if (usePressure) {
-        // PRESSURE SENSITIVE DRAWING
+        // PRESSURE SENSITIVE DRAWING (Raw lines for accuracy with pressure)
         final double minWidth = line.strokeWidth * 0.4;
         final double maxWidth = line.strokeWidth * 2.0;
         final points = line.points;
@@ -3271,7 +3269,8 @@ class PrescriptionPainter extends CustomPainter {
         for (int i = 0; i < points.length - 1; i++) {
           final p1 = points[i];
           final p2 = points[i + 1];
-          final avgPressure = ((pressures[i] + pressures[i + 1]) / 2).clamp(0.0, 1.0);
+          final avgPressure =
+          ((pressures[i] + pressures[i + 1]) / 2).clamp(0.0, 1.0);
           final newWidth = ui.lerpDouble(minWidth, maxWidth, avgPressure)!;
 
           if (newWidth > 0.1) {
@@ -3280,7 +3279,7 @@ class PrescriptionPainter extends CustomPainter {
           }
         }
       } else {
-        // DEFAULT DRAWING (No smoothing, just lines)
+        // DEFAULT DRAWING (With Bezier Smoothing)
         final paint = Paint()
           ..color = Color(line.colorValue)
           ..strokeWidth = line.strokeWidth
@@ -3288,11 +3287,41 @@ class PrescriptionPainter extends CustomPainter {
           ..strokeJoin = StrokeJoin.round
           ..style = PaintingStyle.stroke;
 
-        final path = Path()
-          ..moveTo(line.points.first.dx, line.points.first.dy);
-        for (int i = 1; i < line.points.length; i++) {
-          path.lineTo(line.points[i].dx, line.points[i].dy);
+        final path = Path();
+        if (line.points.length > 1) {
+          path.moveTo(line.points[0].dx, line.points[0].dy);
+
+          // --- SMOOTHING LOGIC ---
+          // We draw a quadratic curve from the previous point to the
+          // midpoint of the current segment. This rounds off the corners
+          // created by the raw touch points.
+          for (int i = 0; i < line.points.length - 1; i++) {
+            final p0 = line.points[i];
+            final p1 = line.points[i + 1];
+
+            // Calculate the midpoint between this point and the next
+            final midPoint = Offset(
+              (p0.dx + p1.dx) / 2,
+              (p0.dy + p1.dy) / 2,
+            );
+
+            // Use the current point (p0) as the control point to pull the curve
+            // towards it, ending at the midpoint.
+            if (i == 0) {
+              // For the very first segment, just draw a line to the first midpoint
+              // to start the curve smoothly.
+              path.lineTo(midPoint.dx, midPoint.dy);
+            } else {
+              path.quadraticBezierTo(p0.dx, p0.dy, midPoint.dx, midPoint.dy);
+            }
+          }
+          // Connect to the very last point
+          path.lineTo(line.points.last.dx, line.points.last.dy);
+        } else if (line.points.length == 1) {
+          // Draw a dot for a single point tap
+          canvas.drawPoints(ui.PointMode.points, [line.points.first], paint);
         }
+
         canvas.drawPath(path, paint);
       }
     }
@@ -3319,10 +3348,11 @@ class PrescriptionPainter extends CustomPainter {
     // 5. Draw Paste / Lasso Overlay
     if (pastedTransformData != null) {
       canvas.save();
-      canvas.translate(pastedTransformData!.offset.dx, pastedTransformData!.offset.dy);
+      canvas.translate(
+          pastedTransformData!.offset.dx, pastedTransformData!.offset.dy);
       final double scale = pastedTransformData!.scale;
 
-      // Draw Pasted Lines
+      // Draw Pasted Lines (Apply the same smoothing logic if desired, or keep simple)
       for (var line in pastedTransformData!.lines) {
         final paint = Paint()
           ..color = Color(line.colorValue).withOpacity(0.8)
@@ -3330,23 +3360,48 @@ class PrescriptionPainter extends CustomPainter {
           ..strokeCap = StrokeCap.round
           ..strokeJoin = StrokeJoin.round
           ..style = PaintingStyle.stroke;
-        final path = Path()..moveTo(line.points.first.dx * scale, line.points.first.dy * scale);
-        for (int i = 1; i < line.points.length; i++) {
-          path.lineTo(line.points[i].dx * scale, line.points[i].dy * scale);
+
+        final path = Path();
+        if (line.points.isNotEmpty) {
+          path.moveTo(line.points[0].dx * scale, line.points[0].dy * scale);
+          for (int i = 0; i < line.points.length - 1; i++) {
+            final p0 = line.points[i];
+            final p1 = line.points[i+1];
+            final midX = ((p0.dx + p1.dx) / 2) * scale;
+            final midY = ((p0.dy + p1.dy) / 2) * scale;
+            final cX = p0.dx * scale;
+            final cY = p0.dy * scale;
+
+            if (i == 0) {
+              path.lineTo(midX, midY);
+            } else {
+              path.quadraticBezierTo(cX, cY, midX, midY);
+            }
+          }
+          path.lineTo(line.points.last.dx * scale, line.points.last.dy * scale);
         }
         canvas.drawPath(path, paint);
       }
+
       // Draw Pasted Images
       for (var image in pastedTransformData!.images) {
         final cachedImage = loadedDrawingImages[image.id];
         final destRect = Rect.fromLTWH(
-          image.position.dx * scale, image.position.dy * scale,
-          image.width * scale, image.height * scale,
+          image.position.dx * scale,
+          image.position.dy * scale,
+          image.width * scale,
+          image.height * scale,
         );
         if (cachedImage != null) {
-          paintImage(canvas: canvas, rect: destRect, image: cachedImage, fit: BoxFit.contain, alignment: Alignment.topLeft);
+          paintImage(
+              canvas: canvas,
+              rect: destRect,
+              image: cachedImage,
+              fit: BoxFit.contain,
+              alignment: Alignment.topLeft);
         } else {
-          canvas.drawRect(destRect, Paint()..color = Colors.blueGrey.withOpacity(0.3));
+          canvas.drawRect(
+              destRect, Paint()..color = Colors.blueGrey.withOpacity(0.3));
         }
       }
       canvas.restore();
@@ -3358,7 +3413,8 @@ class PrescriptionPainter extends CustomPainter {
         ..strokeWidth = 2.0
         ..strokeCap = StrokeCap.round
         ..style = PaintingStyle.stroke;
-      final lassoPath = Path()..moveTo(lassoPoints.first.dx, lassoPoints.first.dy);
+      final lassoPath = Path()
+        ..moveTo(lassoPoints.first.dx, lassoPoints.first.dy);
       for (int i = 1; i < lassoPoints.length; i++) {
         lassoPath.lineTo(lassoPoints[i].dx, lassoPoints[i].dy);
       }
@@ -3372,9 +3428,9 @@ class PrescriptionPainter extends CustomPainter {
         oldDelegate.templateUiImage != templateUiImage ||
         oldDelegate.selectedImageId != selectedImageId ||
         oldDelegate.lassoPoints.length != lassoPoints.length ||
-        // REMOVED CHECKS
         oldDelegate.isPressureSensitive != isPressureSensitive ||
-        oldDelegate.loadedDrawingImages.length != loadedDrawingImages.length ||
+        oldDelegate.loadedDrawingImages.length !=
+            loadedDrawingImages.length ||
         oldDelegate.pastedTransformData != pastedTransformData;
   }
 }

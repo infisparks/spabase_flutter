@@ -2,6 +2,7 @@ import 'dart:io';
 import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart'; // For kIsWeb
+import 'package:flutter/services.dart' show rootBundle;
 import 'dart:async';
 import 'dart:ui' as ui;
 import 'package:intl/intl.dart';
@@ -143,6 +144,12 @@ class DischargeSummaryData {
   String procedure2;
   String provisionalDiagnosis;
   String historyOfPresentIllness;
+
+  // --- NEW FIELDS ---
+  String generalPhysicalExamination;
+  String systemicExamination;
+  // ------------------
+
   String investigations;
   String treatmentGiven;
   String hospitalCourse;
@@ -176,6 +183,8 @@ class DischargeSummaryData {
     required this.procedure2,
     required this.provisionalDiagnosis,
     required this.historyOfPresentIllness,
+    required this.generalPhysicalExamination, // Added
+    required this.systemicExamination,        // Added
     required this.investigations,
     required this.treatmentGiven,
     required this.hospitalCourse,
@@ -210,6 +219,8 @@ class DischargeSummaryData {
     'procedure2': procedure2,
     'provisionalDiagnosis': provisionalDiagnosis,
     'historyOfPresentIllness': historyOfPresentIllness,
+    'generalPhysicalExamination': generalPhysicalExamination, // Added
+    'systemicExamination': systemicExamination,               // Added
     'investigations': investigations,
     'treatmentGiven': treatmentGiven,
     'hospitalCourse': hospitalCourse,
@@ -245,6 +256,8 @@ class DischargeSummaryData {
       procedure2: json['procedure2'] ?? '',
       provisionalDiagnosis: json['provisionalDiagnosis'] ?? '',
       historyOfPresentIllness: json['historyOfPresentIllness'] ?? '',
+      generalPhysicalExamination: json['generalPhysicalExamination'] ?? '', // Added
+      systemicExamination: json['systemicExamination'] ?? '',               // Added
       investigations: json['investigations'] ?? '',
       treatmentGiven: json['treatmentGiven'] ?? '',
       hospitalCourse: json['hospitalCourse'] ?? '',
@@ -280,6 +293,8 @@ class DischargeSummaryData {
     String? procedure2,
     String? provisionalDiagnosis,
     String? historyOfPresentIllness,
+    String? generalPhysicalExamination, // Added
+    String? systemicExamination,        // Added
     String? investigations,
     String? treatmentGiven,
     String? hospitalCourse,
@@ -312,13 +327,13 @@ class DischargeSummaryData {
       procedure: procedure ?? this.procedure,
       procedure2: procedure2 ?? this.procedure2,
       provisionalDiagnosis: provisionalDiagnosis ?? this.provisionalDiagnosis,
-      historyOfPresentIllness:
-      historyOfPresentIllness ?? this.historyOfPresentIllness,
+      historyOfPresentIllness: historyOfPresentIllness ?? this.historyOfPresentIllness,
+      generalPhysicalExamination: generalPhysicalExamination ?? this.generalPhysicalExamination, // Added
+      systemicExamination: systemicExamination ?? this.systemicExamination, // Added
       investigations: investigations ?? this.investigations,
       treatmentGiven: treatmentGiven ?? this.treatmentGiven,
       hospitalCourse: hospitalCourse ?? this.hospitalCourse,
-      surgeryProcedureDetails:
-      surgeryProcedureDetails ?? this.surgeryProcedureDetails,
+      surgeryProcedureDetails: surgeryProcedureDetails ?? this.surgeryProcedureDetails,
       conditionAtDischarge: conditionAtDischarge ?? this.conditionAtDischarge,
       dischargeMedications: dischargeMedications ?? this.dischargeMedications,
       followUp: followUp ?? this.followUp,
@@ -334,7 +349,6 @@ class DischargeSummaryData {
     );
   }
 }
-
 // --- REAL Microphone Service (No change) ---
 class MicrophoneService {
   final AudioRecorder _recorder = AudioRecorder();
@@ -507,6 +521,8 @@ class VoiceInput extends StatelessWidget {
     this.isAnyRecordingOrProcessing = false,
   });
 
+
+
   @override
   Widget build(BuildContext context) {
     final inputDecoration = InputDecoration(
@@ -661,7 +677,7 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
       consultantInCharge: '',
       detailedAddress: '',
       detailedAddress2: '',
-      admissionDateAndTime: '', // Should be fetched with patient data
+      admissionDateAndTime: '',
       dischargeDateAndTime:
       '${DateFormat('dd-MM-yyyy').format(now)} ${DateFormat('HH:mm').format(now)}',
       finalDiagnosis: '',
@@ -670,6 +686,10 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
       procedure2: '',
       provisionalDiagnosis: '',
       historyOfPresentIllness: '',
+      // --- ADDED ---
+      generalPhysicalExamination: '',
+      systemicExamination: '',
+      // -------------
       investigations: '',
       treatmentGiven: '',
       hospitalCourse: '',
@@ -693,74 +713,92 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
   Future<void> _fetchDischargeData() async {
     setState(() => _isLoading = true);
     try {
-      final response = await supabase
-          .from("user_health_details")
-          .select(
-          'id, dischare_summary_written, clinical_notes_data, patient_detail(address, age, gender)')
-          .eq("ipd_registration_id", widget.ipdId)
-          .single();
+      // 1. FETCH IPD DETAILS (Safe Admission Date)
+      final ipdResponse = await supabase
+          .from('ipd_registration')
+          .select('admission_date, admission_time, created_at')
+          .eq('ipd_id', widget.ipdId)
+          .maybeSingle();
 
-      _healthRecordId = response['id'] as String?; // Capture health record ID
-
-      final patientDataList = response['patient_detail'];
-      Map<String, dynamic>? patientData;
-      if (patientDataList != null &&
-          patientDataList is List &&
-          patientDataList.isNotEmpty) {
-        patientData = patientDataList[0] as Map<String, dynamic>?;
-      } else if (patientDataList != null && patientDataList is Map) {
-        patientData = patientDataList as Map<String, dynamic>?;
-      }
-
-      String address = '';
-      String age = '';
-      String gender = '';
-      String fetchedAgeSex = widget.ageSex;
-
-      if (patientData != null) {
-        address = patientData['address'] ?? '';
-        age = patientData['age']?.toString() ?? '';
-        gender = patientData['gender'] ?? '';
-        if (age.isNotEmpty && gender.isNotEmpty) {
-          fetchedAgeSex = '$age / $gender';
+      String fetchedAdmissionDate = '';
+      if (ipdResponse != null) {
+        if (ipdResponse['admission_date'] != null) {
+          fetchedAdmissionDate = "${ipdResponse['admission_date']} ${ipdResponse['admission_time'] ?? ''}".trim();
+        } else if (ipdResponse['created_at'] != null) {
+          final createdAt = DateTime.parse(ipdResponse['created_at']);
+          fetchedAdmissionDate = DateFormat('dd-MM-yyyy HH:mm').format(createdAt);
         }
       }
 
-      final summaryData = response['dischare_summary_written'];
-      if (summaryData != null && summaryData is Map<String, dynamic>) {
-        _formData = DischargeSummaryData.fromJson(summaryData);
-      } else if (summaryData != null &&
-          summaryData is List &&
-          summaryData.isNotEmpty) {
-        _formData = DischargeSummaryData.fromJson(
-            summaryData.first as Map<String, dynamic>);
+      // 2. FETCH EXISTING SUMMARY
+      final response = await supabase
+          .from("user_health_details")
+          .select('id, dischare_summary_written, clinical_notes_data, patient_detail(address, age, gender)')
+          .eq("ipd_registration_id", widget.ipdId)
+          .maybeSingle();
+
+      _healthRecordId = response?['id'] as String?;
+
+      // Handle Patient Details
+      String address = '';
+      String fetchedAgeSex = widget.ageSex;
+
+      if (response != null && response['patient_detail'] != null) {
+        // Handle if patient_detail returns a List or a Map
+        final rawPatient = response['patient_detail'];
+        final patientData = (rawPatient is List && rawPatient.isNotEmpty)
+            ? rawPatient[0]
+            : (rawPatient is Map ? rawPatient : null);
+
+        if (patientData != null) {
+          address = patientData['address'] ?? '';
+          final age = patientData['age']?.toString() ?? '';
+          final gender = patientData['gender'] ?? '';
+          if (age.isNotEmpty && gender.isNotEmpty) {
+            fetchedAgeSex = '$age / $gender';
+          }
+        }
       }
 
-      final clinicalDataRaw = response['clinical_notes_data'];
-      if (clinicalDataRaw != null && clinicalDataRaw is Map<String, dynamic>) {
-        _clinicalData = ClinicalNotesData.fromJson(clinicalDataRaw);
-      } else if (clinicalDataRaw != null &&
-          clinicalDataRaw is List &&
-          clinicalDataRaw.isNotEmpty) {
-        _clinicalData = ClinicalNotesData.fromJson(
-            clinicalDataRaw.first as Map<String, dynamic>);
+      // 3. MERGE DATA (CRASH FIX HERE)
+      if (response != null && response['dischare_summary_written'] != null) {
+        final summaryData = response['dischare_summary_written'];
+
+        // Check if list is not empty before accessing .first
+        if (summaryData is List && summaryData.isNotEmpty) {
+          _formData = DischargeSummaryData.fromJson(summaryData.first);
+        } else if (summaryData is Map<String, dynamic>) {
+          _formData = DischargeSummaryData.fromJson(summaryData);
+        }
+
+        // Fallback for admission date
+        if (_formData.admissionDateAndTime.trim().isEmpty) {
+          _formData.admissionDateAndTime = fetchedAdmissionDate;
+        }
+      } else {
+        _formData.admissionDateAndTime = fetchedAdmissionDate;
       }
 
-      // Update prefill data (Address)
+      // 4. LOAD CLINICAL NOTES (CRASH FIX HERE)
+      if (response != null && response['clinical_notes_data'] != null) {
+        final clinicalDataRaw = response['clinical_notes_data'];
+
+        if (clinicalDataRaw is List && clinicalDataRaw.isNotEmpty) {
+          _clinicalData = ClinicalNotesData.fromJson(clinicalDataRaw.first);
+        } else if (clinicalDataRaw is Map<String, dynamic>) {
+          _clinicalData = ClinicalNotesData.fromJson(clinicalDataRaw);
+        }
+      }
+
       _formData = _formData.copyWith(
-        detailedAddress: address.split('\n').firstOrNull ?? address,
-        detailedAddress2:
-        address.split('\n').getRange(1, address.split('\n').length).join(', '),
-        ageSex: fetchedAgeSex, // Update age/sex from DB if available
+        detailedAddress: _formData.detailedAddress.isEmpty ? (address.split('\n').firstOrNull ?? address) : _formData.detailedAddress,
+        detailedAddress2: _formData.detailedAddress2.isEmpty ? (address.split('\n').skip(1).join(', ')) : _formData.detailedAddress2,
+        ageSex: fetchedAgeSex,
       );
-    } on PostgrestException catch (e) {
-      if (e.code != 'PGRST116') {
-        // Ignore "No rows found"
-        _showSnackbar('Failed to fetch data: ${e.message}', isError: true);
-      }
+
     } catch (e) {
-      _showSnackbar('Failed to load summary and clinical data: $e',
-          isError: true);
+      debugPrint("Error fetching data: $e");
+      _showSnackbar('Failed to load data: $e', isError: true);
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
@@ -1038,130 +1076,260 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
 
 
   // --- PDF Generation (Omitted for brevity) ---
+// --- PDF Generation ---
+  // --- PDF Generation ---
+  // --- PDF Generation ---
+  // --- PDF Generation ---
+  // --- PDF Generation ---
   Future<void> _generateAndSavePdf() async {
-    setState(() => _isSaving = true); // Use _isSaving to show loading
+    setState(() => _isSaving = true);
     _showSnackbar("Generating PDF...");
 
-    final doc = pw.Document();
-    final data = _formData; // Use the current form data
-
-    // Helper to build a styled text row
-    pw.Widget _buildPdfRow(String label, String value) {
-      if (value.isEmpty) return pw.Container();
-      return pw.Padding(
-        padding: const pw.EdgeInsets.symmetric(vertical: 2),
-        child: pw.Row(
-          crossAxisAlignment: pw.CrossAxisAlignment.start,
-          children: [
-            pw.SizedBox(
-              width: 150,
-              child: pw.Text(label,
-                  style: pw.TextStyle(fontWeight: pw.FontWeight.bold)),
-            ),
-            pw.Expanded(
-              child: pw.Text(value),
-            ),
-          ],
-        ),
-      );
-    }
-
-    // Helper to build a section (textarea)
-    pw.Widget _buildPdfSection(String label, String value) {
-      if (value.isEmpty) return pw.Container();
-      return pw.Padding(
-        padding: const pw.EdgeInsets.symmetric(vertical: 5),
-        child: pw.Column(
-          crossAxisAlignment: pw.CrossAxisAlignment.start,
-          children: [
-            pw.Text(label,
-                style:
-                pw.TextStyle(
-                    fontWeight: pw.FontWeight.bold, fontSize: 13)),
-            pw.Divider(height: 5),
-            pw.Text(value),
-          ],
-        ),
-      );
-    }
-
-    doc.addPage(
-      pw.MultiPage(
-        pageFormat: PdfPageFormat.a4,
-        margin: const pw.EdgeInsets.all(32),
-        build: (pw.Context context) => [
-          pw.Header(
-            level: 0,
-            child: pw.Text('Discharge Summary',
-                style:
-                pw.TextStyle(fontSize: 20, fontWeight: pw.FontWeight.bold)),
-          ),
-          _buildPdfRow('Patient Name:', data.patientName),
-          _buildPdfRow('Age/Sex:', data.ageSex),
-          _buildPdfRow('UHID/IPD No.:', data.uhidIpdNumber),
-          _buildPdfRow('Type of Discharge:', data.typeOfDischarge),
-          _buildPdfRow('Consultant In-Charge:', data.consultantInCharge),
-          _buildPdfRow('Admission Date:', data.admissionDateAndTime),
-          _buildPdfRow('Discharge Date:', data.dischargeDateAndTime),
-          _buildPdfRow(
-              'Address:', '${data.detailedAddress}, ${data.detailedAddress2}'),
-          pw.Divider(thickness: 2, height: 20),
-          _buildPdfSection('Provisional Diagnosis:', data.provisionalDiagnosis),
-          _buildPdfSection('Final Diagnosis:',
-              '${data.finalDiagnosis}\n${data.finalDiagnosis2}'),
-          _buildPdfSection(
-              'Procedure:', '${data.procedure}\n${data.procedure2}'),
-          _buildPdfSection(
-              'History of Present Illness:', data.historyOfPresentIllness),
-          _buildPdfSection('Investigations:', data.investigations),
-          _buildPdfSection('Treatment Given:', data.treatmentGiven),
-          _buildPdfSection('Hospital Course:', data.hospitalCourse),
-          _buildPdfSection(
-              'Surgery / Procedure Details:', data.surgeryProcedureDetails),
-          _buildPdfSection(
-              'Condition at time of Discharge:', data.conditionAtDischarge),
-          _buildPdfSection('Discharge Medications:', data.dischargeMedications),
-          pw.Padding(
-              padding: const pw.EdgeInsets.only(bottom: 24),
-              child: pw.Row(
-                  mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-                  children: [
-                    pw.Text('Time:', style: pw.TextStyle(fontWeight: pw.FontWeight.bold)),
-                    pw.Text(data.time),
-                  ]
-              )
-          ),
-        ],
-      ),
-    );
-
-    // --- Save and open the file ---
     try {
-      if (kIsWeb) {
-        // For web, use printing package to open a preview
-        await Printing.layoutPdf(
-            onLayout: (PdfPageFormat format) async => doc.save());
-      } else {
-        // For mobile, save to temporary directory and open
-        final output = await getTemporaryDirectory();
-        final file = File(
-            "${output.path}/DischargeSummary_${widget.uhid}_${widget.ipdId}.pdf");
-        await file.writeAsBytes(await doc.save());
+      final doc = pw.Document();
+      final data = _formData;
 
-        // Open the file
-        final result = await OpenFile.open(file.path);
-        if (result.type != ResultType.done) {
-          _showSnackbar('Could not open the saved PDF file: ${result.message}',
-              isError: true);
-        }
+      final letterheadByteData = await rootBundle.load('assets/letterhead.png');
+      final letterheadImage = pw.MemoryImage(letterheadByteData.buffer.asUint8List());
+
+      // --- THEME ---
+      final PdfColor primaryColor = PdfColor.fromInt(0xff177589);
+      const PdfColor accentColor = PdfColors.grey50; // Lighter background
+      final PdfColor textColor = PdfColors.grey900;
+
+      // Font Sizes (Reduced)
+      const double fsLabel = 7;
+      const double fsValue = 9;
+      const double fsHeader = 9;
+      const double fsBody = 9;
+
+      // --- Helper: Compact Patient Info Item ---
+      pw.Widget _buildPatientInfoItem(String label, String value) {
+        return pw.Expanded(
+          child: pw.Column(
+            crossAxisAlignment: pw.CrossAxisAlignment.start,
+            children: [
+              pw.Text(label.toUpperCase(),
+                  style: pw.TextStyle(color: primaryColor, fontSize: fsLabel, fontWeight: pw.FontWeight.bold)),
+              pw.Text(value,
+                  style: pw.TextStyle(color: textColor, fontSize: fsValue, fontWeight: pw.FontWeight.bold)),
+            ],
+          ),
+        );
+      }
+
+      // --- Helper: Compact Section Header ---
+      pw.Widget _buildSectionHeader(String title) {
+        return pw.Container(
+          margin: const pw.EdgeInsets.only(top: 8, bottom: 4),
+          padding: const pw.EdgeInsets.symmetric(vertical: 2, horizontal: 6),
+          decoration: pw.BoxDecoration(
+            color: primaryColor,
+            borderRadius: const pw.BorderRadius.all(pw.Radius.circular(3)),
+          ),
+          width: double.infinity,
+          child: pw.Text(
+            title.toUpperCase(),
+            style: pw.TextStyle(
+                color: PdfColors.white, fontSize: fsHeader, fontWeight: pw.FontWeight.bold, letterSpacing: 0.5),
+          ),
+        );
+      }
+
+      // --- Helper: Content Generator ---
+      List<pw.Widget> _buildPdfSection(String label, String value) {
+        if (value.trim().isEmpty) return [];
+        final paragraphs = value.split('\n');
+
+        return [
+          pw.Padding(
+            padding: const pw.EdgeInsets.only(top: 4, bottom: 1),
+            child: pw.Text(label,
+                style: pw.TextStyle(color: primaryColor, fontSize: fsBody, fontWeight: pw.FontWeight.bold)),
+          ),
+          ...paragraphs.map((text) {
+            if (text.trim().isEmpty) return pw.SizedBox(height: 2);
+            return pw.Container(
+              padding: const pw.EdgeInsets.only(left: 6),
+              decoration: const pw.BoxDecoration(
+                border: pw.Border(left: pw.BorderSide(color: PdfColors.grey300, width: 1.5)),
+              ),
+              child: pw.Paragraph(
+                text: text,
+                style: const pw.TextStyle(fontSize: fsBody, lineSpacing: 1.3),
+                margin: const pw.EdgeInsets.only(bottom: 2),
+              ),
+            );
+          }).toList(),
+          pw.SizedBox(height: 2),
+        ];
+      }
+
+      doc.addPage(
+        pw.MultiPage(
+          pageTheme: pw.PageTheme(
+            pageFormat: PdfPageFormat.a4,
+            margin: const pw.EdgeInsets.only(top: 140, bottom: 50, left: 40, right: 40),
+            buildBackground: (pw.Context context) {
+              return pw.FullPage(
+                ignoreMargins: true,
+                child: pw.Image(letterheadImage, fit: pw.BoxFit.cover),
+              );
+            },
+          ),
+          build: (pw.Context context) => [
+            // Title
+            pw.Center(
+              child: pw.Text('DISCHARGE SUMMARY',
+                  style: pw.TextStyle(fontSize: 16, fontWeight: pw.FontWeight.bold, color: primaryColor, decoration: pw.TextDecoration.underline)),
+            ),
+            pw.SizedBox(height: 10),
+
+            // Patient Info Card (Compact)
+            pw.Container(
+              padding: const pw.EdgeInsets.symmetric(vertical: 8, horizontal: 10),
+              decoration: pw.BoxDecoration(
+                color: accentColor,
+                borderRadius: const pw.BorderRadius.all(pw.Radius.circular(4)),
+                border: pw.Border.all(color: primaryColor, width: 0.5),
+              ),
+              child: pw.Column(
+                children: [
+                  pw.Row(children: [
+                    _buildPatientInfoItem('Patient Name', data.patientName),
+                    _buildPatientInfoItem('Age / Sex', data.ageSex),
+                  ]),
+                  pw.SizedBox(height: 4), // Reduced Spacing
+                  pw.Divider(color: PdfColors.grey300, thickness: 0.5),
+                  pw.SizedBox(height: 4), // Reduced Spacing
+                  pw.Row(children: [
+                    _buildPatientInfoItem('UHID / IPD No.', data.uhidIpdNumber),
+                    _buildPatientInfoItem('Consultant', data.consultantInCharge),
+                  ]),
+                  pw.SizedBox(height: 4), // Reduced Spacing
+                  pw.Divider(color: PdfColors.grey300, thickness: 0.5),
+                  pw.SizedBox(height: 4), // Reduced Spacing
+                  pw.Row(children: [
+                    _buildPatientInfoItem('Admission Date', data.admissionDateAndTime),
+                    _buildPatientInfoItem('Discharge Date', data.dischargeDateAndTime),
+                  ]),
+                  pw.SizedBox(height: 4), // Reduced Spacing
+                  pw.Row(children: [
+                    _buildPatientInfoItem('Discharge Type', data.typeOfDischarge),
+                    _buildPatientInfoItem('Address', '${data.detailedAddress} ${data.detailedAddress2}'),
+                  ]),
+                ],
+              ),
+            ),
+            pw.SizedBox(height: 8),
+
+            // Content
+            _buildSectionHeader('Clinical Diagnosis'),
+            ..._buildPdfSection('Provisional Diagnosis', data.provisionalDiagnosis),
+            ..._buildPdfSection('Final Diagnosis', '${data.finalDiagnosis}\n${data.finalDiagnosis2}'.trim()),
+            ..._buildPdfSection('Procedure / Surgeries', '${data.procedure}\n${data.procedure2}\n${data.surgeryProcedureDetails}'.trim()),
+
+            _buildSectionHeader('Clinical Summary'),
+            ..._buildPdfSection('History of Present Illness', data.historyOfPresentIllness),
+            ..._buildPdfSection('General Physical Examination', data.generalPhysicalExamination),
+            ..._buildPdfSection('Systemic Examination', data.systemicExamination),
+            ..._buildPdfSection('Investigations', data.investigations),
+            ..._buildPdfSection('Treatment Given', data.treatmentGiven),
+            ..._buildPdfSection('Hospital Course', data.hospitalCourse),
+
+            _buildSectionHeader('Discharge Advice'),
+            ..._buildPdfSection('Condition at Discharge', data.conditionAtDischarge),
+
+            if (data.dischargeMedications.isNotEmpty) ...[
+              pw.Padding(
+                padding: const pw.EdgeInsets.only(top: 4, bottom: 1),
+                child: pw.Text('Discharge Medications',
+                    style: pw.TextStyle(color: primaryColor, fontSize: fsBody, fontWeight: pw.FontWeight.bold)),
+              ),
+              pw.Container(
+                  width: double.infinity,
+                  padding: const pw.EdgeInsets.all(6),
+                  decoration: pw.BoxDecoration(
+                      color: PdfColors.grey50,
+                      border: pw.Border.all(color: PdfColors.grey300),
+                      borderRadius: const pw.BorderRadius.all(pw.Radius.circular(3))
+                  ),
+                  child: pw.Text(data.dischargeMedications, style: const pw.TextStyle(fontSize: fsBody))
+              ),
+              pw.SizedBox(height: 4),
+            ],
+
+            ..._buildPdfSection('Follow Up', data.followUp),
+            ..._buildPdfSection('Instructions', data.dischargeInstruction),
+
+            if (data.reportImmediatelyIf.isNotEmpty)
+              pw.Container(
+                margin: const pw.EdgeInsets.symmetric(vertical: 8),
+                padding: const pw.EdgeInsets.all(6),
+                decoration: pw.BoxDecoration(
+                  color: PdfColors.red50,
+                  border: pw.Border.all(color: PdfColors.red800),
+                  borderRadius: const pw.BorderRadius.all(pw.Radius.circular(4)),
+                ),
+                child: pw.Row(
+                  crossAxisAlignment: pw.CrossAxisAlignment.start,
+                  children: [
+                    pw.Text("!", style: pw.TextStyle(color: PdfColors.red800, fontWeight: pw.FontWeight.bold, fontSize: 14)),
+                    pw.SizedBox(width: 6),
+                    pw.Expanded(
+                      child: pw.Column(
+                        crossAxisAlignment: pw.CrossAxisAlignment.start,
+                        children: [
+                          pw.Text('EMERGENCY: REPORT IMMEDIATELY IF:',
+                              style: pw.TextStyle(fontWeight: pw.FontWeight.bold, color: PdfColors.red900, fontSize: 9)),
+                          pw.Text(data.reportImmediatelyIf, style: const pw.TextStyle(color: PdfColors.red900, fontSize: 9)),
+                        ],
+                      ),
+                    )
+                  ],
+                ),
+              ),
+
+            pw.SizedBox(height: 20),
+            pw.Divider(thickness: 0.5, color: PdfColors.grey400),
+
+            pw.SizedBox(height: 8),
+            pw.Row(
+                mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+                crossAxisAlignment: pw.CrossAxisAlignment.end,
+                children: [
+                  pw.Column(crossAxisAlignment: pw.CrossAxisAlignment.start, children: [
+                    if (data.emergencyContact.isNotEmpty)
+                      pw.Text('Emergency Contact: ${data.emergencyContact}', style: pw.TextStyle(fontSize: 9, fontWeight: pw.FontWeight.bold)),
+                    pw.Text('Date: ${data.date}   Time: ${data.time}', style: const pw.TextStyle(fontSize: 9, color: PdfColors.grey700)),
+                  ]),
+                  pw.Column(crossAxisAlignment: pw.CrossAxisAlignment.end, children: [
+                    pw.Text(data.summaryPreparedBy.isNotEmpty ? data.summaryPreparedBy : "Doctor's Signature",
+                        style: pw.TextStyle(fontSize: 10, fontWeight: pw.FontWeight.bold)),
+                    pw.SizedBox(height: 15),
+                    pw.Text("Authorized Signatory", style: const pw.TextStyle(fontSize: 8, color: PdfColors.grey600)),
+                  ]),
+                ]
+            ),
+          ],
+        ),
+      );
+
+      if (kIsWeb) {
+        await Printing.layoutPdf(onLayout: (PdfPageFormat format) async => doc.save());
+      } else {
+        final output = await getTemporaryDirectory();
+        final file = File("${output.path}/DischargeSummary_${widget.uhid}_${widget.ipdId}.pdf");
+        await file.writeAsBytes(await doc.save());
+        await OpenFile.open(file.path);
       }
     } catch (e) {
-      _showSnackbar('Failed to save or open PDF: $e', isError: true);
+      debugPrint("PDF Error: $e");
+      _showSnackbar('Failed to generate PDF: $e', isError: true);
     } finally {
       if (mounted) setState(() => _isSaving = false);
     }
   }
-
   // --- Utility (Omitted for brevity) ---
   void _showSnackbar(String message, {bool isError = false}) {
     if (mounted) {
@@ -1174,7 +1342,6 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
     }
   }
 
-  // --- Build Methods (Applying strict casts for safety) ---
   @override
   Widget build(BuildContext context) {
     final isAnyRecordingOrProcessing = _isRecording ||
@@ -1199,128 +1366,131 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
       );
     }
 
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Discharge Summary'),
-        backgroundColor: Colors.white,
-        actions: [
-          // --- PiP Button Added ---
-          IconButton(
-            icon: Icon(Icons.picture_in_picture_alt_outlined,
-                color: _isPipWindowVisible ? Colors.red : Colors.indigo.shade600),
-            tooltip: 'Open Reference Window',
-            onPressed: _togglePipWindow,
-          ),
-          // ------------------------
-          IconButton(
-            onPressed: _isSaving || isAnyRecordingOrProcessing ? null : _handleSave,
-            icon: _isSaving
-                ? const SizedBox(
-                height: 18,
-                width: 18,
-                child: CircularProgressIndicator(
-                    strokeWidth: 2, color: Colors.white))
-                : const Icon(Icons.save, size: 18, color: Colors.indigo),
-            tooltip: 'Save Summary',
-          ),
-          IconButton(
-            onPressed:
-            _isSaving || isAnyRecordingOrProcessing ? null : _generateAndSavePdf,
-            icon: const Icon(Icons.picture_as_pdf, size: 18, color: Colors.indigo),
-            tooltip: 'Download PDF',
-          ),
-        ],
-      ),
-      body: LayoutBuilder(
-        builder: (context, constraints) {
-          return Stack(
-            children: [
-              SingleChildScrollView(
-                child: Padding(
-                  padding: const EdgeInsets.all(16.0),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      _buildPatientDetailsHeader(),
-                      const SizedBox(height: 16),
-                      const Center(
-                        child: Text('DISCHARGE SUMMARY',
-                            style: TextStyle(
-                                fontWeight: FontWeight.bold, fontSize: 18)),
-                      ),
-                      const SizedBox(height: 16),
-                      _buildFullSummaryVoiceControl(isAnyRecordingOrProcessing),
-                      _buildTopSection(isAnyRecordingOrProcessing),
-                      const Divider(thickness: 2, height: 32),
-                      _buildBottomSection(isAnyRecordingOrProcessing),
-                      const Divider(thickness: 2, height: 32),
-                      _buildSignatureSection(isAnyRecordingOrProcessing),
-                      const Divider(thickness: 2, height: 32),
-                      _buildContactDateSection(isAnyRecordingOrProcessing),
-                      _buildActionButtons(isAnyRecordingOrProcessing),
-                    ],
+    // --- WRAPPED IN WillPopScope FOR AUTO-SAVE ---
+    return WillPopScope(
+      onWillPop: () async {
+        // Auto-save if not currently saving or recording
+        if (!_isSaving && !isAnyRecordingOrProcessing) {
+          // Trigger save but don't block UI excessively (or show a quick toast)
+          await _handleSave();
+        }
+        // Allow pop
+        return true;
+      },
+      child: Scaffold(
+        appBar: AppBar(
+          title: const Text('Discharge Summary'),
+          backgroundColor: Colors.white,
+          actions: [
+            IconButton(
+              icon: Icon(Icons.picture_in_picture_alt_outlined,
+                  color: _isPipWindowVisible ? Colors.red : Colors.indigo.shade600),
+              tooltip: 'Open Reference Window',
+              onPressed: _togglePipWindow,
+            ),
+            // Save button kept on top as requested
+            IconButton(
+              onPressed: _isSaving || isAnyRecordingOrProcessing ? null : _handleSave,
+              icon: _isSaving
+                  ? const SizedBox(
+                  height: 18,
+                  width: 18,
+                  child: CircularProgressIndicator(
+                      strokeWidth: 2, color: Colors.white))
+                  : const Icon(Icons.save, size: 18, color: Colors.indigo),
+              tooltip: 'Save Summary',
+            ),
+            IconButton(
+              onPressed:
+              _isSaving || isAnyRecordingOrProcessing ? null : _generateAndSavePdf,
+              icon: const Icon(Icons.picture_as_pdf, size: 18, color: Colors.indigo),
+              tooltip: 'Download PDF',
+            ),
+          ],
+        ),
+        body: LayoutBuilder(
+          builder: (context, constraints) {
+            return Stack(
+              children: [
+                SingleChildScrollView(
+                  child: Padding(
+                    padding: const EdgeInsets.all(16.0),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        _buildPatientDetailsHeader(),
+                        const SizedBox(height: 16),
+                        const Center(
+                          child: Text('DISCHARGE SUMMARY',
+                              style: TextStyle(
+                                  fontWeight: FontWeight.bold, fontSize: 18)),
+                        ),
+                        const SizedBox(height: 16),
+                        _buildFullSummaryVoiceControl(isAnyRecordingOrProcessing),
+                        _buildTopSection(isAnyRecordingOrProcessing),
+                        const Divider(thickness: 2, height: 32),
+                        _buildBottomSection(isAnyRecordingOrProcessing),
+                        const Divider(thickness: 2, height: 32),
+                        _buildSignatureSection(isAnyRecordingOrProcessing),
+                        const Divider(thickness: 2, height: 32),
+                        _buildContactDateSection(isAnyRecordingOrProcessing),
+                        _buildActionButtons(isAnyRecordingOrProcessing),
+                      ],
+                    ),
                   ),
                 ),
-              ),
 
-              // --- PiP Window Integration (Applying Explicit Casts) ---
-              if (_isPipWindowVisible && _healthRecordId != null)
-                Positioned(
-                  left: _pipPosition.dx,
-                  top: _pipPosition.dy,
-                  child: PipReferenceWindow(
-                    key: const ValueKey('pip_discharge_window'),
-                    patientUhid: widget.uhid,
-                    // FIX 1: Explicitly cast the List type here
-                    allGroups: (_allPatientGroups ?? []) as List<DrawingGroup>,
-                    selectedPageData: _pipSelectedPageData,
-                    initialSize: _pipSize,
-                    healthRecordId: _healthRecordId!,
-                    groupToColumnMap: _groupToColumnMap,
-                    onClose: () {
-                      setState(() => _isPipWindowVisible = false);
-                    },
-                    onPageSelected: (dynamic group, dynamic page) {
-                      setState(() {
-                        // FIX 2: Explicitly cast and assign the tuple
-                        _pipSelectedPageData = (group as DrawingGroup, page as DrawingPage);
-                      });
-                    },
-                    onPositionChanged: (delta) {
-                      setState(() {
-                        final newX = (_pipPosition.dx + delta.dx).clamp(
-                            0.0, constraints.maxWidth - _pipSize.width);
-                        final newY = (_pipPosition.dy + delta.dy).clamp(
-                            0.0, constraints.maxHeight - _pipSize.height);
-                        _pipPosition = Offset(newX, newY);
-                      });
-                    },
-                    onSizeChanged: (delta) {
-                      setState(() {
-                        // Keep minimum size reasonable
-                        final newWidth = (_pipSize.width + delta.dx).clamp(300.0, constraints.maxWidth);
-                        // Using a dummy aspect ratio for non-canvas pages, or a fixed ratio.
-                        const double dummyAspectRatio = 1.414; // A4 ratio
-                        // Calculate a new height based on the new width and aspect ratio
-                        double newHeight = newWidth * dummyAspectRatio;
+                // PiP Window
+                if (_isPipWindowVisible && _healthRecordId != null)
+                  Positioned(
+                    left: _pipPosition.dx,
+                    top: _pipPosition.dy,
+                    child: PipReferenceWindow(
+                      key: const ValueKey('pip_discharge_window'),
+                      patientUhid: widget.uhid,
+                      allGroups: (_allPatientGroups ?? []) as List<DrawingGroup>,
+                      selectedPageData: _pipSelectedPageData,
+                      initialSize: _pipSize,
+                      healthRecordId: _healthRecordId!,
+                      groupToColumnMap: _groupToColumnMap,
+                      onClose: () {
+                        setState(() => _isPipWindowVisible = false);
+                      },
+                      onPageSelected: (dynamic group, dynamic page) {
+                        setState(() {
+                          _pipSelectedPageData = (group as DrawingGroup, page as DrawingPage);
+                        });
+                      },
+                      onPositionChanged: (delta) {
+                        setState(() {
+                          final newX = (_pipPosition.dx + delta.dx).clamp(
+                              0.0, constraints.maxWidth - _pipSize.width);
+                          final newY = (_pipPosition.dy + delta.dy).clamp(
+                              0.0, constraints.maxHeight - _pipSize.height);
+                          _pipPosition = Offset(newX, newY);
+                        });
+                      },
+                      onSizeChanged: (delta) {
+                        setState(() {
+                          final newWidth = (_pipSize.width + delta.dx).clamp(300.0, constraints.maxWidth);
+                          const double dummyAspectRatio = 1.414;
+                          double newHeight = newWidth * dummyAspectRatio;
 
-                        // Clamp height to stay within screen bounds
-                        if (newHeight > constraints.maxHeight - _pipPosition.dy) {
-                          newHeight = constraints.maxHeight - _pipPosition.dy;
-                          // Recalculate width to maintain ratio
-                          final recalculatedWidth = newHeight / dummyAspectRatio;
-                          _pipSize = Size(recalculatedWidth.clamp(300.0, constraints.maxWidth), newHeight);
-                        } else {
-                          _pipSize = Size(newWidth, newHeight);
-                        }
-                      });
-                    },
+                          if (newHeight > constraints.maxHeight - _pipPosition.dy) {
+                            newHeight = constraints.maxHeight - _pipPosition.dy;
+                            final recalculatedWidth = newHeight / dummyAspectRatio;
+                            _pipSize = Size(recalculatedWidth.clamp(300.0, constraints.maxWidth), newHeight);
+                          } else {
+                            _pipSize = Size(newWidth, newHeight);
+                          }
+                        });
+                      },
+                    ),
                   ),
-                ),
-              // ------------------------------------
-            ],
-          );
-        },
+              ],
+            );
+          },
+        ),
       ),
     );
   }
@@ -1409,6 +1579,7 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        // --- Discharge Type Radio Buttons ---
         Row(
           children: [
             const Text('Type of Discharge:',
@@ -1428,6 +1599,8 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
             )),
           ],
         ),
+
+        // --- Row: Consultant & Admission Date (Editable) ---
         Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -1444,19 +1617,35 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
                 isAnyRecordingOrProcessing: isAnyRecordingOrProcessing,
               ),
             ),
+            const SizedBox(width: 10),
             Expanded(
               child: VoiceInput(
-                fieldName: 'Discharge Date & Time',
-                currentValue: _formData.dischargeDateAndTime,
-                onChanged: (v) =>
-                    _handleInputChange(v, 'dischargeDateAndTime'),
+                fieldName: 'Admission Date & Time', // Now Editable
+                currentValue: _formData.admissionDateAndTime,
+                onChanged: (v) => _handleInputChange(v, 'admissionDateAndTime'),
                 disabled: _isProcessingAudio,
-                disableVoiceFill: true,
+                // Optional: Enable voice fill if you want to dictate the date
+                onVoiceFill: () => _toggleFieldRecording(
+                    'admissionDateAndTime', 'Admission Date & Time'),
+                isRecording: _isFieldRecording == 'admissionDateAndTime',
+                isProcessing: _isFieldProcessing == 'admissionDateAndTime',
                 isAnyRecordingOrProcessing: isAnyRecordingOrProcessing,
               ),
             ),
           ],
         ),
+
+        // --- Row: Discharge Date ---
+        VoiceInput(
+          fieldName: 'Discharge Date & Time',
+          currentValue: _formData.dischargeDateAndTime,
+          onChanged: (v) => _handleInputChange(v, 'dischargeDateAndTime'),
+          disabled: _isProcessingAudio,
+          disableVoiceFill: true, // Usually auto-filled, but editable
+          isAnyRecordingOrProcessing: isAnyRecordingOrProcessing,
+        ),
+
+        // --- Address Fields ---
         VoiceInput(
           fieldName: 'Detailed Address',
           currentValue: _formData.detailedAddress,
@@ -1473,6 +1662,8 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
           disableVoiceFill: true,
           isAnyRecordingOrProcessing: isAnyRecordingOrProcessing,
         ),
+
+        // --- Diagnosis Section ---
         VoiceInput(
           fieldName: 'Provisional Diagnosis',
           currentValue: _formData.provisionalDiagnosis,
@@ -1485,16 +1676,19 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
           isAnyRecordingOrProcessing: isAnyRecordingOrProcessing,
         ),
         if (_clinicalData != null)
-          TextButton.icon(
-            icon: const Icon(Icons.data_object, size: 16),
-            label: const Text('Fetch from Clinical Notes (Diagnosis 1-3)'),
-            onPressed: _isProcessingAudio || isAnyRecordingOrProcessing
-                ? null
-                : () => _handleFetchClinicalData('provisionalDiagnosis', [
-              'provisionalDiagnosis1',
-              'provisionalDiagnosis2',
-              'provisionalDiagnosis3'
-            ]),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton.icon(
+              icon: const Icon(Icons.data_object, size: 16),
+              label: const Text('Fetch from Clinical Notes (Diagnosis 1-3)'),
+              onPressed: _isProcessingAudio || isAnyRecordingOrProcessing
+                  ? null
+                  : () => _handleFetchClinicalData('provisionalDiagnosis', [
+                'provisionalDiagnosis1',
+                'provisionalDiagnosis2',
+                'provisionalDiagnosis3'
+              ]),
+            ),
           ),
         VoiceInput(
           fieldName: 'Final Diagnosis 1',
@@ -1559,6 +1753,55 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
                 : () => _handleFetchClinicalData(
                 'historyOfPresentIllness', 'mainComplaintsDuration'),
           ),
+        VoiceInput(
+          fieldName: 'General Physical Examination',
+          currentValue: _formData.generalPhysicalExamination,
+          onChanged: (v) => _handleInputChange(v, 'generalPhysicalExamination'),
+          disabled: _isProcessingAudio,
+          onVoiceFill: () => _toggleFieldRecording(
+              'generalPhysicalExamination', 'General Physical Examination'),
+          isRecording: _isFieldRecording == 'generalPhysicalExamination',
+          isProcessing: _isFieldProcessing == 'generalPhysicalExamination',
+          isAnyRecordingOrProcessing: isAnyRecordingOrProcessing,
+        ),
+        if (_clinicalData != null)
+          TextButton.icon(
+            icon: const Icon(Icons.data_object, size: 16),
+            label: const Text('Fetch from Clinical Notes (General Exam)'),
+            onPressed: _isProcessingAudio || isAnyRecordingOrProcessing
+                ? null
+                : () => _handleFetchClinicalData(
+                'generalPhysicalExamination', 'generalPhysicalExamination'),
+          ),
+
+        VoiceInput(
+          fieldName: 'Systemic Examination',
+          currentValue: _formData.systemicExamination,
+          onChanged: (v) => _handleInputChange(v, 'systemicExamination'),
+          disabled: _isProcessingAudio,
+          onVoiceFill: () => _toggleFieldRecording(
+              'systemicExamination', 'Systemic Examination'),
+          isRecording: _isFieldRecording == 'systemicExamination',
+          isProcessing: _isFieldProcessing == 'systemicExamination',
+          isAnyRecordingOrProcessing: isAnyRecordingOrProcessing,
+        ),
+        if (_clinicalData != null)
+          TextButton.icon(
+            icon: const Icon(Icons.data_object, size: 16),
+            label: const Text('Fetch from Clinical Notes (Systemic Exams)'),
+            onPressed: _isProcessingAudio || isAnyRecordingOrProcessing
+                ? null
+                : () => _handleFetchClinicalData(
+                'systemicExamination', [
+              'systemicExaminationCardiovascular',
+              'respiratory',
+              'perAbdomen',
+              'neurology',
+              'skeletal',
+              'otherFindings'
+            ]),
+          ),
+        // ----------------------------
         VoiceInput(
           fieldName: 'Investigations',
           currentValue: _formData.investigations,
