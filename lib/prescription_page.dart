@@ -14,6 +14,7 @@ import 'drawing_models.dart';
 import 'pdf_generator.dart';
 // --- NEW IMPORT ---
 import 'floating_reference_window.dart'; // Import the new reusable file
+import 'page_layout_definitions.dart'; // Import the new file
 
 // Extension for list safety
 extension IterableX<T> on Iterable<T> {
@@ -113,7 +114,7 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     setState(() => _isLoadingPrescription = true);
 
     try {
-      // 1. Fetch latest data from server
+      // 1. Fetch latest data
       final ipdResponse = await supabase
           .from('ipd_registration')
           .select('*, patient_detail(*), bed_management(*)')
@@ -122,68 +123,60 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
           .maybeSingle();
 
       if (ipdResponse != null) {
-        // 2. Update local state variables
+        // 2. Update local state
         setState(() {
           _ipdRegistrationDetails = ipdResponse;
-          _patientDetails =
-              ipdResponse['patient_detail'] as Map<String, dynamic>? ?? {};
-          _bedDetails =
-              ipdResponse['bed_management'] as Map<String, dynamic>? ?? {};
+          _patientDetails = ipdResponse['patient_detail'] as Map<String, dynamic>? ?? {};
+          _bedDetails = ipdResponse['bed_management'] as Map<String, dynamic>? ?? {};
           _patientName = _patientDetails['name'] as String? ?? 'N/A';
         });
 
-        // 3. Determine which layout to use
-        Map<String, Map<String, double>>? targetLayout;
-        final String gName = widget.groupName.toLowerCase();
-
-        if (widget.groupName == 'Indoor Patient File') {
-          targetLayout = _indoorFileLayout;
-        } else if (gName.contains('progress') ||
-            gName.contains('nursing notes') ||
-            gName.contains('dr visit') ||
-            gName.contains('glucose') ||
-            gName.contains('patient charges') ||
-            gName.contains('tpr') ||
-            gName.contains('clinical notes')) {
-          targetLayout = _progressNoteLayout;
-        }
+        // 3. Get Layout from the new separate file
+        final targetLayout = PageLayoutDefinitions.getLayoutForGroup(widget.groupName);
 
         if (targetLayout != null) {
+          // We need to cast it correctly for the helper function
+          // If it's the specific Indoor layout, logic is handled inside _applyNewDetailsToPage
+          // but for generic mapping, we pass the map.
           _applyNewDetailsToPage(targetLayout);
+
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-                content: Text('Details refreshed from server and updated!'),
+                content: Text('Details refreshed and layout applied!'),
                 backgroundColor: Colors.green));
           }
         } else {
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-                content: Text('No auto-fill layout available for this page.'),
+                content: Text('No auto-fill layout defined for this page type.'),
                 backgroundColor: Colors.orange));
           }
         }
       }
     } catch (e) {
       debugPrint("Error refreshing details: $e");
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-            content: Text('Error refreshing data: $e'),
-            backgroundColor: Colors.red));
-      }
     } finally {
       if (mounted) setState(() => _isLoadingPrescription = false);
     }
   }
 
-  void _applyNewDetailsToPage(Map<String, Map<String, double>> layout) {
+  void _applyNewDetailsToPage(Map<String, dynamic> layout) {
+    // --- CHECK: Page Logic for Daily Drug Chart ---
+    // If this is a Daily Drug Chart, ONLY allow writing on the FRONT page (Even indices: 0, 2, 4...)
+    // If user is on Page 2 (Index 1), Page 4 (Index 3), etc., we stop.
+    if (widget.groupName == 'Daily Drug Chart' && _currentPageIndex % 2 != 0) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text('Header details are only applied to the front page of the Drug Chart.'),
+            backgroundColor: Colors.orange));
+      }
+      return;
+    }
+
     // 1. Prepare Data Strings
     final String name = _patientDetails['name'] ?? '';
-
     String fullUhid = widget.uhid;
-    final String uhid = fullUhid.length > 5
-        ? fullUhid.substring(fullUhid.length - 5)
-        : fullUhid;
-
+    final String uhid = fullUhid.length > 5 ? fullUhid.substring(fullUhid.length - 5) : fullUhid;
     final String ipd = widget.ipdId.toString();
     final String ageVal = _patientDetails['age']?.toString() ?? '';
     final String sexVal = _patientDetails['gender'] ?? '';
@@ -200,64 +193,65 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     if (address.isEmpty) address = _ipdRegistrationDetails['relative_address'] ?? '';
     final String referredBy = _ipdRegistrationDetails['admission_source'] ?? '';
 
-
     // 2. Get Current Texts
     final currentPage = _viewablePages[_currentPageIndex];
     List<DrawingText> currentTexts = List.from(currentPage.texts);
 
     // 3. Remove OLD auto-filled texts
-    // We identify them by checking if they are at the exact coordinates defined in the layout
-    for (var config in layout.values) {
-      final targetPos = Offset(config['x']!, config['y']!);
+    for (var entry in layout.entries) {
+      final config = entry.value as Map<String, dynamic>;
+      final targetPos = Offset(config['x'] as double, config['y'] as double);
       currentTexts.removeWhere((t) =>
       (t.position.dx - targetPos.dx).abs() < 1.0 &&
           (t.position.dy - targetPos.dy).abs() < 1.0);
-
-      // Also remove the overflow address line if it exists
-      if (_indoorFileLayout.containsKey('address_line_2')) {
-        final addr2Config = _indoorFileLayout['address_line_2']!;
-        final addr2Pos = Offset(addr2Config['x']!, addr2Config['y']!);
-        currentTexts.removeWhere((t) =>
-        (t.position.dx - addr2Pos.dx).abs() < 1.0 &&
-            (t.position.dy - addr2Pos.dy).abs() < 1.0);
-      }
     }
 
     // 4. Create NEW texts
     List<DrawingText> newTexts = [];
+
     void addText(String key, String value) {
       if (value.isEmpty || !layout.containsKey(key)) return;
-      final config = layout[key]!;
+      final config = layout[key] as Map<String, dynamic>;
+
+      // --- CHECK FOR FONT SIZE ---
+      // Defaults to 15.0 if not specified in the layout map
+      double specificFontSize = config.containsKey('fontSize')
+          ? (config['fontSize'] as num).toDouble()
+          : 15.0;
+
       newTexts.add(DrawingText(
         id: generateUniqueId(),
         text: value,
-        position: Offset(config['x']!, config['y']!),
+        position: Offset(config['x'] as double, config['y'] as double),
         colorValue: Colors.black.value,
-        fontSize: 15.0,
+        fontSize: specificFontSize, // Use the specific font size
       ));
     }
 
-    // Add fields (Checks against layout map, so safe for both layouts)
+    bool separateAgeSex = (layout == PageLayoutDefinitions.indoorFileLayout) ||
+        (layout == PageLayoutDefinitions.dailyDrugChartLayout);
+
     addText('patient_name', name);
-    addText('so_wo_do', soWoDo); // <-- ADD THIS LINE
-    addText('age', (layout == _indoorFileLayout) ? ageVal : ageSex); // Indoor file splits age/sex
+    addText('so_wo_do', soWoDo);
+    addText('age', separateAgeSex ? ageVal : ageSex);
     addText('sex', sexVal);
     addText('uhid', uhid);
     addText('room_ward', roomWard);
-    addText('bed_details', roomWard); // Indoor file uses this key
+    addText('bed_details', roomWard);
     addText('ipd_no', ipd);
     addText('doa', doa);
-    addText('admission_date', doa); // Indoor file uses this key
+    addText('admission_date', doa);
     addText('admission_time', admTime);
     addText('consultant', consultant);
     addText('contact', contact);
     addText('referred_dr', referredBy);
 
-    // Special Address Logic for Indoor File
-    if (layout == _indoorFileLayout && address.isNotEmpty) {
-      final config1 = _indoorFileLayout['address']!;
-      final config2 = _indoorFileLayout['address_line_2']!;
-      int charsPerLine1 = (config1['width']! / 12).floor();
+    // Special Address Logic (Only for Indoor File)
+    if (layout == PageLayoutDefinitions.indoorFileLayout && address.isNotEmpty) {
+      final config1 = layout['address'] as Map<String, dynamic>;
+      final config2 = layout['address_line_2'] as Map<String, dynamic>;
+      double width = config1['width'] as double;
+      int charsPerLine1 = (width / 12).floor();
 
       if (address.length <= charsPerLine1) {
         addText('address', address);
@@ -266,11 +260,10 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
         if (splitIndex == -1) splitIndex = charsPerLine1;
         addText('address', address.substring(0, splitIndex));
 
-        // Add line 2 manually
         newTexts.add(DrawingText(
           id: generateUniqueId(),
           text: address.substring(splitIndex).trim(),
-          position: Offset(config2['x']!, config2['y']!),
+          position: Offset(config2['x'] as double, config2['y'] as double),
           colorValue: Colors.black.value,
           fontSize: 15.0,
         ));
@@ -279,7 +272,6 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
 
     // 5. Merge and Save
     currentTexts.addAll(newTexts);
-
     setState(() {
       _viewablePages[_currentPageIndex] = currentPage.copyWith(texts: currentTexts);
     });
@@ -352,30 +344,15 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
 
   // --- UPDATED FUNCTION TO HANDLE MULTIPLE GROUPS ---
   void _autoFillCommonPages() {
-    final String groupNameLower = widget.groupName.toLowerCase();
-
-    // 1. Check if the current group is one of the allowed types
-    bool isAllowedGroup = groupNameLower.contains('progress') ||
-        groupNameLower.contains('nursing notes') ||
-        groupNameLower.contains('dr visit') ||
-        groupNameLower.contains('glucose') ||
-
-        groupNameLower.contains('patient charges');
-        // groupNameLower.contains('tpr');
-
-    if (!isAllowedGroup) return;
+    final layout = PageLayoutDefinitions.getLayoutForGroup(widget.groupName);
+    if (layout == null || layout == PageLayoutDefinitions.indoorFileLayout) return;
 
     if (_viewablePages.isEmpty) return;
 
-    // 2. Prepare Data
+    // Prepare Data
     final String name = _patientDetails['name'] ?? '';
-
-    // UHID (Last 5 digits)
     String fullUhid = widget.uhid;
-    final String uhid = fullUhid.length > 5
-        ? fullUhid.substring(fullUhid.length - 5)
-        : fullUhid;
-
+    final String uhid = fullUhid.length > 5 ? fullUhid.substring(fullUhid.length - 5) : fullUhid;
     final String ipd = widget.ipdId.toString();
     final String ageVal = _patientDetails['age']?.toString() ?? '';
     final String sexVal = _patientDetails['gender'] ?? '';
@@ -383,41 +360,56 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     final String ageSex = "$ageVal / $sexVal";
     final String doa = _ipdRegistrationDetails['admission_date']?.toString() ?? '';
     final String consultant = _ipdRegistrationDetails['under_care_of_doctor'] ?? '';
-
     String room = _bedDetails['room_type']?.toString() ?? '';
     String bedNo = _bedDetails['bed_number']?.toString() ?? '';
     final String roomWard = "$room / $bedNo";
 
+    // Check specific flags
+    bool isDailyDrugChart = (widget.groupName == 'Daily Drug Chart');
+    bool separateAgeSex = isDailyDrugChart; // Add more if needed
+
     bool dataChanged = false;
     List<DrawingPage> updatedPages = [..._viewablePages];
 
-    // 3. Loop through ALL pages in this group
     for (int i = 0; i < updatedPages.length; i++) {
-      // Only fill if the page is currently empty (has no text)
+      // --- LOGIC CHANGE: Skip Back Pages for Daily Drug Chart ---
+      // If index is ODD (1, 3, 5), it is a back page. Skip it.
+      if (isDailyDrugChart && i % 2 != 0) continue;
+      // ----------------------------------------------------------
+
       if (updatedPages[i].texts.isNotEmpty) continue;
 
       List<DrawingText> newTexts = [];
 
       void addText(String key, String value) {
-        // Uses the SAME layout (_progressNoteLayout) for all these groups
-        if (value.isEmpty || !_progressNoteLayout.containsKey(key)) return;
-        final config = _progressNoteLayout[key]!;
+        if (value.isEmpty || !layout.containsKey(key)) return;
+        final config = layout[key] as Map<String, dynamic>;
+
+        // Check font size here too
+        double specificFontSize = config.containsKey('fontSize')
+            ? (config['fontSize'] as num).toDouble()
+            : 15.0;
+
         newTexts.add(DrawingText(
           id: generateUniqueId(),
           text: value,
-          position: Offset(config['x']!, config['y']!),
+          position: Offset(config['x'] as double, config['y'] as double),
           colorValue: Colors.black.value,
-          fontSize: 15.0,
+          fontSize: specificFontSize,
         ));
       }
 
       addText('patient_name', name);
-      addText('age', ageSex);
-      addText('so_wo_do', soWoDo); // Now this will work
+      // Use logic to split or combine age/sex
+      addText('age', separateAgeSex ? ageVal : ageSex);
+      addText('sex', sexVal);
+
+      addText('so_wo_do', soWoDo);
       addText('uhid', uhid);
       addText('room_ward', roomWard);
       addText('ipd_no', ipd);
       addText('doa', doa);
+      addText('admission_date', doa);
       addText('consultant', consultant);
 
       if (newTexts.isNotEmpty) {
@@ -426,7 +418,6 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
       }
     }
 
-    // 4. Save if any page was updated
     if (dataChanged) {
       setState(() {
         _viewablePages = updatedPages;
@@ -434,7 +425,6 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
       _savePrescriptionData();
     }
   }
-
     // 4. Save if any page was updated
 
 
@@ -468,13 +458,15 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
 
     List<DrawingText> newTexts = [];
 
+    final layout = PageLayoutDefinitions.indoorFileLayout;
+
     void addText(String key, String value) {
-      if (value.isEmpty || !_indoorFileLayout.containsKey(key)) return;
-      final config = _indoorFileLayout[key]!;
+      if (value.isEmpty || !layout.containsKey(key)) return;
+      final config = layout[key] as Map<String, dynamic>;
       newTexts.add(DrawingText(
         id: generateUniqueId(),
         text: value,
-        position: Offset(config['x']!, config['y']!),
+        position: Offset(config['x'] as double, config['y'] as double),
         colorValue: Colors.black.value,
         fontSize: 15.0,
       ));
@@ -888,13 +880,23 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
       }
     }
   }
-
+  int _retryAttempts = 0;
   Future<void> _savePrescriptionData({bool isManualSave = false}) async {
+
     // ... (implementation unchanged)
     _debounceTimer?.cancel();
     if (!mounted) return;
     setState(() => _isSaving = true);
+    if (_healthRecordId == null) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Error: Health Record ID missing. Cannot save.'),
+          backgroundColor: Colors.red));
+      setState(() => _isSaving = false);
+      return;
+    }
 
+    // RECURSIVE RETRY LOGIC
+    const int maxRetries = 3;
     try {
       _syncViewablePagesToMasterList();
       final columnName = _groupToColumnMap[widget.groupName];
@@ -944,9 +946,10 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
         await supabase
             .from('user_health_details')
             .update(dataToSave)
-            .eq('id', _healthRecordId!);
+            .eq('id', _healthRecordId!)
+    .timeout(const Duration(seconds: 15));
         _lastSuccessfulSaveTime = DateTime.now();
-
+    _retryAttempts = 0;
         if (mounted && isManualSave) {
           ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
               content: Text('Saved! Refreshing to synchronize.'),
@@ -959,9 +962,22 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
       }
     } catch (e) {
       debugPrint('Error saving: $e');
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Save failed: $e'), backgroundColor: Colors.red));
+      if (_retryAttempts < maxRetries) {
+        _retryAttempts++;
+        debugPrint('Retrying save... Attempt $_retryAttempts');
+        // Wait 2 seconds before retrying
+        await Future.delayed(const Duration(seconds: 2));
+        if (mounted) await _savePrescriptionData(isManualSave: isManualSave);
+      } else {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text('Connection failed. Please check internet and try saving manually.'),
+            backgroundColor: Colors.red,
+            duration: const Duration(seconds: 5),
+            action: SnackBarAction(label: 'Retry', onPressed: () => _savePrescriptionData(isManualSave: true)),
+          ));
+        }
+        _retryAttempts = 0;
       }
     } finally {
       if (mounted) setState(() => _isSaving = false);
@@ -3071,53 +3087,61 @@ class _PrescriptionCanvasPageState extends State<_PrescriptionCanvasPage>
   }
 
   Future<void> _loadAllImages() async {
-    // 1. Load Template Image
-    final String fullTemplateUrl =
-    _getFullImageUrl(widget.drawingPage.templateImageUrl);
+    // 1. Load Template (Priority)
+    final String fullTemplateUrl = _getFullImageUrl(widget.drawingPage.templateImageUrl);
     ui.Image? templateImage;
+
+    // validation: Check if URL exists before trying
     if (fullTemplateUrl.isNotEmpty) {
       try {
+        // OPTIMIZATION: Decode image to specific width (e.g., tablet screen width) to save RAM
+        // You would need a custom image provider or logic here, but standard cache is okay for now
+        // provided you don't load 50 at once.
         templateImage = await ImageCacheManager.loadImage(fullTemplateUrl);
       } catch (e) {
-        debugPrint('Error loading template image: $e');
-        templateImage = null;
+        debugPrint('Error loading template: $e');
       }
     }
 
-    // 2. Load all Drawing Images concurrently (from main list + temporary paste list)
+    // 2. Load Drawing Images with CONCURRENCY LIMIT
     final allImages = [...widget.drawingPage.images];
     if (widget.pastedTransformData != null) {
       allImages.addAll(widget.pastedTransformData!.images);
     }
 
     final newLoadedDrawingImages = <String, ui.Image>{};
-    final futures = <Future<void>>[];
 
-    for (var drawingImage in allImages) {
-      futures.add(() async {
-        final cachedImage =
-        ImageCacheManager.getCachedImage(drawingImage.imageUrl);
-        if (cachedImage != null) {
-          newLoadedDrawingImages[drawingImage.id] = cachedImage;
-          return;
-        }
+    // BATCH LOADING: Load 3 images at a time, not all 30 at once.
+    int chunkSize = 3;
+    for (var i = 0; i < allImages.length; i += chunkSize) {
+      final end = (i + chunkSize < allImages.length) ? i + chunkSize : allImages.length;
+      final chunk = allImages.sublist(i, end);
 
+      await Future.wait(chunk.map((drawingImage) async {
         try {
-          final loadedImage =
-          await ImageCacheManager.loadImage(drawingImage.imageUrl);
+          // Validation: skip empty URLs
+          if (drawingImage.imageUrl.isEmpty) return;
+
+          // Check cache first
+          final cachedImage = ImageCacheManager.getCachedImage(drawingImage.imageUrl);
+          if (cachedImage != null) {
+            newLoadedDrawingImages[drawingImage.id] = cachedImage;
+            return;
+          }
+
+          final loadedImage = await ImageCacheManager.loadImage(drawingImage.imageUrl);
           if (loadedImage != null) {
             newLoadedDrawingImages[drawingImage.id] = loadedImage;
           }
         } catch (e) {
-          debugPrint('Error loading drawing image ${drawingImage.id}: $e');
+          debugPrint('Error loading image ${drawingImage.id}: $e');
         }
-      }());
+      }));
+
+      // Small delay to let UI thread breathe on low-end devices
+      await Future.delayed(const Duration(milliseconds: 50));
     }
 
-    // Wait for all drawing images to load
-    await Future.wait(futures);
-
-    // 3. Update State
     if (mounted) {
       setState(() {
         _templateUiImage = templateImage;
@@ -3127,6 +3151,8 @@ class _PrescriptionCanvasPageState extends State<_PrescriptionCanvasPage>
       });
     }
   }
+
+
 
   @override
   Widget build(BuildContext context) {
