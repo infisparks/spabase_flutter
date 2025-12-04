@@ -1081,6 +1081,9 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
   // --- PDF Generation ---
   // --- PDF Generation ---
   // --- PDF Generation ---
+
+
+
   Future<void> _generateAndSavePdf() async {
     setState(() => _isSaving = true);
     _showSnackbar("Generating PDF...");
@@ -1090,14 +1093,15 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
       final data = _formData;
 
       final letterheadByteData = await rootBundle.load('assets/letterhead.png');
-      final letterheadImage = pw.MemoryImage(letterheadByteData.buffer.asUint8List());
+      final letterheadImage =
+      pw.MemoryImage(letterheadByteData.buffer.asUint8List());
 
       // --- THEME ---
       final PdfColor primaryColor = PdfColor.fromInt(0xff177589);
-      const PdfColor accentColor = PdfColors.grey50; // Lighter background
+      const PdfColor accentColor = PdfColors.grey50;
       final PdfColor textColor = PdfColors.grey900;
 
-      // Font Sizes (Reduced)
+      // Font Sizes
       const double fsLabel = 7;
       const double fsValue = 9;
       const double fsHeader = 9;
@@ -1110,9 +1114,15 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
             crossAxisAlignment: pw.CrossAxisAlignment.start,
             children: [
               pw.Text(label.toUpperCase(),
-                  style: pw.TextStyle(color: primaryColor, fontSize: fsLabel, fontWeight: pw.FontWeight.bold)),
+                  style: pw.TextStyle(
+                      color: primaryColor,
+                      fontSize: fsLabel,
+                      fontWeight: pw.FontWeight.bold)),
               pw.Text(value,
-                  style: pw.TextStyle(color: textColor, fontSize: fsValue, fontWeight: pw.FontWeight.bold)),
+                  style: pw.TextStyle(
+                      color: textColor,
+                      fontSize: fsValue,
+                      fontWeight: pw.FontWeight.bold)),
             ],
           ),
         );
@@ -1131,7 +1141,10 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
           child: pw.Text(
             title.toUpperCase(),
             style: pw.TextStyle(
-                color: PdfColors.white, fontSize: fsHeader, fontWeight: pw.FontWeight.bold, letterSpacing: 0.5),
+                color: PdfColors.white,
+                fontSize: fsHeader,
+                fontWeight: pw.FontWeight.bold,
+                letterSpacing: 0.5),
           ),
         );
       }
@@ -1145,14 +1158,18 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
           pw.Padding(
             padding: const pw.EdgeInsets.only(top: 4, bottom: 1),
             child: pw.Text(label,
-                style: pw.TextStyle(color: primaryColor, fontSize: fsBody, fontWeight: pw.FontWeight.bold)),
+                style: pw.TextStyle(
+                    color: primaryColor,
+                    fontSize: fsBody,
+                    fontWeight: pw.FontWeight.bold)),
           ),
           ...paragraphs.map((text) {
             if (text.trim().isEmpty) return pw.SizedBox(height: 2);
             return pw.Container(
               padding: const pw.EdgeInsets.only(left: 6),
               decoration: const pw.BoxDecoration(
-                border: pw.Border(left: pw.BorderSide(color: PdfColors.grey300, width: 1.5)),
+                border: pw.Border(
+                    left: pw.BorderSide(color: PdfColors.grey300, width: 1.5)),
               ),
               child: pw.Paragraph(
                 text: text,
@@ -1165,11 +1182,29 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
         ];
       }
 
+      // --- NEW Helper: Signature Text Row ---
+      pw.Widget _buildSigRow(String label, String value) {
+        if (value.trim().isEmpty) return pw.SizedBox();
+        return pw.Padding(
+          padding: const pw.EdgeInsets.only(bottom: 2),
+          child: pw.Row(
+            mainAxisSize: pw.MainAxisSize.min,
+            children: [
+              pw.Text("$label: ",
+                  style: const pw.TextStyle(fontSize: 9, color: PdfColors.grey700)),
+              pw.Text(value,
+                  style: pw.TextStyle(fontSize: 9, fontWeight: pw.FontWeight.bold)),
+            ],
+          ),
+        );
+      }
+
       doc.addPage(
         pw.MultiPage(
           pageTheme: pw.PageTheme(
             pageFormat: PdfPageFormat.a4,
-            margin: const pw.EdgeInsets.only(top: 140, bottom: 50, left: 40, right: 40),
+            margin: const pw.EdgeInsets.only(
+                top: 140, bottom: 50, left: 40, right: 40),
             buildBackground: (pw.Context context) {
               return pw.FullPage(
                 ignoreMargins: true,
@@ -1181,13 +1216,18 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
             // Title
             pw.Center(
               child: pw.Text('DISCHARGE SUMMARY',
-                  style: pw.TextStyle(fontSize: 16, fontWeight: pw.FontWeight.bold, color: primaryColor, decoration: pw.TextDecoration.underline)),
+                  style: pw.TextStyle(
+                      fontSize: 16,
+                      fontWeight: pw.FontWeight.bold,
+                      color: primaryColor,
+                      decoration: pw.TextDecoration.underline)),
             ),
             pw.SizedBox(height: 10),
 
-            // Patient Info Card (Compact)
+            // Patient Info Card
             pw.Container(
-              padding: const pw.EdgeInsets.symmetric(vertical: 8, horizontal: 10),
+              padding:
+              const pw.EdgeInsets.symmetric(vertical: 8, horizontal: 10),
               decoration: pw.BoxDecoration(
                 color: accentColor,
                 borderRadius: const pw.BorderRadius.all(pw.Radius.circular(4)),
@@ -1199,24 +1239,29 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
                     _buildPatientInfoItem('Patient Name', data.patientName),
                     _buildPatientInfoItem('Age / Sex', data.ageSex),
                   ]),
-                  pw.SizedBox(height: 4), // Reduced Spacing
+                  pw.SizedBox(height: 4),
                   pw.Divider(color: PdfColors.grey300, thickness: 0.5),
-                  pw.SizedBox(height: 4), // Reduced Spacing
+                  pw.SizedBox(height: 4),
                   pw.Row(children: [
                     _buildPatientInfoItem('UHID / IPD No.', data.uhidIpdNumber),
-                    _buildPatientInfoItem('Consultant', data.consultantInCharge),
+                    _buildPatientInfoItem(
+                        'Consultant', data.consultantInCharge),
                   ]),
-                  pw.SizedBox(height: 4), // Reduced Spacing
+                  pw.SizedBox(height: 4),
                   pw.Divider(color: PdfColors.grey300, thickness: 0.5),
-                  pw.SizedBox(height: 4), // Reduced Spacing
+                  pw.SizedBox(height: 4),
                   pw.Row(children: [
-                    _buildPatientInfoItem('Admission Date', data.admissionDateAndTime),
-                    _buildPatientInfoItem('Discharge Date', data.dischargeDateAndTime),
+                    _buildPatientInfoItem(
+                        'Admission Date', data.admissionDateAndTime),
+                    _buildPatientInfoItem(
+                        'Discharge Date', data.dischargeDateAndTime),
                   ]),
-                  pw.SizedBox(height: 4), // Reduced Spacing
+                  pw.SizedBox(height: 4),
                   pw.Row(children: [
-                    _buildPatientInfoItem('Discharge Type', data.typeOfDischarge),
-                    _buildPatientInfoItem('Address', '${data.detailedAddress} ${data.detailedAddress2}'),
+                    _buildPatientInfoItem(
+                        'Discharge Type', data.typeOfDischarge),
+                    _buildPatientInfoItem('Address',
+                        '${data.detailedAddress} ${data.detailedAddress2}'),
                   ]),
                 ],
               ),
@@ -1225,26 +1270,38 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
 
             // Content
             _buildSectionHeader('Clinical Diagnosis'),
-            ..._buildPdfSection('Provisional Diagnosis', data.provisionalDiagnosis),
-            ..._buildPdfSection('Final Diagnosis', '${data.finalDiagnosis}\n${data.finalDiagnosis2}'.trim()),
-            ..._buildPdfSection('Procedure / Surgeries', '${data.procedure}\n${data.procedure2}\n${data.surgeryProcedureDetails}'.trim()),
+            ..._buildPdfSection(
+                'Provisional Diagnosis', data.provisionalDiagnosis),
+            ..._buildPdfSection('Final Diagnosis',
+                '${data.finalDiagnosis}\n${data.finalDiagnosis2}'.trim()),
+            ..._buildPdfSection(
+                'Procedure / Surgeries',
+                '${data.procedure}\n${data.procedure2}\n${data.surgeryProcedureDetails}'
+                    .trim()),
 
             _buildSectionHeader('Clinical Summary'),
-            ..._buildPdfSection('History of Present Illness', data.historyOfPresentIllness),
-            ..._buildPdfSection('General Physical Examination', data.generalPhysicalExamination),
-            ..._buildPdfSection('Systemic Examination', data.systemicExamination),
+            ..._buildPdfSection(
+                'History of Present Illness', data.historyOfPresentIllness),
+            ..._buildPdfSection(
+                'General Physical Examination', data.generalPhysicalExamination),
+            ..._buildPdfSection(
+                'Systemic Examination', data.systemicExamination),
             ..._buildPdfSection('Investigations', data.investigations),
             ..._buildPdfSection('Treatment Given', data.treatmentGiven),
             ..._buildPdfSection('Hospital Course', data.hospitalCourse),
 
             _buildSectionHeader('Discharge Advice'),
-            ..._buildPdfSection('Condition at Discharge', data.conditionAtDischarge),
+            ..._buildPdfSection(
+                'Condition at Discharge', data.conditionAtDischarge),
 
             if (data.dischargeMedications.isNotEmpty) ...[
               pw.Padding(
                 padding: const pw.EdgeInsets.only(top: 4, bottom: 1),
                 child: pw.Text('Discharge Medications',
-                    style: pw.TextStyle(color: primaryColor, fontSize: fsBody, fontWeight: pw.FontWeight.bold)),
+                    style: pw.TextStyle(
+                        color: primaryColor,
+                        fontSize: fsBody,
+                        fontWeight: pw.FontWeight.bold)),
               ),
               pw.Container(
                   width: double.infinity,
@@ -1252,10 +1309,10 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
                   decoration: pw.BoxDecoration(
                       color: PdfColors.grey50,
                       border: pw.Border.all(color: PdfColors.grey300),
-                      borderRadius: const pw.BorderRadius.all(pw.Radius.circular(3))
-                  ),
-                  child: pw.Text(data.dischargeMedications, style: const pw.TextStyle(fontSize: fsBody))
-              ),
+                      borderRadius:
+                      const pw.BorderRadius.all(pw.Radius.circular(3))),
+                  child: pw.Text(data.dischargeMedications,
+                      style: const pw.TextStyle(fontSize: fsBody))),
               pw.SizedBox(height: 4),
             ],
 
@@ -1269,20 +1326,30 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
                 decoration: pw.BoxDecoration(
                   color: PdfColors.red50,
                   border: pw.Border.all(color: PdfColors.red800),
-                  borderRadius: const pw.BorderRadius.all(pw.Radius.circular(4)),
+                  borderRadius:
+                  const pw.BorderRadius.all(pw.Radius.circular(4)),
                 ),
                 child: pw.Row(
                   crossAxisAlignment: pw.CrossAxisAlignment.start,
                   children: [
-                    pw.Text("!", style: pw.TextStyle(color: PdfColors.red800, fontWeight: pw.FontWeight.bold, fontSize: 14)),
+                    pw.Text("!",
+                        style: pw.TextStyle(
+                            color: PdfColors.red800,
+                            fontWeight: pw.FontWeight.bold,
+                            fontSize: 14)),
                     pw.SizedBox(width: 6),
                     pw.Expanded(
                       child: pw.Column(
                         crossAxisAlignment: pw.CrossAxisAlignment.start,
                         children: [
                           pw.Text('EMERGENCY: REPORT IMMEDIATELY IF:',
-                              style: pw.TextStyle(fontWeight: pw.FontWeight.bold, color: PdfColors.red900, fontSize: 9)),
-                          pw.Text(data.reportImmediatelyIf, style: const pw.TextStyle(color: PdfColors.red900, fontSize: 9)),
+                              style: pw.TextStyle(
+                                  fontWeight: pw.FontWeight.bold,
+                                  color: PdfColors.red900,
+                                  fontSize: 9)),
+                          pw.Text(data.reportImmediatelyIf,
+                              style: const pw.TextStyle(
+                                  color: PdfColors.red900, fontSize: 9)),
                         ],
                       ),
                     )
@@ -1292,34 +1359,56 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
 
             pw.SizedBox(height: 20),
             pw.Divider(thickness: 0.5, color: PdfColors.grey400),
-
             pw.SizedBox(height: 8),
+
+            // --- UPDATED FOOTER SECTION ---
             pw.Row(
-                mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-                crossAxisAlignment: pw.CrossAxisAlignment.end,
-                children: [
-                  pw.Column(crossAxisAlignment: pw.CrossAxisAlignment.start, children: [
+              mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+              crossAxisAlignment: pw.CrossAxisAlignment.end,
+              children: [
+                // Left Column: Emergency + Date + Time
+                pw.Column(
+                  crossAxisAlignment: pw.CrossAxisAlignment.start,
+                  children: [
                     if (data.emergencyContact.isNotEmpty)
-                      pw.Text('Emergency Contact: ${data.emergencyContact}', style: pw.TextStyle(fontSize: 9, fontWeight: pw.FontWeight.bold)),
-                    pw.Text('Date: ${data.date}   Time: ${data.time}', style: const pw.TextStyle(fontSize: 9, color: PdfColors.grey700)),
-                  ]),
-                  pw.Column(crossAxisAlignment: pw.CrossAxisAlignment.end, children: [
-                    pw.Text(data.summaryPreparedBy.isNotEmpty ? data.summaryPreparedBy : "Doctor's Signature",
-                        style: pw.TextStyle(fontSize: 10, fontWeight: pw.FontWeight.bold)),
+                      pw.Text('Emergency Contact: ${data.emergencyContact}',
+                          style: pw.TextStyle(
+                              fontSize: 9, fontWeight: pw.FontWeight.bold)),
+                    pw.SizedBox(height: 4),
+                    pw.Text('Date: ${data.date}   Time: ${data.time}',
+                        style: const pw.TextStyle(
+                            fontSize: 9, color: PdfColors.grey700)),
+                  ],
+                ),
+
+                // Right Column: ALL Signatures/Names
+                pw.Column(
+                  crossAxisAlignment: pw.CrossAxisAlignment.end,
+                  children: [
+                    _buildSigRow('Prepared By', data.summaryPreparedBy),
+                    _buildSigRow('Verified By', data.summaryVerifiedBy),
+                    _buildSigRow('Explained By', data.summaryExplainedBy),
+                    _buildSigRow('Explained To', data.summaryExplainedTo),
+
                     pw.SizedBox(height: 15),
-                    pw.Text("Authorized Signatory", style: const pw.TextStyle(fontSize: 8, color: PdfColors.grey600)),
-                  ]),
-                ]
+                    pw.Text("Authorized Signatory",
+                        style: const pw.TextStyle(
+                            fontSize: 8, color: PdfColors.grey600)),
+                  ],
+                ),
+              ],
             ),
           ],
         ),
       );
 
       if (kIsWeb) {
-        await Printing.layoutPdf(onLayout: (PdfPageFormat format) async => doc.save());
+        await Printing.layoutPdf(
+            onLayout: (PdfPageFormat format) async => doc.save());
       } else {
         final output = await getTemporaryDirectory();
-        final file = File("${output.path}/DischargeSummary_${widget.uhid}_${widget.ipdId}.pdf");
+        final file = File(
+            "${output.path}/DischargeSummary_${widget.uhid}_${widget.ipdId}.pdf");
         await file.writeAsBytes(await doc.save());
         await OpenFile.open(file.path);
       }
