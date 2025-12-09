@@ -221,7 +221,7 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
 
       newTexts.add(DrawingText(
         id: generateUniqueId(),
-        text: value,
+        text: value.toUpperCase(),
         position: Offset(config['x'] as double, config['y'] as double),
         colorValue: Colors.black.value,
         fontSize: specificFontSize, // Use the specific font size
@@ -262,7 +262,7 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
 
         newTexts.add(DrawingText(
           id: generateUniqueId(),
-          text: address.substring(splitIndex).trim(),
+          text: address.substring(splitIndex).trim().toUpperCase(),
           position: Offset(config2['x'] as double, config2['y'] as double),
           colorValue: Colors.black.value,
           fontSize: 15.0,
@@ -392,7 +392,7 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
 
         newTexts.add(DrawingText(
           id: generateUniqueId(),
-          text: value,
+          text: value.toUpperCase(),
           position: Offset(config['x'] as double, config['y'] as double),
           colorValue: Colors.black.value,
           fontSize: specificFontSize,
@@ -465,7 +465,7 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
       final config = layout[key] as Map<String, dynamic>;
       newTexts.add(DrawingText(
         id: generateUniqueId(),
-        text: value,
+        text: value.toUpperCase(),
         position: Offset(config['x'] as double, config['y'] as double),
         colorValue: Colors.black.value,
         fontSize: 15.0,

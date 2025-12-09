@@ -17,7 +17,7 @@ class PageLayoutDefinitions {
     'age':          {'x': 834, 'y': 228},
     'doa':          {'x': 808, 'y': 258},
     'consultant':   {'x': 155, 'y': 289},
-    'so_wo_do':     {'x': 194, 'y': 258}, // Adjusted slightly based on typical flow
+    // 'so_wo_do':     {'x': 194, 'y': 258}, // Adjusted slightly based on typical flow
   };
 
   /// Layout for: Indoor Patient File (Cover Page)

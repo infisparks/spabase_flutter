@@ -1,11 +1,15 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:intl/intl.dart';
+
 // Assuming you have these files:
 import 'supabase_config.dart'; // Your Supabase configuration
 import 'manage_ipd_patient_page.dart'; // Import the next page
 
-// --- Type Definitions ---
+// ==========================================
+//               MODELS
+// ==========================================
+
 class PatientDetail {
   final int patientId;
   final String name;
@@ -25,7 +29,7 @@ class PatientDetail {
     return PatientDetail(
       patientId: json['patient_id'] as int,
       name: json['name'] as String,
-      number: json['number']?.toString(),
+      number: json['number']?.toString(), // Ensure safe string conversion
       uhid: json['uhid'] as String,
       dob: json['dob'] as String?,
     );
@@ -76,9 +80,11 @@ class IPDRegistration {
   final int? bedId;
   final String? dischargeType;
   final String? billNo;
+  final String? underCareOfDoctor; // <--- ADDED FIELD
   final List<dynamic>? paymentDetailRaw;
   final DateTime? createdAt;
-  // Added fields to hold the joined data
+
+  // Joins
   final PatientDetail? patientDetail;
   final BedManagement? bedManagement;
 
@@ -89,9 +95,9 @@ class IPDRegistration {
     this.bedId,
     this.dischargeType,
     this.billNo,
+    this.underCareOfDoctor,
     this.paymentDetailRaw,
     this.createdAt,
-    // Added to constructor
     this.patientDetail,
     this.bedManagement,
   });
@@ -106,11 +112,14 @@ class IPDRegistration {
       bedId: json['bed_id'] as int?,
       dischargeType: json['discharge_type'] as String?,
       billNo: json['billno'] as String?,
+      // Map the doctor field from SQL
+      underCareOfDoctor: json['under_care_of_doctor'] as String?,
       paymentDetailRaw: json['payment_detail'] as List<dynamic>?,
       createdAt: json['created_at'] != null
           ? DateTime.parse(json['created_at'] as String)
           : null,
-      // Parse the nested objects from the JOIN query
+
+      // Parse Nested Objects
       patientDetail: json['patient_detail'] != null
           ? PatientDetail.fromJson(json['patient_detail'] as Map<String, dynamic>)
           : null,
@@ -128,6 +137,7 @@ enum PatientStatus {
   death,
 }
 
+// View Model for UI
 class BillingRecord {
   final int ipdId;
   final String uhid;
@@ -140,6 +150,7 @@ class BillingRecord {
   final DateTime? dischargeDate;
   final String? dischargeType;
   final String? billNo;
+  final String doctorName; // <--- ADDED FIELD
 
   BillingRecord({
     required this.ipdId,
@@ -153,8 +164,13 @@ class BillingRecord {
     this.dischargeDate,
     this.dischargeType,
     this.billNo,
+    required this.doctorName,
   });
 }
+
+// ==========================================
+//               MAIN PAGE
+// ==========================================
 
 class IpdManagementPage extends StatefulWidget {
   const IpdManagementPage({super.key});
@@ -165,21 +181,30 @@ class IpdManagementPage extends StatefulWidget {
 
 class _IpdManagementPageState extends State<IpdManagementPage> with SingleTickerProviderStateMixin {
   final SupabaseClient supabase = SupabaseConfig.client;
+
+  // Data State
   List<IPDRegistration> _allIpdRecordsRaw = [];
+  List<BillingRecord> _dischargedSearchResults = [];
+
+  // Filter State
   String _searchTerm = "";
   String _selectedTab = "non-discharge";
   String _selectedWard = "All";
+
+  // UI State
   bool _isLoading = true;
   bool _isRefreshing = false;
-
-  // --- State for Discharged Search ---
-  final TextEditingController _dischargeNameController = TextEditingController();
-  final TextEditingController _dischargeNumberController = TextEditingController();
-  List<BillingRecord> _dischargedSearchResults = [];
   bool _isSearchingDischarged = false;
-  // ----------------------------------------
 
+  // Controllers
+  final TextEditingController _dischargeSearchController = TextEditingController();
   late TabController _tabController;
+
+  // Colors Palette (Modern Medical Blue/Slate)
+  final Color kPrimaryColor = const Color(0xFF0F172A); // Slate 900
+  final Color kAccentColor = const Color(0xFF3B82F6); // Blue 500
+  final Color kBackgroundColor = const Color(0xFFF1F5F9); // Slate 100
+  final Color kCardColor = Colors.white;
 
   @override
   void initState() {
@@ -194,94 +219,57 @@ class _IpdManagementPageState extends State<IpdManagementPage> with SingleTicker
             _selectedTab = "discharge-partially";
           } else {
             _selectedTab = "discharge";
-            // Clear previous search results and controllers when switching to Discharged tab
             _dischargedSearchResults = [];
-            _dischargeNameController.clear();
-            _dischargeNumberController.clear();
+            _dischargeSearchController.clear();
           }
-          // Reset search term for non-discharged tabs
+          // Reset local search when switching tabs
           if (_selectedTab != "discharge") {
             _searchTerm = "";
           }
         });
       }
     });
-    // Only fetch non-discharged records initially
+    // Initial Fetch
     _fetchIPDRecords(initialLoad: true);
   }
 
   @override
   void dispose() {
     _tabController.dispose();
-    _dischargeNameController.dispose();
-    _dischargeNumberController.dispose();
+    _dischargeSearchController.dispose();
     super.dispose();
   }
 
   Future<void> _logout() async {
-    try {
-      // **TODO: Implement actual Supabase sign-out logic**
-      // await supabase.auth.signOut();
-
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Logged out successfully! (Placeholder)'),
-            backgroundColor: Color(0xFF3B82F6),
-          ),
-        );
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Logout failed: ${e.toString()}'),
-            backgroundColor: Colors.red,
-          ),
-        );
-      }
+    // Implement your logout logic here
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Logged out'), backgroundColor: kAccentColor),
+      );
     }
   }
 
+  // --- Fetch Active Records ---
   Future<void> _fetchIPDRecords({bool initialLoad = false}) async {
     setState(() {
       _isRefreshing = true;
-      if (initialLoad) {
-        _isLoading = true;
-      }
+      if (initialLoad) _isLoading = true;
     });
 
     try {
-      // Fetch ONLY active and partially discharged records for in-memory filtering.
       final response = await supabase
           .from('ipd_registration')
-          .select(
-          '*, '
-              'patient_detail!inner(*), '
-              'bed_management(*)'
-      )
+          .select('*, patient_detail!inner(*), bed_management(*)')
           .or('discharge_date.is.null,discharge_type.eq.Discharge Partially')
           .order("created_at", ascending: false);
 
       final List<Map<String, dynamic>> ipdData = List.from(response);
       _allIpdRecordsRaw = ipdData.map((json) => IPDRegistration.fromJson(json)).toList();
 
-    } on PostgrestException catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Supabase Error fetching data: ${e.message}'),
-            backgroundColor: Colors.red,
-          ),
-        );
-      }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Failed to load IPD records: ${e.toString()}'),
-            backgroundColor: Colors.red,
-          ),
+          SnackBar(content: Text('Error loading data: $e'), backgroundColor: Colors.red),
         );
       }
     } finally {
@@ -294,81 +282,55 @@ class _IpdManagementPageState extends State<IpdManagementPage> with SingleTicker
     }
   }
 
-  // --- Function to search Discharged Records (FIXED) ---
+  // --- Search Discharged Records (FIXED) ---
   Future<void> _fetchDischargedRecordsBySearch() async {
-    final nameSearch = _dischargeNameController.text.trim();
-    final numberSearch = _dischargeNumberController.text.trim();
+    final searchInput = _dischargeSearchController.text.trim();
 
-    if (nameSearch.isEmpty && numberSearch.isEmpty) {
-      setState(() {
-        _dischargedSearchResults = [];
-      });
+    if (searchInput.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Please enter a name or mobile number to search.'),
-          backgroundColor: Colors.orange,
-        ),
+        const SnackBar(content: Text('Please enter a Name, Mobile or UHID'), backgroundColor: Colors.orange),
       );
       return;
     }
 
     setState(() {
       _isSearchingDischarged = true;
-      _dischargedSearchResults = []; // Clear previous results immediately
+      _dischargedSearchResults = [];
     });
 
     try {
-      // 1. Start query chain and select columns
+      // 1. Basic Query setup
       var query = supabase
           .from('ipd_registration')
-          .select(
-          '*, '
-              'patient_detail!inner(*), '
-              'bed_management(*)'
-      );
+          .select('*, patient_detail!inner(*), bed_management(*)')
+          .not('discharge_date', 'is', null);
 
-      // 2. Apply the main filter (must be discharged)
-      query = query.not('discharge_date', 'is', null);
+      // 2. Logic to handle Number vs Text search to avoid SQL Cast errors
+      final isNumeric = double.tryParse(searchInput) != null;
 
-      // 3. Apply search filters
-      if (nameSearch.isNotEmpty) {
-        query = query.like('patient_detail.name', '%$nameSearch%');
+      if (isNumeric) {
+        // If numeric, exact match on the phone number (assuming column is bigint/numeric)
+        // Note: We access the joined table column
+        query = query.eq('patient_detail.number', searchInput);
+      } else {
+        // If text, Perform ILIKE on Name or UHID
+        // We use !inner on join so we can filter by child columns
+        query = query.or('name.ilike.%$searchInput%,uhid.ilike.%$searchInput%', referencedTable: 'patient_detail');
       }
 
-      if (numberSearch.isNotEmpty) {
-        // DEFINITIVE FIX: Use .filter() with ILIKE and PostgreSQL casting
-        // to resolve the "bigint ~~ unknown" error.
-        query = query.filter('patient_detail.number::text', 'ilike', '%$numberSearch%');
-      }
-
-      // 4. Apply ordering and limit *last*
-      final response = await query
-          .order("discharge_date", ascending: false)
-          .limit(50);
+      // 3. Execution
+      final response = await query.order("discharge_date", ascending: false).limit(50);
 
       final List<Map<String, dynamic>> ipdData = List.from(response);
       final rawRecords = ipdData.map((json) => IPDRegistration.fromJson(json)).toList();
 
-      // Convert raw records to BillingRecord format for display
       _dischargedSearchResults = _processRawRecords(rawRecords);
 
-    } on PostgrestException catch (e) {
-      if (mounted) {
-        // Show the Supabase error for debugging
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Supabase Error searching data: ${e.message}'),
-            backgroundColor: Colors.red,
-          ),
-        );
-      }
     } catch (e) {
+      debugPrint("Search Error: $e");
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Failed to search discharged records: ${e.toString()}'),
-            backgroundColor: Colors.red,
-          ),
+          SnackBar(content: Text('Search failed. Try searching by exact mobile number or name.'), backgroundColor: Colors.red),
         );
       }
     } finally {
@@ -379,106 +341,88 @@ class _IpdManagementPageState extends State<IpdManagementPage> with SingleTicker
       }
     }
   }
-  // ----------------------------------------
+
+  // --- Helpers ---
 
   String _formatRoomType(String roomType) {
     if (roomType.isEmpty) return "N/A";
     final upperCaseTypes = ["icu", "nicu"];
-    final lowerType = roomType.toLowerCase();
-    if (upperCaseTypes.contains(lowerType)) {
-      return roomType.toUpperCase();
-    }
+    if (upperCaseTypes.contains(roomType.toLowerCase())) return roomType.toUpperCase();
     return roomType.substring(0, 1).toUpperCase() + roomType.substring(1).toLowerCase();
   }
 
-  // Helper function to process raw IPDRegistration list into BillingRecord list
   List<BillingRecord> _processRawRecords(List<IPDRegistration> rawRecords) {
     return rawRecords.map((record) {
-      final patientDetail = record.patientDetail;
-      final bedManagement = record.bedManagement;
+      final patient = record.patientDetail;
+      final bed = record.bedManagement;
 
-      List<PaymentDetailItem> payments = [];
+      // Calculate Payments
+      double totalDeposit = 0.0;
       if (record.paymentDetailRaw != null) {
         try {
-          payments = (record.paymentDetailRaw!)
+          final payments = (record.paymentDetailRaw!)
               .map((item) => PaymentDetailItem.fromJson(item as Map<String, dynamic>))
               .toList();
-        } catch (e) {
-          debugPrint('Error parsing payment_detail for IPD ID ${record.ipdId}: $e');
-        }
+          totalDeposit = payments.fold(0.0, (sum, item) => sum + item.amount);
+        } catch (_) {}
       }
 
-      final totalDeposit = payments.fold<double>(
-        0.0,
-            (sum, payment) => sum + (payment.amount),
-      );
-
-      final dischargeType = record.dischargeType;
-      PatientStatus status;
+      // Determine Status
+      final dType = record.dischargeType;
+      PatientStatus st;
       if (record.dischargeDate != null) {
-        status = dischargeType == "Death" ? PatientStatus.death : PatientStatus.discharged;
-      } else if (dischargeType == "Discharge Partially") {
-        status = PatientStatus.dischargedPartially;
+        st = dType == "Death" ? PatientStatus.death : PatientStatus.discharged;
+      } else if (dType == "Discharge Partially") {
+        st = PatientStatus.dischargedPartially;
       } else {
-        status = PatientStatus.active;
+        st = PatientStatus.active;
       }
 
       return BillingRecord(
         ipdId: record.ipdId,
         uhid: record.uhid,
-        name: patientDetail?.name ?? "Unknown",
-        mobileNumber: patientDetail?.number ?? "N/A",
+        name: patient?.name ?? "Unknown",
+        mobileNumber: patient?.number ?? "N/A",
         depositAmount: totalDeposit,
-        roomType: bedManagement?.roomType != null
-            ? _formatRoomType(bedManagement!.roomType)
-            : "N/A",
-        bedNumber: bedManagement?.bedNumber ?? "N/A",
-        status: status,
+        roomType: bed?.roomType != null ? _formatRoomType(bed!.roomType) : "N/A",
+        bedNumber: bed?.bedNumber ?? "N/A",
+        status: st,
         dischargeDate: record.dischargeDate,
-        dischargeType: dischargeType,
+        dischargeType: dType,
         billNo: record.billNo,
+        doctorName: record.underCareOfDoctor ?? "Not Assigned", // <--- MAPPED HERE
       );
     }).toList();
   }
 
-
-  List<BillingRecord> get _nonDischargedRecords =>
-      _processRawRecords(_allIpdRecordsRaw).where((record) => record.status == PatientStatus.active).toList();
-
-  List<BillingRecord> get _partiallyDischargedRecords => _processRawRecords(_allIpdRecordsRaw)
-      .where((record) => record.status == PatientStatus.dischargedPartially)
-      .toList();
+  // --- Getters for Filters ---
 
   List<BillingRecord> get _activeFilteredRecords {
-    List<BillingRecord> currentRecords = [];
-    if (_selectedTab == "non-discharge") {
-      currentRecords = _nonDischargedRecords;
-    } else { // "discharge-partially"
-      currentRecords = _partiallyDischargedRecords;
-    }
+    List<BillingRecord> source = _selectedTab == "non-discharge"
+        ? _processRawRecords(_allIpdRecordsRaw).where((r) => r.status == PatientStatus.active).toList()
+        : _processRawRecords(_allIpdRecordsRaw).where((r) => r.status == PatientStatus.dischargedPartially).toList();
 
     final term = _searchTerm.trim().toLowerCase();
-    List<BillingRecord> records = [...currentRecords];
 
+    // 1. Filter by Ward
     if (_selectedWard != "All") {
-      records = records.where((rec) => rec.roomType.toLowerCase() == _selectedWard.toLowerCase()).toList();
+      source = source.where((r) => r.roomType.toLowerCase() == _selectedWard.toLowerCase()).toList();
     }
 
+    // 2. Filter by Search Term (Local)
     if (term.isNotEmpty) {
-      records = records.where(
-            (rec) =>
-        rec.ipdId.toString().toLowerCase().contains(term) ||
-            rec.name.toLowerCase().contains(term) ||
-            (rec.mobileNumber.toLowerCase().contains(term)) ||
-            rec.uhid.toLowerCase().contains(term),
+      source = source.where((r) =>
+      r.name.toLowerCase().contains(term) ||
+          r.mobileNumber.contains(term) ||
+          r.uhid.toLowerCase().contains(term) ||
+          r.ipdId.toString().contains(term)
       ).toList();
     }
-    return records;
+    return source;
   }
 
   List<String> get _uniqueWards {
     final wards = <String>{};
-    // Only get wards from currently loaded active/partial records
     for (final record in _allIpdRecordsRaw) {
       if (record.bedManagement != null && record.bedManagement!.roomType.isNotEmpty) {
         wards.add(_formatRoomType(record.bedManagement!.roomType));
@@ -487,20 +431,220 @@ class _IpdManagementPageState extends State<IpdManagementPage> with SingleTicker
     return wards.toList()..sort();
   }
 
+  // ==========================================
+  //               UI BUILD
+  // ==========================================
+
   @override
   Widget build(BuildContext context) {
-    if (_isLoading) {
-      return const Scaffold(
-        backgroundColor: Color(0xFFF8FAFC),
-        body: Center(
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              CircularProgressIndicator(color: Color(0xFF3B82F6)),
-              SizedBox(height: 16),
+    final isDischargedTab = _selectedTab == "discharge";
+    final currentRecords = isDischargedTab ? _dischargedSearchResults : _activeFilteredRecords;
+
+    return Scaffold(
+      backgroundColor: kBackgroundColor,
+      body: _isLoading
+          ? Center(child: CircularProgressIndicator(color: kAccentColor))
+          : CustomScrollView(
+        slivers: [
+          _buildAppBar(),
+          _buildFiltersHeader(isDischargedTab),
+          _buildRecordsList(currentRecords, isDischargedTab),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildAppBar() {
+    return SliverAppBar(
+      expandedHeight: 80.0,
+      floating: true,
+      pinned: true,
+      backgroundColor: Colors.white,
+      surfaceTintColor: Colors.white,
+      elevation: 0,
+      leading: const Icon(Icons.local_hospital_rounded, color: Color(0xFF0F172A), size: 28),
+      title: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            "IPD Management",
+            style: TextStyle(color: Color(0xFF0F172A), fontWeight: FontWeight.bold, fontSize: 20),
+          ),
+          Text(
+            "Admission & Billing Overview",
+            style: TextStyle(color: Colors.grey[500], fontSize: 12),
+          ),
+        ],
+      ),
+      actions: [
+        IconButton(
+          onPressed: _logout,
+          icon: const Icon(Icons.power_settings_new_rounded),
+          color: Colors.redAccent,
+          tooltip: "Logout",
+        )
+      ],
+      bottom: PreferredSize(
+        preferredSize: const Size.fromHeight(1),
+        child: Container(color: Colors.grey[200], height: 1),
+      ),
+    );
+  }
+
+  Widget _buildFiltersHeader(bool isDischargedTab) {
+    return SliverToBoxAdapter(
+      child: Container(
+        color: kBackgroundColor,
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // --- Custom Tab Bar ---
+            Container(
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: Colors.grey.shade200),
+              ),
+              child: TabBar(
+                controller: _tabController,
+                indicatorSize: TabBarIndicatorSize.tab,
+                indicator: BoxDecoration(
+                  color: kPrimaryColor,
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                labelColor: Colors.white,
+                unselectedLabelColor: Colors.grey[600],
+                labelStyle: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
+                dividerColor: Colors.transparent,
+                padding: const EdgeInsets.all(4),
+                tabs: [
+                  const Tab(text: "Active"),
+                  const Tab(text: "Partial"),
+                  const Tab(text: "History"),
+                ],
+              ),
+            ),
+            const SizedBox(height: 20),
+
+            // --- Search Area ---
+            if (isDischargedTab)
+              Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: _dischargeSearchController,
+                      decoration: InputDecoration(
+                        hintText: "Search Name, Mobile, or UHID...",
+                        filled: true,
+                        fillColor: Colors.white,
+                        prefixIcon: const Icon(Icons.search, color: Colors.grey),
+                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                      ),
+                      onSubmitted: (_) => _fetchDischargedRecordsBySearch(),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  ElevatedButton(
+                    onPressed: _isSearchingDischarged ? null : _fetchDischargedRecordsBySearch,
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: kAccentColor,
+                      foregroundColor: Colors.white,
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
+                    ),
+                    child: _isSearchingDischarged
+                        ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
+                        : const Text("Find"),
+                  ),
+                ],
+              )
+            else
+              TextField(
+                onChanged: (val) => setState(() { _searchTerm = val; }),
+                decoration: InputDecoration(
+                  hintText: "Filter active patients...",
+                  filled: true,
+                  fillColor: Colors.white,
+                  prefixIcon: const Icon(Icons.filter_list, color: Colors.grey),
+                  suffixIcon: IconButton(
+                    icon: Icon(Icons.refresh, color: kAccentColor),
+                    onPressed: _fetchIPDRecords,
+                  ),
+                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
+                ),
+              ),
+
+            // --- Ward Filters (Only for Active/Partial) ---
+            if (!isDischargedTab && _uniqueWards.isNotEmpty) ...[
+              const SizedBox(height: 16),
+              SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: Row(
+                  children: [
+                    _buildFilterChip("All", _selectedWard == "All"),
+                    ..._uniqueWards.map((w) => _buildFilterChip(w, _selectedWard == w)),
+                  ],
+                ),
+              ),
+            ],
+
+            const SizedBox(height: 10),
+            // Result Count
+            if(!isDischargedTab || (isDischargedTab && _dischargedSearchResults.isNotEmpty))
               Text(
-                "Loading active IPD records...",
-                style: TextStyle(fontSize: 18, color: Colors.grey),
+                "Showing ${isDischargedTab ? _dischargedSearchResults.length : _activeFilteredRecords.length} records",
+                style: TextStyle(color: Colors.grey[600], fontSize: 12, fontWeight: FontWeight.w500),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildFilterChip(String label, bool isSelected) {
+    return Padding(
+      padding: const EdgeInsets.only(right: 8.0),
+      child: InkWell(
+        onTap: () => setState(() => _selectedWard = label),
+        borderRadius: BorderRadius.circular(20),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          decoration: BoxDecoration(
+            color: isSelected ? kAccentColor : Colors.white,
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(color: isSelected ? kAccentColor : Colors.grey.shade300),
+          ),
+          child: Text(
+            label,
+            style: TextStyle(
+              color: isSelected ? Colors.white : Colors.grey[700],
+              fontWeight: FontWeight.w600,
+              fontSize: 13,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildRecordsList(List<BillingRecord> records, bool isDischargedTab) {
+    if (records.isEmpty) {
+      return SliverFillRemaining(
+        hasScrollBody: false,
+        child: Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                  isDischargedTab ? Icons.person_search_outlined : Icons.bed_outlined,
+                  size: 60, color: Colors.grey[300]
+              ),
+              const SizedBox(height: 16),
+              Text(
+                isDischargedTab ? "Search for closed files" : "No active patients found",
+                style: TextStyle(color: Colors.grey[500], fontSize: 16),
               ),
             ],
           ),
@@ -508,546 +652,151 @@ class _IpdManagementPageState extends State<IpdManagementPage> with SingleTicker
       );
     }
 
-    final isDischargedTab = _selectedTab == "discharge";
-    final currentRecords = isDischargedTab ? _dischargedSearchResults : _activeFilteredRecords;
-
-    return Scaffold(
-      backgroundColor: const Color(0xFFF8FAFC),
-      appBar: AppBar(
-        title: const Text(
-          "IPD Management",
-          style: TextStyle(
-            fontWeight: FontWeight.w600,
-            fontSize: 20,
-          ),
-        ),
-        backgroundColor: Colors.white,
-        foregroundColor: const Color(0xFF1E293B),
-        elevation: 0,
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.logout, color: Color(0xFFEF4444)),
-            onPressed: _logout,
-            tooltip: 'Logout',
-          ),
-          const SizedBox(width: 8),
-        ],
-        bottom: PreferredSize(
-          preferredSize: const Size.fromHeight(1),
-          child: Container(
-            height: 1,
-            color: Colors.grey[200],
-          ),
-        ),
-      ),
-      body: CustomScrollView(
-        slivers: [
-          SliverToBoxAdapter(
-            child: Padding(
-              padding: const EdgeInsets.all(16.0),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text(
-                    "IPD Billing Management",
-                    style: TextStyle(
-                      fontSize: 24,
-                      fontWeight: FontWeight.bold,
-                      color: Color(0xFF1E293B),
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    "Manage and track in-patient billing records and admissions",
-                    style: TextStyle(
-                      fontSize: 16,
-                      color: Colors.grey[600],
-                    ),
-                  ),
-                  const SizedBox(height: 24),
-                  Card(
-                    elevation: 2,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                    margin: EdgeInsets.zero,
-                    child: Padding(
-                      padding: const EdgeInsets.all(16.0),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Container(
-                            decoration: BoxDecoration(
-                              color: Colors.grey[100],
-                              borderRadius: BorderRadius.circular(8),
-                            ),
-                            child: TabBar(
-                              controller: _tabController,
-                              indicator: BoxDecoration(
-                                borderRadius: BorderRadius.circular(8),
-                                color: _tabController.index == 0
-                                    ? const Color(0xFF3B82F6)
-                                    : _tabController.index == 1
-                                    ? Colors.orange[600]
-                                    : Colors.green[600],
-                              ),
-                              labelColor: Colors.white,
-                              unselectedLabelColor: Colors.grey[700],
-                              isScrollable: true,
-                              tabs: [
-                                Tab(
-                                  child: Row(
-                                    mainAxisAlignment: MainAxisAlignment.center,
-                                    children: [
-                                      const Icon(Icons.cancel_outlined, size: 18),
-                                      const SizedBox(width: 8),
-                                      Text('Active (${_nonDischargedRecords.length})'),
-                                    ],
-                                  ),
-                                ),
-                                Tab(
-                                  child: Row(
-                                    mainAxisAlignment: MainAxisAlignment.center,
-                                    children: [
-                                      const Icon(Icons.content_paste_outlined, size: 18),
-                                      const SizedBox(width: 8),
-                                      Text('Partial Discharge (${_partiallyDischargedRecords.length})'),
-                                    ],
-                                  ),
-                                ),
-                                Tab(
-                                  child: Row(
-                                    mainAxisAlignment: MainAxisAlignment.center,
-                                    children: [
-                                      const Icon(Icons.check_circle_outline, size: 18),
-                                      const SizedBox(width: 8),
-                                      const Text('Closed (Search Only)'),
-                                    ],
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                          const SizedBox(height: 16),
-
-                          // --- Search/Filter UI based on Selected Tab ---
-                          if (isDischargedTab) ...[
-                            _buildDischargedSearch(),
-                          ] else ...[
-                            _buildActiveSearch(),
-                          ],
-
-                          const SizedBox(height: 16),
-                          const Text(
-                            "Filter by Ward/Room Type",
-                            style: TextStyle(
-                              fontSize: 16,
-                              fontWeight: FontWeight.bold,
-                              color: Color(0xFF1E293B),
-                            ),
-                          ),
-                          const SizedBox(height: 8),
-                          Wrap(
-                            spacing: 8.0,
-                            runSpacing: 8.0,
-                            children: [
-                              ChoiceChip(
-                                label: const Text('All Rooms'),
-                                selected: _selectedWard == "All",
-                                onSelected: (selected) {
-                                  setState(() {
-                                    _selectedWard = "All";
-                                  });
-                                },
-                                selectedColor: const Color(0xFF3B82F6),
-                                labelStyle: TextStyle(
-                                  color: _selectedWard == "All" ? Colors.white : Colors.grey[700],
-                                ),
-                                backgroundColor: Colors.grey[100],
-                                shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(20),
-                                  side: BorderSide(
-                                    color: _selectedWard == "All" ? Colors.transparent : Colors.grey[300]!,
-                                  ),
-                                ),
-                              ),
-                              ..._uniqueWards.map(
-                                    (ward) => ChoiceChip(
-                                  label: Text(ward),
-                                  selected: _selectedWard == ward,
-                                  onSelected: (selected) {
-                                    setState(() {
-                                      _selectedWard = ward;
-                                    });
-                                  },
-                                  selectedColor: const Color(0xFF3B82F6),
-                                  labelStyle: TextStyle(
-                                    color: _selectedWard == ward ? Colors.white : Colors.grey[700],
-                                  ),
-                                  backgroundColor: Colors.grey[100],
-                                  shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(20),
-                                    side: BorderSide(
-                                      color: _selectedWard == ward ? Colors.transparent : Colors.grey[300]!,
-                                    ),
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 8),
-                        ],
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                  Text(
-                    isDischargedTab
-                        ? "${currentRecords.length} Search Results"
-                        : "${currentRecords.length} Records Found",
-                    style: const TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.w600,
-                      color: Color(0xFF1E293B),
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                ],
-              ),
-            ),
-          ),
-          _buildPatientsList(currentRecords, isDischargedTab),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildActiveSearch() {
-    return Row(
-      children: [
-        Expanded(
-          child: TextField(
-            decoration: InputDecoration(
-              hintText: "Search by name, ID, mobile, or UHID",
-              prefixIcon: const Icon(Icons.search, color: Colors.grey),
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(8),
-                borderSide: BorderSide.none,
-              ),
-              filled: true,
-              fillColor: Colors.grey[100],
-              contentPadding: const EdgeInsets.symmetric(vertical: 12),
-            ),
-            onChanged: (value) {
-              setState(() {
-                _searchTerm = value;
-              });
-            },
-          ),
-        ),
-        const SizedBox(width: 8),
-        IconButton(
-          icon: _isRefreshing
-              ? const SizedBox(
-            height: 20,
-            width: 20,
-            child: CircularProgressIndicator(
-              strokeWidth: 2,
-              color: Color(0xFF3B82F6),
-            ),
-          )
-              : const Icon(Icons.refresh),
-          onPressed: _isRefreshing ? null : _fetchIPDRecords,
-          tooltip: 'Refresh Active Records',
-          style: IconButton.styleFrom(
-            backgroundColor: Colors.grey[100],
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-            padding: const EdgeInsets.all(12),
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildDischargedSearch() {
-    return Column(
-      children: [
-        // Search by Name
-        Row(
-          children: [
-            Expanded(
-              child: TextField(
-                controller: _dischargeNameController,
-                decoration: InputDecoration(
-                  hintText: "Search by Patient Name",
-                  prefixIcon: const Icon(Icons.person_outline, color: Colors.grey),
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(8),
-                    borderSide: BorderSide.none,
-                  ),
-                  filled: true,
-                  fillColor: Colors.grey[100],
-                  contentPadding: const EdgeInsets.symmetric(vertical: 12),
-                ),
-              ),
-            ),
-            const SizedBox(width: 8),
-            ElevatedButton.icon(
-              onPressed: _isSearchingDischarged ? null : _fetchDischargedRecordsBySearch,
-              icon: _isSearchingDischarged
-                  ? const SizedBox(height: 20, width: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                  : const Icon(Icons.search, size: 20),
-              label: const Text('Search'),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFF3B82F6),
-                foregroundColor: Colors.white,
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 12),
-        // Search by Number
-        Row(
-          children: [
-            Expanded(
-              child: TextField(
-                controller: _dischargeNumberController,
-                keyboardType: TextInputType.phone,
-                decoration: InputDecoration(
-                  hintText: "Search by Mobile Number",
-                  prefixIcon: const Icon(Icons.phone_android, color: Colors.grey),
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(8),
-                    borderSide: BorderSide.none,
-                  ),
-                  filled: true,
-                  fillColor: Colors.grey[100],
-                  contentPadding: const EdgeInsets.symmetric(vertical: 12),
-                ),
-              ),
-            ),
-            const SizedBox(width: 8),
-            ElevatedButton.icon(
-              onPressed: _isSearchingDischarged ? null : _fetchDischargedRecordsBySearch,
-              icon: _isSearchingDischarged
-                  ? const SizedBox(height: 20, width: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                  : const Icon(Icons.search, size: 20),
-              label: const Text('Search'),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFF3B82F6),
-                foregroundColor: Colors.white,
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-              ),
-            ),
-          ],
-        ),
-      ],
-    );
-  }
-
-
-  Widget _buildPatientsList(List<BillingRecord> records, bool isDischargedTab) {
-    if (isDischargedTab && records.isEmpty && !_isSearchingDischarged) {
-      return SliverToBoxAdapter(
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16.0),
-          child: Card(
-            elevation: 2,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-            child: Padding(
-              padding: const EdgeInsets.all(24.0),
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(Icons.search_off, size: 64, color: Colors.grey[300]),
-                  const SizedBox(height: 16),
-                  const Text(
-                    "Search Discharged Records",
-                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Color(0xFF1E293B)),
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    "Please use the search fields above to find closed patient records.",
-                    style: TextStyle(fontSize: 14, color: Colors.grey[600]),
-                    textAlign: TextAlign.center,
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ),
-      );
-    }
-
-    if (records.isEmpty && _isSearchingDischarged) {
-      // Show loading indicator if search is active
-      return const SliverToBoxAdapter(
-        child: Padding(
-          padding: EdgeInsets.symmetric(horizontal: 16.0),
-          child: Center(
-            child: Padding(
-              padding: EdgeInsets.all(24.0),
-              child: CircularProgressIndicator(color: Color(0xFF3B82F6)),
-            ),
-          ),
-        ),
-      );
-    }
-
-    if (records.isEmpty) {
-      // Show no results found if search finished with 0 results or if active tabs are empty
-      return SliverToBoxAdapter(
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16.0),
-          child: Card(
-            elevation: 2,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-            child: Padding(
-              padding: const EdgeInsets.all(24.0),
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(Icons.group_off_outlined, size: 64, color: Colors.grey[300]),
-                  const SizedBox(height: 16),
-                  const Text(
-                    "No patients found",
-                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Color(0xFF1E293B)),
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    isDischargedTab
-                        ? "No records matched your search criteria."
-                        : "Try adjusting your filters or search criteria.",
-                    style: TextStyle(fontSize: 14, color: Colors.grey[600]),
-                    textAlign: TextAlign.center,
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ),
-      );
-    }
-
-    // The list uses SliverList inside SliverPadding, which automatically takes the full available width (responsive for tablet).
     return SliverPadding(
-      padding: const EdgeInsets.symmetric(horizontal: 16.0),
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 40),
       sliver: SliverList(
         delegate: SliverChildBuilderDelegate(
               (context, index) {
             final record = records[index];
-            return Padding(
-              padding: EdgeInsets.only(bottom: index == records.length - 1 ? 16.0 : 8.0),
-              child: Card(
-                elevation: 1,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12),
-                  side: BorderSide(color: Colors.grey.shade200),
-                ),
-                child: InkWell(
-                  onTap: () {
-                    Navigator.of(context).push(
-                      MaterialPageRoute(
-                        builder: (context) => ManageIpdPatientPage(
-                          ipdId: record.ipdId,
-                          uhid: record.uhid,
-                        ),
-                      ),
-                    );
-                  },
-                  borderRadius: BorderRadius.circular(12),
-                  child: Padding(
-                    padding: const EdgeInsets.all(16.0),
+            return _buildPatientCard(record);
+          },
+          childCount: records.length,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildPatientCard(BillingRecord record) {
+    final bool isDischarged = record.status == PatientStatus.discharged || record.status == PatientStatus.death;
+    final color = isDischarged ? Colors.grey : (record.status == PatientStatus.dischargedPartially ? Colors.orange : kAccentColor);
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      decoration: BoxDecoration(
+        color: kCardColor,
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [
+          BoxShadow(color: Colors.black.withOpacity(0.03), blurRadius: 10, offset: const Offset(0, 4)),
+        ],
+      ),
+      child: InkWell(
+        onTap: () {
+          Navigator.of(context).push(
+            MaterialPageRoute(
+              builder: (context) => ManageIpdPatientPage(
+                ipdId: record.ipdId,
+                uhid: record.uhid,
+              ),
+            ),
+          );
+        },
+        borderRadius: BorderRadius.circular(16),
+        child: Padding(
+          padding: const EdgeInsets.all(16.0),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // Header: Bed & Status
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                    decoration: BoxDecoration(
+                      color: color.withOpacity(0.1),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
                     child: Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        // Left side: Patient/Admission Details
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              // Patient Name
-                              Text(
-                                record.name,
-                                style: const TextStyle(
-                                  fontWeight: FontWeight.bold,
-                                  fontSize: 18,
-                                  color: Color(0xFF1E293B),
-                                ),
-                                maxLines: 2,
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                              const SizedBox(height: 4),
-                              // IPD ID & UHID
-                              Text(
-                                'IPD ID: ${record.ipdId} | UHID: ${record.uhid}',
-                                style: TextStyle(
-                                  fontSize: 13,
-                                  color: Colors.grey[700],
-                                ),
-                              ),
-                              const SizedBox(height: 8),
-                              // Mobile Number (Optional)
-                              if (record.mobileNumber != 'N/A')
-                                Row(
-                                  children: [
-                                    Icon(Icons.phone, size: 14, color: Colors.grey[600]),
-                                    const SizedBox(width: 4),
-                                    Text(
-                                      record.mobileNumber,
-                                      style: TextStyle(fontSize: 14, color: Colors.grey[600]),
-                                    ),
-                                  ],
-                                ),
-                              // Discharge Date/Bill No for discharged tab
-                              if (isDischargedTab && record.dischargeDate != null)
-                                Padding(
-                                  padding: const EdgeInsets.only(top: 8.0),
-                                  child: Text(
-                                    'Discharged: ${DateFormat('dd MMM yyyy').format(record.dischargeDate!)}'
-                                        '${record.billNo != null ? ' (Bill: ${record.billNo})' : ''}',
-                                    style: TextStyle(fontSize: 13, color: Colors.green[700], fontWeight: FontWeight.w500),
-                                  ),
-                                ),
-                            ],
-                          ),
-                        ),
-
-                        const SizedBox(width: 16),
-
-                        // Right side: Room and Action
-                        Column(
-                          crossAxisAlignment: CrossAxisAlignment.end,
-                          children: [
-                            // Room/Bed Info Chip
-                            Chip(
-                              label: Text('${record.roomType} - ${record.bedNumber}'),
-                              backgroundColor: const Color(0xFFE0F2FE),
-                              labelStyle: const TextStyle(
-                                color: Color(0xFF2563EB),
-                                fontWeight: FontWeight.w600,
-                                fontSize: 13,
-                              ),
-                              side: BorderSide(color: Colors.blue.shade100),
-                            ),
-                            const SizedBox(height: 12),
-                            // Action Indicator
-                            const Icon(
-                              Icons.arrow_forward_ios,
-                              size: 16,
-                              color: Color(0xFF94A3B8),
-                            ),
-                          ],
+                        Icon(Icons.bed, size: 14, color: color),
+                        const SizedBox(width: 6),
+                        Text(
+                          "${record.roomType} - ${record.bedNumber}",
+                          style: TextStyle(color: color, fontWeight: FontWeight.bold, fontSize: 12),
                         ),
                       ],
                     ),
                   ),
-                ),
+                  if (isDischarged)
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      decoration: BoxDecoration(
+                          color: Colors.red.withOpacity(0.1),
+                          borderRadius: BorderRadius.circular(6)
+                      ),
+                      child: Text(
+                        record.status == PatientStatus.death ? "EXPIRED" : "DISCHARGED",
+                        style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.red),
+                      ),
+                    ),
+                ],
               ),
-            );
-          },
-          childCount: records.length,
+
+              const SizedBox(height: 12),
+
+              // Body: Avatar + Details
+              Row(
+                children: [
+                  CircleAvatar(
+                    radius: 24,
+                    backgroundColor: Colors.grey[100],
+                    child: Text(
+                      record.name.isNotEmpty ? record.name[0].toUpperCase() : "?",
+                      style: TextStyle(color: kPrimaryColor, fontWeight: FontWeight.bold, fontSize: 18),
+                    ),
+                  ),
+                  const SizedBox(width: 16),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          record.name,
+                          style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: kPrimaryColor),
+                          maxLines: 1, overflow: TextOverflow.ellipsis,
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          "UHID: ${record.uhid}",
+                          style: TextStyle(fontSize: 12, color: Colors.grey[500]),
+                        ),
+                        if (record.mobileNumber != 'N/A')
+                          Text(
+                            "Mob: ${record.mobileNumber}",
+                            style: TextStyle(fontSize: 12, color: Colors.grey[500]),
+                          ),
+                      ],
+                    ),
+                  ),
+                  const Icon(Icons.arrow_forward_ios_rounded, size: 16, color: Colors.grey),
+                ],
+              ),
+
+              const SizedBox(height: 12),
+              const Divider(height: 1),
+              const SizedBox(height: 12),
+
+              // Footer: Doctor & Date
+              Row(
+                children: [
+                  Icon(Icons.medical_services_outlined, size: 14, color: Colors.grey[400]),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      "Dr. ${record.doctorName}", // <--- SHOWING DOCTOR NAME
+                      style: TextStyle(fontSize: 13, color: Colors.grey[700], fontWeight: FontWeight.w500),
+                      maxLines: 1, overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  if (isDischarged && record.dischargeDate != null)
+                    Text(
+                      DateFormat('dd MMM yy').format(record.dischargeDate!),
+                      style: TextStyle(fontSize: 12, color: Colors.grey[500]),
+                    ),
+                ],
+              ),
+            ],
+          ),
         ),
       ),
     );
