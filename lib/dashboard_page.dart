@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:intl/intl.dart';
 
-// Assuming you have these files:
+// Assuming you have these files in your project:
 import 'supabase_config.dart'; // Your Supabase configuration
 import 'manage_ipd_patient_page.dart'; // Import the next page
 
@@ -29,7 +29,7 @@ class PatientDetail {
     return PatientDetail(
       patientId: json['patient_id'] as int,
       name: json['name'] as String,
-      number: json['number']?.toString(), // Ensure safe string conversion
+      number: json['number']?.toString(),
       uhid: json['uhid'] as String,
       dob: json['dob'] as String?,
     );
@@ -80,11 +80,10 @@ class IPDRegistration {
   final int? bedId;
   final String? dischargeType;
   final String? billNo;
-  final String? underCareOfDoctor; // <--- ADDED FIELD
+  final String? underCareOfDoctor;
   final List<dynamic>? paymentDetailRaw;
   final DateTime? createdAt;
 
-  // Joins
   final PatientDetail? patientDetail;
   final BedManagement? bedManagement;
 
@@ -112,14 +111,11 @@ class IPDRegistration {
       bedId: json['bed_id'] as int?,
       dischargeType: json['discharge_type'] as String?,
       billNo: json['billno'] as String?,
-      // Map the doctor field from SQL
       underCareOfDoctor: json['under_care_of_doctor'] as String?,
       paymentDetailRaw: json['payment_detail'] as List<dynamic>?,
       createdAt: json['created_at'] != null
           ? DateTime.parse(json['created_at'] as String)
           : null,
-
-      // Parse Nested Objects
       patientDetail: json['patient_detail'] != null
           ? PatientDetail.fromJson(json['patient_detail'] as Map<String, dynamic>)
           : null,
@@ -137,7 +133,6 @@ enum PatientStatus {
   death,
 }
 
-// View Model for UI
 class BillingRecord {
   final int ipdId;
   final String uhid;
@@ -150,7 +145,7 @@ class BillingRecord {
   final DateTime? dischargeDate;
   final String? dischargeType;
   final String? billNo;
-  final String doctorName; // <--- ADDED FIELD
+  final String doctorName;
 
   BillingRecord({
     required this.ipdId,
@@ -190,6 +185,7 @@ class _IpdManagementPageState extends State<IpdManagementPage> with SingleTicker
   String _searchTerm = "";
   String _selectedTab = "non-discharge";
   String _selectedWard = "All";
+  String _selectedDoctor = "All"; // <--- NEW DOCTOR FILTER STATE
 
   // UI State
   bool _isLoading = true;
@@ -200,10 +196,10 @@ class _IpdManagementPageState extends State<IpdManagementPage> with SingleTicker
   final TextEditingController _dischargeSearchController = TextEditingController();
   late TabController _tabController;
 
-  // Colors Palette (Modern Medical Blue/Slate)
-  final Color kPrimaryColor = const Color(0xFF0F172A); // Slate 900
-  final Color kAccentColor = const Color(0xFF3B82F6); // Blue 500
-  final Color kBackgroundColor = const Color(0xFFF1F5F9); // Slate 100
+  // Colors Palette
+  final Color kPrimaryColor = const Color(0xFF0F172A);
+  final Color kAccentColor = const Color(0xFF3B82F6);
+  final Color kBackgroundColor = const Color(0xFFF1F5F9);
   final Color kCardColor = Colors.white;
 
   @override
@@ -213,6 +209,10 @@ class _IpdManagementPageState extends State<IpdManagementPage> with SingleTicker
     _tabController.addListener(() {
       if (_tabController.indexIsChanging || _tabController.index != _tabController.previousIndex) {
         setState(() {
+          // Reset filters on tab switch
+          _selectedWard = "All";
+          _selectedDoctor = "All";
+
           if (_tabController.index == 0) {
             _selectedTab = "non-discharge";
           } else if (_tabController.index == 1) {
@@ -222,7 +222,6 @@ class _IpdManagementPageState extends State<IpdManagementPage> with SingleTicker
             _dischargedSearchResults = [];
             _dischargeSearchController.clear();
           }
-          // Reset local search when switching tabs
           if (_selectedTab != "discharge") {
             _searchTerm = "";
           }
@@ -241,7 +240,6 @@ class _IpdManagementPageState extends State<IpdManagementPage> with SingleTicker
   }
 
   Future<void> _logout() async {
-    // Implement your logout logic here
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Logged out'), backgroundColor: kAccentColor),
@@ -264,8 +262,11 @@ class _IpdManagementPageState extends State<IpdManagementPage> with SingleTicker
           .order("created_at", ascending: false);
 
       final List<Map<String, dynamic>> ipdData = List.from(response);
-      _allIpdRecordsRaw = ipdData.map((json) => IPDRegistration.fromJson(json)).toList();
-
+      if (mounted) {
+        setState(() {
+          _allIpdRecordsRaw = ipdData.map((json) => IPDRegistration.fromJson(json)).toList();
+        });
+      }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -282,7 +283,7 @@ class _IpdManagementPageState extends State<IpdManagementPage> with SingleTicker
     }
   }
 
-  // --- Search Discharged Records (FIXED) ---
+  // --- Search Discharged Records ---
   Future<void> _fetchDischargedRecordsBySearch() async {
     final searchInput = _dischargeSearchController.text.trim();
 
@@ -299,28 +300,20 @@ class _IpdManagementPageState extends State<IpdManagementPage> with SingleTicker
     });
 
     try {
-      // 1. Basic Query setup
       var query = supabase
           .from('ipd_registration')
           .select('*, patient_detail!inner(*), bed_management(*)')
           .not('discharge_date', 'is', null);
 
-      // 2. Logic to handle Number vs Text search to avoid SQL Cast errors
       final isNumeric = double.tryParse(searchInput) != null;
 
       if (isNumeric) {
-        // If numeric, exact match on the phone number (assuming column is bigint/numeric)
-        // Note: We access the joined table column
         query = query.eq('patient_detail.number', searchInput);
       } else {
-        // If text, Perform ILIKE on Name or UHID
-        // We use !inner on join so we can filter by child columns
         query = query.or('name.ilike.%$searchInput%,uhid.ilike.%$searchInput%', referencedTable: 'patient_detail');
       }
 
-      // 3. Execution
       final response = await query.order("discharge_date", ascending: false).limit(50);
-
       final List<Map<String, dynamic>> ipdData = List.from(response);
       final rawRecords = ipdData.map((json) => IPDRegistration.fromJson(json)).toList();
 
@@ -330,7 +323,7 @@ class _IpdManagementPageState extends State<IpdManagementPage> with SingleTicker
       debugPrint("Search Error: $e");
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Search failed. Try searching by exact mobile number or name.'), backgroundColor: Colors.red),
+          SnackBar(content: Text('Search failed. Try searching by exact mobile number.'), backgroundColor: Colors.red),
         );
       }
     } finally {
@@ -356,7 +349,6 @@ class _IpdManagementPageState extends State<IpdManagementPage> with SingleTicker
       final patient = record.patientDetail;
       final bed = record.bedManagement;
 
-      // Calculate Payments
       double totalDeposit = 0.0;
       if (record.paymentDetailRaw != null) {
         try {
@@ -367,7 +359,6 @@ class _IpdManagementPageState extends State<IpdManagementPage> with SingleTicker
         } catch (_) {}
       }
 
-      // Determine Status
       final dType = record.dischargeType;
       PatientStatus st;
       if (record.dischargeDate != null) {
@@ -390,36 +381,12 @@ class _IpdManagementPageState extends State<IpdManagementPage> with SingleTicker
         dischargeDate: record.dischargeDate,
         dischargeType: dType,
         billNo: record.billNo,
-        doctorName: record.underCareOfDoctor ?? "Not Assigned", // <--- MAPPED HERE
+        doctorName: record.underCareOfDoctor ?? "Not Assigned",
       );
     }).toList();
   }
 
   // --- Getters for Filters ---
-
-  List<BillingRecord> get _activeFilteredRecords {
-    List<BillingRecord> source = _selectedTab == "non-discharge"
-        ? _processRawRecords(_allIpdRecordsRaw).where((r) => r.status == PatientStatus.active).toList()
-        : _processRawRecords(_allIpdRecordsRaw).where((r) => r.status == PatientStatus.dischargedPartially).toList();
-
-    final term = _searchTerm.trim().toLowerCase();
-
-    // 1. Filter by Ward
-    if (_selectedWard != "All") {
-      source = source.where((r) => r.roomType.toLowerCase() == _selectedWard.toLowerCase()).toList();
-    }
-
-    // 2. Filter by Search Term (Local)
-    if (term.isNotEmpty) {
-      source = source.where((r) =>
-      r.name.toLowerCase().contains(term) ||
-          r.mobileNumber.contains(term) ||
-          r.uhid.toLowerCase().contains(term) ||
-          r.ipdId.toString().contains(term)
-      ).toList();
-    }
-    return source;
-  }
 
   List<String> get _uniqueWards {
     final wards = <String>{};
@@ -429,6 +396,46 @@ class _IpdManagementPageState extends State<IpdManagementPage> with SingleTicker
       }
     }
     return wards.toList()..sort();
+  }
+
+  // NEW: Get Unique Doctors List
+  List<String> get _uniqueDoctors {
+    final docs = <String>{};
+    for (final record in _allIpdRecordsRaw) {
+      if (record.underCareOfDoctor != null && record.underCareOfDoctor!.isNotEmpty) {
+        docs.add(record.underCareOfDoctor!);
+      }
+    }
+    return docs.toList()..sort();
+  }
+
+  List<BillingRecord> get _activeFilteredRecords {
+    List<BillingRecord> source = _selectedTab == "non-discharge"
+        ? _processRawRecords(_allIpdRecordsRaw).where((r) => r.status == PatientStatus.active).toList()
+        : _processRawRecords(_allIpdRecordsRaw).where((r) => r.status == PatientStatus.dischargedPartially).toList();
+
+    final term = _searchTerm.trim().toLowerCase();
+
+    // 1. Filter by Doctor
+    if (_selectedDoctor != "All") {
+      source = source.where((r) => r.doctorName == _selectedDoctor).toList();
+    }
+
+    // 2. Filter by Ward
+    if (_selectedWard != "All") {
+      source = source.where((r) => r.roomType.toLowerCase() == _selectedWard.toLowerCase()).toList();
+    }
+
+    // 3. Filter by Search Term
+    if (term.isNotEmpty) {
+      source = source.where((r) =>
+      r.name.toLowerCase().contains(term) ||
+          r.mobileNumber.contains(term) ||
+          r.uhid.toLowerCase().contains(term) ||
+          r.ipdId.toString().contains(term)
+      ).toList();
+    }
+    return source;
   }
 
   // ==========================================
@@ -527,7 +534,7 @@ class _IpdManagementPageState extends State<IpdManagementPage> with SingleTicker
             ),
             const SizedBox(height: 20),
 
-            // --- Search Area ---
+            // --- Filters for Discharged ---
             if (isDischargedTab)
               Row(
                 children: [
@@ -560,7 +567,9 @@ class _IpdManagementPageState extends State<IpdManagementPage> with SingleTicker
                   ),
                 ],
               )
-            else
+            // --- Filters for Active/Partial ---
+            else ...[
+              // Text Search
               TextField(
                 onChanged: (val) => setState(() { _searchTerm = val; }),
                 decoration: InputDecoration(
@@ -576,18 +585,66 @@ class _IpdManagementPageState extends State<IpdManagementPage> with SingleTicker
                 ),
               ),
 
-            // --- Ward Filters (Only for Active/Partial) ---
-            if (!isDischargedTab && _uniqueWards.isNotEmpty) ...[
-              const SizedBox(height: 16),
-              SingleChildScrollView(
-                scrollDirection: Axis.horizontal,
-                child: Row(
-                  children: [
-                    _buildFilterChip("All", _selectedWard == "All"),
-                    ..._uniqueWards.map((w) => _buildFilterChip(w, _selectedWard == w)),
-                  ],
+              // NEW: Doctor Dropdown Filter
+              if (_uniqueDoctors.isNotEmpty) ...[
+                const SizedBox(height: 12),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: Colors.grey.shade200),
+                  ),
+                  child: DropdownButtonHideUnderline(
+                    child: DropdownButton<String>(
+                      isExpanded: true,
+                      value: _selectedDoctor,
+                      icon: const Icon(Icons.arrow_drop_down_circle_outlined, color: Colors.grey),
+                      style: const TextStyle(color: Colors.black87, fontWeight: FontWeight.w500),
+                      dropdownColor: Colors.white,
+                      items: [
+                        const DropdownMenuItem(
+                          value: "All",
+                          child: Row(children: [
+                            Icon(Icons.people_outline, size: 18, color: Colors.grey),
+                            SizedBox(width: 10),
+                            Text("All Doctors"),
+                          ]),
+                        ),
+                        ..._uniqueDoctors.map((doc) {
+                          return DropdownMenuItem(
+                            value: doc,
+                            child: Row(children: [
+                              Icon(Icons.medical_services_outlined, size: 18, color: Colors.blueGrey),
+                              SizedBox(width: 10),
+                              Text(" $doc"),
+                            ]),
+                          );
+                        }),
+                      ],
+                      onChanged: (val) {
+                        setState(() {
+                          _selectedDoctor = val!;
+                        });
+                      },
+                    ),
+                  ),
                 ),
-              ),
+              ],
+
+              // Ward Chips
+              if (_uniqueWards.isNotEmpty) ...[
+                const SizedBox(height: 16),
+                SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: Row(
+                    children: [
+                      _buildFilterChip("All", _selectedWard == "All"),
+                      ..._uniqueWards.map((w) => _buildFilterChip(w, _selectedWard == w)),
+                    ],
+                  ),
+                ),
+              ],
             ],
 
             const SizedBox(height: 10),
@@ -783,7 +840,7 @@ class _IpdManagementPageState extends State<IpdManagementPage> with SingleTicker
                   const SizedBox(width: 6),
                   Expanded(
                     child: Text(
-                      "Dr. ${record.doctorName}", // <--- SHOWING DOCTOR NAME
+                      " ${record.doctorName}",
                       style: TextStyle(fontSize: 13, color: Colors.grey[700], fontWeight: FontWeight.w500),
                       maxLines: 1, overflow: TextOverflow.ellipsis,
                     ),

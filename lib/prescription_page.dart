@@ -15,7 +15,8 @@ import 'pdf_generator.dart';
 // --- NEW IMPORT ---
 import 'floating_reference_window.dart'; // Import the new reusable file
 import 'page_layout_definitions.dart'; // Import the new file
-
+import 'package:medford_app/marco/drawing_macro_model.dart'; // NEW
+import 'package:medford_app/marco/autocompletesidebar.dart'; // NEW
 // Extension for list safety
 extension IterableX<T> on Iterable<T> {
   T? firstWhereOrNull(bool Function(T element) test) {
@@ -40,11 +41,11 @@ const Color lightBackground = Color(0xFFF8FAFC);
 
 enum DrawingTool { pen, eraser, image, lasso }
 
-class _CopiedPageData {
-  final List<DrawingLine> lines;
-  final List<DrawingImage> images;
-  _CopiedPageData({required this.lines, required this.images});
-}
+// class _CopiedPageData {
+//   final List<DrawingLine> lines;
+//   final List<DrawingImage> images;
+//   _CopiedPageData({required this.lines, required this.images});
+// }
 
 // --- ADDED: Model for content currently being transformed after paste ---
 class _PastedTransformData {
@@ -103,11 +104,174 @@ class PrescriptionPage extends StatefulWidget {
 }
 
 class _PrescriptionPageState extends State<PrescriptionPage> {
+  bool _isSidebarOpen = false;
   final SupabaseClient supabase = SupabaseConfig.client;
   final ImagePicker _picker = ImagePicker();
 
-// --- AUTO-FILL CONFIGURATION (Calibrated for Medford Indoor Patient File) ---
-  // Canvas Size: 1000 x 1414
+// --- NEW: MACRO LOGIC START ---
+
+  // 1. Logic to Save the selection as a Macro
+  // --- NEW MACRO SAVE LOGIC (Uses Clipboard Data) ---
+  Future<void> _saveMacroFromClipboard() async {
+    final copiedData = AppClipboard().getData();
+
+    if (copiedData == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('No content in clipboard to save! Copy something first.'))
+      );
+      return;
+    }
+
+    // 1. Calculate Bounds from the CLIPBOARD DATA to normalize it
+    // We need to find the top-left corner of the copied content so we can save it starting at (0,0)
+    double minX = double.infinity;
+    double minY = double.infinity;
+
+    for (var line in copiedData.lines) {
+      for (var p in line.points) {
+        if (p.dx < minX) minX = p.dx;
+        if (p.dy < minY) minY = p.dy;
+      }
+    }
+    for (var img in copiedData.images) {
+      if (img.position.dx < minX) minX = img.position.dx;
+      if (img.position.dy < minY) minY = img.position.dy;
+    }
+
+    // If content was empty (rare), default to 0
+    if (minX == double.infinity) minX = 0;
+    if (minY == double.infinity) minY = 0;
+
+    final Offset origin = Offset(minX, minY);
+    TextEditingController nameController = TextEditingController();
+
+    // 2. Show Name Dialog
+    final String? name = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Save Macro from Clipboard'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text('Save the currently copied content as a reusable macro.'),
+            const SizedBox(height: 10),
+            TextField(
+              controller: nameController,
+              decoration: const InputDecoration(
+                labelText: 'Macro Name',
+                hintText: 'e.g., Rx Paracetamol',
+                border: OutlineInputBorder(),
+              ),
+              autofocus: true,
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, nameController.text),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+
+    if (name == null || name.isEmpty) return;
+
+    // 3. Normalize Data (Shift points to 0,0 based on calculated origin)
+    final normalizedLines = copiedData.lines.map((line) {
+      return line.copyWith(
+        points: line.points.map((p) => p - origin).toList(),
+      );
+    }).toList();
+
+    final normalizedImages = copiedData.images.map((img) {
+      return img.copyWith(position: img.position - origin);
+    }).toList();
+
+    // 4. Save to Supabase
+    try {
+      final newMacro = MedicalMacro(
+        id: '', // DB generates this
+        name: name,
+        lines: normalizedLines,
+        images: normalizedImages,
+        userId: supabase.auth.currentUser?.id,
+      );
+
+      await supabase.from('medical_macros').insert({
+        'name': newMacro.name,
+        'content': newMacro.toContentJson(),
+        'user_id': supabase.auth.currentUser?.id,
+      });
+
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Macro Saved Successfully!'), backgroundColor: Colors.green));
+
+      // Optional: Clear clipboard after saving?
+      // AppClipboard().clear();
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error saving macro: $e'), backgroundColor: Colors.red));
+    }
+  }
+
+// --- ADD THIS MISSING FUNCTION ---
+  // --- UPDATED: FETCH HEAVY DATA ON DROP ---
+  Future<void> _onMacroDropped(MedicalMacro lightweightMacro, Offset localOffset) async {
+    // 1. Show a quick loading indicator
+    ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+            content: Text('Downloading macro data...'),
+            duration: Duration(milliseconds: 800)
+        )
+    );
+
+    try {
+      // 2. Fetch the heavy 'content' column JUST for this macro
+      final response = await supabase
+          .from('medical_macros')
+          .select('content')
+          .eq('id', lightweightMacro.id)
+          .single();
+
+      if (response == null) throw "Macro data not found";
+
+      // 3. Parse the heavy data manually
+      final content = response['content'] as Map<String, dynamic>;
+
+      final fetchedLines = (content['lines'] as List<dynamic>?)
+          ?.map((e) => DrawingLine.fromJson(e))
+          .toList() ?? [];
+
+      final fetchedImages = (content['images'] as List<dynamic>?)
+          ?.map((e) => DrawingImage.fromJson(e))
+          .toList() ?? [];
+
+      // 4. Generate new IDs and Paste
+      final pastedImages = fetchedImages.map((img) => img.copyWith(id: generateUniqueId())).toList();
+      final pastedLines = fetchedLines.map((line) => line.copyWith()).toList();
+
+      setState(() {
+        _pastedTransformData = _PastedTransformData(
+          lines: pastedLines,
+          images: pastedImages,
+          offset: _transformToCanvasCoordinates(localOffset),
+          scale: 1.0,
+        );
+        _isTransformingPastedContent = true;
+        _selectedTool = DrawingTool.image;
+      });
+
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to load macro: $e'), backgroundColor: Colors.red)
+      );
+    }
+  }
+  // -------------------------------
+
+
 
 // --- NEW FUNCTION: Refresh and Update Current Page ---
   Future<void> _refreshAndApplyDetails() async {
@@ -161,10 +325,11 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
   }
 
   void _applyNewDetailsToPage(Map<String, dynamic> layout) {
+    // Normalize the group name for safe comparison
+    final String cleanGroupName = widget.groupName.trim().toUpperCase();
+
     // --- CHECK: Page Logic for Daily Drug Chart ---
-    // If this is a Daily Drug Chart, ONLY allow writing on the FRONT page (Even indices: 0, 2, 4...)
-    // If user is on Page 2 (Index 1), Page 4 (Index 3), etc., we stop.
-    if (widget.groupName == 'Daily Drug Chart' && _currentPageIndex % 2 != 0) {
+    if (cleanGroupName == 'DAILY DRUG CHART' && _currentPageIndex % 2 != 0) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
             content: Text('Header details are only applied to the front page of the Drug Chart.'),
@@ -173,6 +338,16 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
       return;
     }
 
+    // --- FIX: OT LOGIC (Skip Page 1 / Index 0) ---
+    // Using cleanGroupName ensures it catches "OT", "ot", " OT " etc.
+    if (cleanGroupName == 'OT' && _currentPageIndex == 0) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text('Header details are NOT applied to the first page of the OT Form.'),
+            backgroundColor: Colors.orange));
+      }
+      return; // <--- This STOPS the function here for Page 1
+    }
     // 1. Prepare Data Strings
     final String name = _patientDetails['name'] ?? '';
     String fullUhid = widget.uhid;
@@ -213,8 +388,6 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
       if (value.isEmpty || !layout.containsKey(key)) return;
       final config = layout[key] as Map<String, dynamic>;
 
-      // --- CHECK FOR FONT SIZE ---
-      // Defaults to 15.0 if not specified in the layout map
       double specificFontSize = config.containsKey('fontSize')
           ? (config['fontSize'] as num).toDouble()
           : 15.0;
@@ -224,7 +397,7 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
         text: value.toUpperCase(),
         position: Offset(config['x'] as double, config['y'] as double),
         colorValue: Colors.black.value,
-        fontSize: specificFontSize, // Use the specific font size
+        fontSize: specificFontSize,
       ));
     }
 
@@ -246,7 +419,6 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     addText('contact', contact);
     addText('referred_dr', referredBy);
 
-    // Special Address Logic (Only for Indoor File)
     if (layout == PageLayoutDefinitions.indoorFileLayout && address.isNotEmpty) {
       final config1 = layout['address'] as Map<String, dynamic>;
       final config2 = layout['address_line_2'] as Map<String, dynamic>;
@@ -270,7 +442,6 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
       }
     }
 
-    // 5. Merge and Save
     currentTexts.addAll(newTexts);
     setState(() {
       _viewablePages[_currentPageIndex] = currentPage.copyWith(texts: currentTexts);
@@ -364,18 +535,24 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     String bedNo = _bedDetails['bed_number']?.toString() ?? '';
     final String roomWard = "$room / $bedNo";
 
+    // Normalize group name
+    final String cleanGroupName = widget.groupName.trim().toUpperCase();
+
     // Check specific flags
-    bool isDailyDrugChart = (widget.groupName == 'Daily Drug Chart');
-    bool separateAgeSex = isDailyDrugChart; // Add more if needed
+    bool isDailyDrugChart = (cleanGroupName == 'DAILY DRUG CHART');
+    bool isOT = (cleanGroupName == 'OT'); // Robust check for OT
+    bool separateAgeSex = isDailyDrugChart;
 
     bool dataChanged = false;
     List<DrawingPage> updatedPages = [..._viewablePages];
 
     for (int i = 0; i < updatedPages.length; i++) {
-      // --- LOGIC CHANGE: Skip Back Pages for Daily Drug Chart ---
-      // If index is ODD (1, 3, 5), it is a back page. Skip it.
+      // Logic for Drug Chart
       if (isDailyDrugChart && i % 2 != 0) continue;
-      // ----------------------------------------------------------
+
+      // --- FIX: Logic for OT (Strictly skip index 0) ---
+      if (isOT && i == 0) continue;
+      // ------------------------------------------------
 
       if (updatedPages[i].texts.isNotEmpty) continue;
 
@@ -385,7 +562,6 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
         if (value.isEmpty || !layout.containsKey(key)) return;
         final config = layout[key] as Map<String, dynamic>;
 
-        // Check font size here too
         double specificFontSize = config.containsKey('fontSize')
             ? (config['fontSize'] as num).toDouble()
             : 15.0;
@@ -400,10 +576,8 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
       }
 
       addText('patient_name', name);
-      // Use logic to split or combine age/sex
       addText('age', separateAgeSex ? ageVal : ageSex);
       addText('sex', sexVal);
-
       addText('so_wo_do', soWoDo);
       addText('uhid', uhid);
       addText('room_ward', roomWard);
@@ -2452,14 +2626,13 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
   }
 
 
-  // --- Build Methods ---
-
   @override
   Widget build(BuildContext context) {
-    // ... (implementation unchanged)
     if (_isLoadingPrescription) {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
+
+    // Error handling for empty pages
     if (_viewablePages.isEmpty &&
         _currentGroup != null &&
         _currentGroup!.pages.isEmpty) {
@@ -2501,18 +2674,19 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
       );
     }
 
-
     final currentPageData = _viewablePages[_currentPageIndex];
     // Disable pan/scale if transforming pasted content
     final bool panScaleEnabled = !_isStylusInteraction &&
         !_isMovingSelectedImage &&
         _selectedTool != DrawingTool.lasso &&
-        !_isTransformingPastedContent; // --- MODIFIED ---
+        !_isTransformingPastedContent;
 
     return WillPopScope(
       onWillPop: _handleBackButton,
       child: Scaffold(
         backgroundColor: lightBackground,
+        // REMOVED: endDrawer is no longer used here.
+
         appBar: AppBar(
           leading: IconButton(
               icon: const Icon(Icons.arrow_back),
@@ -2522,12 +2696,9 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(_patientName,
-                  style: const TextStyle(
-                      fontSize: 16, fontWeight: FontWeight.bold)),
-              Text(
-                  "${currentPageData.pageName} (${currentPageData.groupName})",
-                  style:
-                  const TextStyle(fontSize: 12, color: mediumGreyText)),
+                  style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+              Text("${currentPageData.pageName} (${currentPageData.groupName})",
+                  style: const TextStyle(fontSize: 12, color: mediumGreyText)),
             ],
           ),
           backgroundColor: Colors.white,
@@ -2538,30 +2709,32 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
               tooltip: 'Patient Details',
               onPressed: _showPatientDetailsModal,
             ),
-
-            // --- NEW BUTTON: REFRESH DETAILS ---
             IconButton(
               icon: const Icon(Icons.sync, color: Colors.orange),
-              tooltip: 'Refresh & Update Details from Server',
+              tooltip: 'Refresh',
               onPressed: _isLoadingPrescription ? null : _refreshAndApplyDetails,
             ),
-            // -----------------------------------
 
-            // ... existing PiP button ...
+            // --- 2. UPDATED SIDEBAR TOGGLE ---
+            IconButton(
+              // Highlight blue if open
+              icon: Icon(Icons.widgets_outlined,
+                  color: _isSidebarOpen ? primaryBlue : mediumGreyText),
+              tooltip: 'Smart Macros',
+              onPressed: () {
+                setState(() {
+                  _isSidebarOpen = !_isSidebarOpen;
+                });
+              },
+            ),
+            // --------------------------------
+
             IconButton(
               icon: Icon(Icons.picture_in_picture_alt_outlined,
                   color: _isPipWindowVisible ? Colors.red : primaryBlue),
               tooltip: 'Open Reference Window',
               onPressed: _togglePipWindow,
             ),
-            // --- UPDATED: PiP Window Button (No change here) ---
-            IconButton(
-              icon: Icon(Icons.picture_in_picture_alt_outlined,
-                  color: _isPipWindowVisible ? Colors.red : primaryBlue),
-              tooltip: 'Open Reference Window',
-              onPressed: _togglePipWindow,
-            ),
-            // --- END UPDATED ---
             IconButton(
                 icon: const Icon(Icons.collections_bookmark_outlined,
                     color: primaryBlue),
@@ -2582,8 +2755,7 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
                 padding: const EdgeInsets.only(left: 4.0, right: 4.0),
                 child: Center(
                   child: ActionChip(
-                    onPressed:
-                    _showFolderPageSelector, // Still opens the selector on tap
+                    onPressed: _showFolderPageSelector,
                     label: Text(
                       "${_currentPageIndex + 1}/${_viewablePages.length}",
                       style: const TextStyle(
@@ -2639,124 +2811,143 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
           ),
         ),
 
-        body: LayoutBuilder(
-          builder: (context, constraints) {
-            if (!_isInitialZoomSet) {
-              WidgetsBinding.instance.addPostFrameCallback((_) {
-                if (mounted) {
-                  _setInitialZoom(constraints.biggest);
-                  _isInitialZoomSet = true;
+        body: DragTarget<MedicalMacro>(
+          onAcceptWithDetails: (details) {
+            final RenderBox renderBox = context.findRenderObject() as RenderBox;
+            final localOffset = renderBox.globalToLocal(details.offset);
+            _onMacroDropped(details.data, localOffset);
+
+            // Optional: Close sidebar automatically after drop
+            // setState(() => _isSidebarOpen = false);
+          },
+          builder: (context, candidateData, rejectedData) {
+            return LayoutBuilder(
+              builder: (context, constraints) {
+                if (!_isInitialZoomSet) {
+                  WidgetsBinding.instance.addPostFrameCallback((_) {
+                    if (mounted) {
+                      _setInitialZoom(constraints.biggest);
+                      _isInitialZoomSet = true;
+                    }
+                  });
                 }
-              });
-            }
-            return Stack(
-              children: [
-                Listener(
-                  // Use _handlePointer... methods regardless of paste mode, as they now contain the necessary conditional logic
-                  onPointerDown: _handlePointerDown,
-                  onPointerMove: _handlePointerMove,
-                  onPointerUp: _handlePointerUp,
-                  child: PageView.builder(
-                    controller: _pageController,
-                    itemCount: _viewablePages.length,
-                    onPageChanged: (index) {
-                      setState(() {
-                        _currentPageIndex = index;
-                        _isInitialZoomSet = false;
-                        _transformationController.value = Matrix4.identity();
-                        _selectedImageId = null;
-                        _isMovingSelectedImage = false;
-                        _lassoPoints = [];
-                      });
-                    },
-                    physics: const NeverScrollableScrollPhysics(),
-                    itemBuilder: (context, index) {
-                      return _PrescriptionCanvasPage(
-                        drawingPage: _viewablePages[index],
-                        selectedImageId: _selectedImageId,
-                        redrawNotifier: _redrawNotifier,
-                        lassoPoints:
-                        index == _currentPageIndex ? _lassoPoints : [],
-                        transformationController: _transformationController,
-                        panScaleEnabled: panScaleEnabled,
-                        // --- UPDATED ARGUMENTS ---
-                        isPressureSensitive: _isPressureSensitive,
-                        pastedTransformData: index == _currentPageIndex ? _pastedTransformData : null,
-                        // REMOVED: isEnhancedHandwriting, isVelocitySensitive
-                        // -------------------------
-                        onTap: (details) {
-                          if (!_isTransformingPastedContent && _selectedTool == DrawingTool.image &&
-                              !_isStylusInteraction &&
-                              !_isMovingSelectedImage) {
-                            _handleCanvasTap(_transformToCanvasCoordinates(
-                                details.localPosition));
-                          }
+                return Stack(
+                  children: [
+                    Listener(
+                      onPointerDown: _handlePointerDown,
+                      onPointerMove: _handlePointerMove,
+                      onPointerUp: _handlePointerUp,
+                      child: PageView.builder(
+                        controller: _pageController,
+                        itemCount: _viewablePages.length,
+                        onPageChanged: (index) {
+                          setState(() {
+                            _currentPageIndex = index;
+                            _isInitialZoomSet = false;
+                            _transformationController.value = Matrix4.identity();
+                            _selectedImageId = null;
+                            _isMovingSelectedImage = false;
+                            _lassoPoints = [];
+                          });
                         },
-                      );
-                    },
-                  ),
-                ),
-                if (_selectedImageId != null) _buildImageOverlayControls(),
-                _buildFloatingCopyPasteButton(), // Hides itself if _isTransformingPastedContent is true
-
-                // --- ADDED: Floating Toolbar for Pasted Content ---
-                _buildPastedContentToolbar(),
-                // --- END ADDED ---
-
-                // --- UPDATED: Use the imported PiP Widget ---
-                if (_isPipWindowVisible)
-                  Positioned(
-                    left: _pipPosition.dx,
-                    top: _pipPosition.dy,
-                    child: PipReferenceWindow(
-                      key: const ValueKey('pip_window'),
-                      patientUhid: widget.uhid,
-                      allGroups: _allPatientGroups ?? [],
-                      selectedPageData: _pipSelectedPageData,
-                      initialSize: _pipSize,
-                      healthRecordId: _healthRecordId!,
-                      groupToColumnMap: _groupToColumnMap,
-                      onClose: () {
-                        setState(() => _isPipWindowVisible = false);
-                      },
-                      onPageSelected: (group, page) {
-                        setState(() => _pipSelectedPageData = (group, page));
-                      },
-                      onPositionChanged: (delta) {
-                        setState(() {
-                          final newX = (_pipPosition.dx + delta.dx).clamp(
-                              0.0, constraints.maxWidth - _pipSize.width);
-                          final newY = (_pipPosition.dy + delta.dy).clamp(
-                              0.0, constraints.maxHeight - _pipSize.height);
-                          _pipPosition = Offset(newX, newY);
-                        });
-                      },
-                      onSizeChanged: (delta) {
-                        setState(() {
-                          // Ensure size doesn't go outside boundaries
-                          final newWidth = (_pipSize.width + delta.dx).clamp(
-                              300.0, constraints.maxWidth - _pipPosition.dx);
-                          // Maintain A4 aspect ratio
-                          final newHeight =
-                              (newWidth / canvasWidth) * canvasHeight;
-
-                          // Check bottom boundary
-                          if (newHeight >
-                              constraints.maxHeight - _pipPosition.dy) {
-                            _pipSize = Size(
-                                ((constraints.maxHeight - _pipPosition.dy) /
-                                    canvasHeight) *
-                                    canvasWidth,
-                                constraints.maxHeight - _pipPosition.dy);
-                          } else {
-                            _pipSize = Size(newWidth, newHeight);
-                          }
-                        });
-                      },
+                        physics: const NeverScrollableScrollPhysics(),
+                        itemBuilder: (context, index) {
+                          return _PrescriptionCanvasPage(
+                            drawingPage: _viewablePages[index],
+                            selectedImageId: _selectedImageId,
+                            redrawNotifier: _redrawNotifier,
+                            lassoPoints:
+                            index == _currentPageIndex ? _lassoPoints : [],
+                            transformationController: _transformationController,
+                            panScaleEnabled: panScaleEnabled,
+                            isPressureSensitive: _isPressureSensitive,
+                            pastedTransformData: index == _currentPageIndex ? _pastedTransformData : null,
+                            onTap: (details) {
+                              if (!_isTransformingPastedContent && _selectedTool == DrawingTool.image &&
+                                  !_isStylusInteraction &&
+                                  !_isMovingSelectedImage) {
+                                _handleCanvasTap(_transformToCanvasCoordinates(
+                                    details.localPosition));
+                              }
+                            },
+                          );
+                        },
+                      ),
                     ),
-                  ),
-                // --- END UPDATED ---
-              ],
+                    if (_selectedImageId != null) _buildImageOverlayControls(),
+                    _buildFloatingCopyPasteButton(),
+                    _buildPastedContentToolbar(),
+
+                    if (_isPipWindowVisible)
+                      Positioned(
+                        left: _pipPosition.dx,
+                        top: _pipPosition.dy,
+                        child: PipReferenceWindow(
+                          key: const ValueKey('pip_window'),
+                          patientUhid: widget.uhid,
+                          allGroups: _allPatientGroups ?? [],
+                          selectedPageData: _pipSelectedPageData,
+                          initialSize: _pipSize,
+                          healthRecordId: _healthRecordId!,
+                          groupToColumnMap: _groupToColumnMap,
+                          onClose: () {
+                            setState(() => _isPipWindowVisible = false);
+                          },
+                          onPageSelected: (group, page) {
+                            setState(() => _pipSelectedPageData = (group, page));
+                          },
+                          onPositionChanged: (delta) {
+                            setState(() {
+                              final newX = (_pipPosition.dx + delta.dx).clamp(
+                                  0.0, constraints.maxWidth - _pipSize.width);
+                              final newY = (_pipPosition.dy + delta.dy).clamp(
+                                  0.0, constraints.maxHeight - _pipSize.height);
+                              _pipPosition = Offset(newX, newY);
+                            });
+                          },
+                          onSizeChanged: (delta) {
+                            setState(() {
+                              final newWidth = (_pipSize.width + delta.dx).clamp(
+                                  300.0, constraints.maxWidth - _pipPosition.dx);
+                              final newHeight =
+                                  (newWidth / canvasWidth) * canvasHeight;
+
+                              if (newHeight >
+                                  constraints.maxHeight - _pipPosition.dy) {
+                                _pipSize = Size(
+                                    ((constraints.maxHeight - _pipPosition.dy) /
+                                        canvasHeight) *
+                                        canvasWidth,
+                                    constraints.maxHeight - _pipPosition.dy);
+                              } else {
+                                _pipSize = Size(newWidth, newHeight);
+                              }
+                            });
+                          },
+                        ),
+                      ),
+
+                    // --- 3. NEW SIDEBAR PLACEMENT (Inside Stack) ---
+                    if (_isSidebarOpen)
+                      Positioned(
+                        right: 0,
+                        top: 0,
+                        bottom: 0,
+                        width: 300, // Fixed width for sidebar
+                        child: Material(
+                          elevation: 16, // Add shadow
+                          child: AutoCompleteSidebar(
+                            onMacroDropped: (macro, offset) {
+                              // This callback is secondary if dragging works,
+                              // but useful for logic like closing the sidebar.
+                            },
+                          ),
+                        ),
+                      ),
+                    // -----------------------------------------------
+                  ],
+                );
+              },
             );
           },
         ),
@@ -2974,10 +3165,32 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
   }
 
   Widget _buildPanToolbar() {
-    // ... (implementation unchanged)
     return Row(
       mainAxisAlignment: MainAxisAlignment.end,
       children: [
+        // --- NEW: Save Macro Button (Visible only if Clipboard has data) ---
+        ValueListenableBuilder<bool>(
+          valueListenable: AppClipboard().hasDataNotifier,
+          builder: (context, hasData, child) {
+            if (!hasData) return const SizedBox.shrink(); // Hide if empty
+
+            return Container(
+              margin: const EdgeInsets.only(right: 8),
+              decoration: BoxDecoration(
+                color: Colors.green.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Colors.green),
+              ),
+              child: IconButton(
+                icon: const Icon(Icons.save_as, color: Colors.green),
+                tooltip: "Save Clipboard as Macro",
+                onPressed: _saveMacroFromClipboard,
+              ),
+            );
+          },
+        ),
+        // ------------------------------------------------------------------
+
         IconButton(
             onPressed: _zoomIn,
             icon: const Icon(Icons.zoom_in),

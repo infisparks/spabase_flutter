@@ -57,7 +57,7 @@ class PageLayoutDefinitions {
     if (gName.contains('drug chart') || groupName == 'Daily Drug Chart') {
       return dailyDrugChartLayout;
     }
-
+    if (gName == 'ot') return commonHeaderLayout;
     if (gName.contains('progress') ||
         gName.contains('nursing notes') ||
         gName.contains('dr visit') ||
