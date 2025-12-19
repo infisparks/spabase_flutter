@@ -22,7 +22,7 @@ enum AddBehavior {
 
   /// Can only add ONE set of pages (a "book") from a specific template name.
   singleBook,
-
+  multiBook,
   /// Behavior for user-created custom groups.
   multiPageCustom,
 }
@@ -179,7 +179,7 @@ final List<GroupConfig> ipdGroupStructure = [
   const GroupConfig(
     groupName: 'OT',
     columnName: 'ot_data',
-    behavior: AddBehavior.singleBook,
+    behavior: AddBehavior.multiBook,
     templateName: 'OT Form',
     pageNamePrefix: 'OT Form',
   ),

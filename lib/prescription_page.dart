@@ -338,15 +338,18 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
       return;
     }
 
-    // --- FIX: OT LOGIC (Skip Page 1 / Index 0) ---
-    // Using cleanGroupName ensures it catches "OT", "ot", " OT " etc.
-    if (cleanGroupName == 'OT' && _currentPageIndex == 0) {
+    // --- FIX: OT LOGIC (Skip ANY page that is "Page 1") ---
+    // This handles Set 1, Set 2, Set 3, etc.
+    final String currentPageName = _viewablePages[_currentPageIndex].pageName;
+
+    // Check if it is OT group AND the name contains "Page 1" followed by a space or hyphen
+    if (cleanGroupName == 'OT' && (currentPageName.contains('Page 1 -') || currentPageName.contains('Page 1 '))) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
             content: Text('Header details are NOT applied to the first page of the OT Form.'),
             backgroundColor: Colors.orange));
       }
-      return; // <--- This STOPS the function here for Page 1
+      return;
     }
     // 1. Prepare Data Strings
     final String name = _patientDetails['name'] ?? '';
@@ -547,11 +550,16 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     List<DrawingPage> updatedPages = [..._viewablePages];
 
     for (int i = 0; i < updatedPages.length; i++) {
+      final page = updatedPages[i];
+
       // Logic for Drug Chart
       if (isDailyDrugChart && i % 2 != 0) continue;
 
-      // --- FIX: Logic for OT (Strictly skip index 0) ---
-      if (isOT && i == 0) continue;
+      // --- FIX: Logic for OT (Skip any page labeled "Page 1") ---
+      // This ensures Set 2, Set 3, etc. don't get filled on their first page
+      if (isOT && (page.pageName.contains('Page 1 -') || page.pageName.contains('Page 1 '))) {
+        continue;
+      }
       // ------------------------------------------------
 
       if (updatedPages[i].texts.isNotEmpty) continue;
@@ -599,6 +607,8 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
       _savePrescriptionData();
     }
   }
+
+
     // 4. Save if any page was updated
 
 

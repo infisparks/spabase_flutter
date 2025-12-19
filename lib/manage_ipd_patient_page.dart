@@ -438,7 +438,102 @@ class _ManageIpdPatientPageState extends State<ManageIpdPatientPage> {
   // --- STATE VARIABLES ---
   final Set<String> _expandedGroupNames = {};
   final ScrollController _mainScrollController = ScrollController();
+  Widget _buildOtGroupContent(DrawingGroup group) {
+    // 1. Group pages by "Set" -> Map<SetNumber, List<Page>>
+    final Map<String, List<DrawingPage>> otSets = {};
+    final List<DrawingPage> loosePages = [];
 
+    for (var page in group.pages) {
+      final match = RegExp(r'OT Form \((\d+)\)').firstMatch(page.pageName);
+      if (match != null) {
+        final setNum = match.group(1)!;
+        otSets.putIfAbsent(setNum, () => []).add(page);
+      } else {
+        if (page.pageName.contains('OT Form')) {
+          otSets.putIfAbsent('1', () => []).add(page);
+        } else {
+          loosePages.add(page);
+        }
+      }
+    }
+
+    // 2. Logic: If only 1 set (and no loose pages), show Flat List
+    if (otSets.length <= 1 && loosePages.isEmpty) {
+      return ListView.builder(
+        shrinkWrap: true,
+        physics: const NeverScrollableScrollPhysics(),
+        // --- FIX 1: ADD THIS CONTROLLER ---
+        // This prevents the ListView from trying to restore a scroll offset
+        // from a value that might be a boolean (Expansion state).
+        controller: ScrollController(keepScrollOffset: false),
+        // ----------------------------------
+        itemCount: group.pages.length,
+        itemBuilder: (context, index) {
+          final page = group.pages[index];
+          return _SinglePageTile(
+            page: page,
+            onTap: () => _openPrescriptionPage(group, page),
+            onLongPress: () => _showPageOptionsDialog(group, page),
+          );
+        },
+      );
+    }
+
+    // 3. Logic: If > 1 Set, show "Folders"
+    final List<Widget> children = [];
+
+    final sortedKeys = otSets.keys.toList()
+      ..sort((a, b) => int.parse(a).compareTo(int.parse(b)));
+
+    for (var key in sortedKeys) {
+      final pages = otSets[key]!;
+      String dateSuffix = '';
+      if (pages.isNotEmpty && pages.first.pageName.contains(' - ')) {
+        dateSuffix = pages.first.pageName.split(' - ').last;
+      }
+
+      children.add(
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8.0, left: 8.0, right: 8.0),
+            child: Container(
+              decoration: BoxDecoration(
+                color: Colors.blue.shade50,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Colors.blue.shade100),
+              ),
+              child: ExpansionTile(
+                // --- FIX 2: ADD A UNIQUE KEY ---
+                // This ensures the Open/Close state (bool) is stored separately
+                // from any scroll offsets.
+                key: PageStorageKey('ot_set_${group.id}_$key'),
+                // -------------------------------
+                title: Text(
+                    "OT Form Set $key",
+                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: Color(0xFF1565C0))
+                ),
+                subtitle: Text(dateSuffix, style: const TextStyle(fontSize: 12, color: Colors.grey)),
+                leading: const Icon(Icons.folder_shared, color: Color(0xFF1565C0)),
+                children: pages.map((page) => _SinglePageTile(
+                  page: page,
+                  onTap: () => _openPrescriptionPage(group, page),
+                  onLongPress: () => _showPageOptionsDialog(group, page),
+                )).toList(),
+              ),
+            ),
+          )
+      );
+    }
+
+    for (var page in loosePages) {
+      children.add(_SinglePageTile(
+        page: page,
+        onTap: () => _openPrescriptionPage(group, page),
+        onLongPress: () => _showPageOptionsDialog(group, page),
+      ));
+    }
+
+    return Column(children: children);
+  }
   // --- TAG LIST ---
   final List<String> _locationTags = [
     'Deluxe Room',
@@ -945,18 +1040,35 @@ class _ManageIpdPatientPageState extends State<ManageIpdPatientPage> {
     await _showTemplateSelectionDialog(consentTemplates);
     if (selectedTemplate == null || !mounted) return;
 
-    if (group.pages.any((p) => p.pageName == selectedTemplate.name)) {
-      _showErrorSnackbar("'${selectedTemplate.name}' has already been added.");
-      return;
+    // --- OLD CODE REMOVED FROM HERE (The block that stopped duplicates) ---
+
+    // --- NEW LOGIC: Allow duplicates and append a number/date ---
+
+    // 1. Calculate how many times this specific template appears already
+    final existingCount = group.pages
+        .where((p) => p.pageName.startsWith(selectedTemplate.name))
+        .length;
+
+    // 2. Generate a formatted date
+    final formattedDate = DateFormat('dd MMM yyyy').format(DateTime.now());
+
+    // 3. Create a unique name: "Template Name (2) - Date"
+    String finalPageName;
+    if (existingCount > 0) {
+      finalPageName = '${selectedTemplate.name} (${existingCount + 1}) - $formattedDate';
+    } else {
+      finalPageName = '${selectedTemplate.name} - $formattedDate';
     }
 
     final newPageNumber = group.pages.length + 1;
+
     final newPage = DrawingPage(
         id: generateUniqueId(),
         templateImageUrl: selectedTemplate.url,
         pageNumber: newPageNumber,
-        pageName: selectedTemplate.name,
+        pageName: finalPageName, // Use the new dynamic name
         groupName: group.groupName);
+
     _addPagesToGroup(group, [newPage]);
   }
 
@@ -1122,9 +1234,113 @@ class _ManageIpdPatientPageState extends State<ManageIpdPatientPage> {
       case AddBehavior.multiPageCustom:
         _showCustomTemplateDialogForGroup(group);
         break;
+      case AddBehavior.multiBook:
+        _addOtFormWithLogic(group, config.templateName!);
+        break;
+
+      case AddBehavior.multiPageCustom:
+        _showCustomTemplateDialogForGroup(group);
+        break;
     }
   }
 
+  Future<void> _addOtFormWithLogic(DrawingGroup group, String templateName) async {
+    final template = _findTemplateByName(templateName);
+    if (template == null || !template.isbook || template.bookImgUrl.isEmpty) {
+      _showErrorSnackbar('The OT Form template is invalid or missing pages.');
+      return;
+    }
+
+    // 1. Identify existing sets
+    // We assume names are like "OT Form (1) - Page 1", "OT Form (2) - Page 1"
+    final existingSets = <String>{};
+    for (var page in group.pages) {
+      final match = RegExp(r'OT Form \((\d+)\)').firstMatch(page.pageName);
+      if (match != null) {
+        existingSets.add(match.group(1)!);
+      } else if (page.pageName.contains('OT Form')) {
+        existingSets.add('1'); // Legacy/First set
+      }
+    }
+
+    final int nextSetNumber = existingSets.length + 1;
+    final bool isFirstOt = existingSets.isEmpty;
+
+    // --- POPUP LEVEL 1: General Confirmation ---
+    bool confirmAdd = await showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(isFirstOt ? 'Add OT Form?' : 'Add Another OT Form?'),
+        content: Text(
+            'This will add ${template.bookImgUrl.length} pages to the file. '
+                '${!isFirstOt ? "\nYou already have ${existingSets.length} OT form(s)." : ""} '
+                '\nDo you want to proceed?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text("No")),
+          ElevatedButton(onPressed: () => Navigator.pop(context, true), child: const Text("Yes")),
+        ],
+      ),
+    ) ?? false;
+
+    if (!confirmAdd) return;
+
+    // --- POPUP LEVEL 2 & 3: Double Confirmation for 2nd+ OT ---
+    if (!isFirstOt) {
+      // Confirmation 2.1
+      bool confirmMulti = await showDialog(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Add 2nd OT Form?'),
+          content: const Text('You are about to add a SECOND OT form. Do you want to continue?'),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(context, false), child: const Text("No")),
+            ElevatedButton(onPressed: () => Navigator.pop(context, true), child: const Text("Yes Add It")),
+          ],
+        ),
+      ) ?? false;
+
+      if (!confirmMulti) return;
+
+      // Confirmation 2.2 (Strict "Are you sure?")
+      bool confirmFinal = await showDialog(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Are you sure?'),
+          content: const Text('Please confirm one last time to create a new OT Set.'),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(context, false), child: const Text("Cancel")),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.red, foregroundColor: Colors.white),
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text("I am Sure"),
+            ),
+          ],
+        ),
+      ) ?? false;
+
+      if (!confirmFinal) return;
+    }
+
+    // --- GENERATE PAGES ---
+    final formattedDate = DateFormat('dd MMM yyyy').format(DateTime.now());
+    final List<DrawingPage> bookPages = [];
+
+    for (int i = 0; i < template.bookImgUrl.length; i++) {
+      // Name Format: "OT Form (1) - Page 1 - 12 Dec 2024"
+      final pageName = 'OT Form ($nextSetNumber) - Page ${i + 1} - $formattedDate';
+
+      bookPages.add(DrawingPage(
+        id: generateUniqueId(),
+        templateImageUrl: template.bookImgUrl[i],
+        pageNumber: group.pages.length + i + 1,
+        pageName: pageName,
+        groupName: group.groupName,
+      ));
+    }
+
+    _addPagesToGroup(group, bookPages);
+    _showSuccessSnackbar('OT Form ($nextSetNumber) added successfully.');
+  }
   // --- NEW MENU LOGIC: Page Options (Date & Tags) ---
 
   void _showPageOptionsDialog(DrawingGroup group, DrawingPage page) {
@@ -1834,6 +2050,8 @@ class _ManageIpdPatientPageState extends State<ManageIpdPatientPage> {
                                 indent: 8,
                                 endIndent: 8,
                                 color: lightBackground),
+
+                            // 1. Empty State Logic
                             if (group.pages.isEmpty)
                               const Padding(
                                 padding: EdgeInsets.all(16.0),
@@ -1846,13 +2064,25 @@ class _ManageIpdPatientPageState extends State<ManageIpdPatientPage> {
                                 ),
                               ),
 
-                            if (isPairedDisplay)
+                            // -----------------------------------------------------------
+                            // 3.2 CHANGE STARTS HERE: Add the specific check for 'OT'
+                            // -----------------------------------------------------------
+
+                            // 2. OT Group Logic (Uses the new Folder function)
+                            if (group.groupName == 'OT')
+                              _buildOtGroupContent(group)
+
+                            // 3. Paired Display Logic (Clinical Notes, etc.)
+                            else if (isPairedDisplay)
                               ..._buildPairedPageRows(group)
+
+                            // 4. Standard List Logic (Everything else)
                             else
                               ListView.builder(
                                 shrinkWrap: true,
                                 physics: const NeverScrollableScrollPhysics(),
-                                controller: ScrollController(keepScrollOffset: false), // Fix for bool/double crash
+                                // Fix for scroll controller crash
+                                controller: ScrollController(keepScrollOffset: false),
                                 itemCount: group.pages.length,
                                 itemBuilder: (context, index) {
                                   final page = group.pages[index];
@@ -1860,10 +2090,13 @@ class _ManageIpdPatientPageState extends State<ManageIpdPatientPage> {
                                     page: page,
                                     onTap: () =>
                                         _openPrescriptionPage(group, page),
-                                    onLongPress: () => _showPageOptionsDialog(group, page), // NEW: Options Menu
+                                    onLongPress: () => _showPageOptionsDialog(group, page),
                                   );
                                 },
                               )
+                            // -----------------------------------------------------------
+                            // 3.2 CHANGE ENDS HERE
+                            // -----------------------------------------------------------
                           ],
                         ),
                       ),
