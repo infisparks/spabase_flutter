@@ -396,10 +396,11 @@ class MicrophoneService {
 }
 
 // --- REAL Gemini API Service (No change) ---
+// --- REAL Gemini API Service ---
 class GeminiApiService {
-  // --- PASTE YOUR API KEY HERE ---
-  static const String _apiKey = "YOUR_API_KEY_HERE"; // PASTE YOUR KEY
-  static const String _model = "gemini-1.5-flash"; // Use 1.5-flash
+  // --- UPDATED API KEY ---
+  static const String _apiKey = "AIzaSyC0VlnIQ5n_Jv6pX17dNdqKPOzqsukdKeo";
+  static const String _model = "gemini-2.5-flash";
 
   /// Transcribes audio for a single field
   Future<String> getTranscriptionFromAudio(
@@ -409,11 +410,15 @@ class GeminiApiService {
       apiKey: _apiKey,
     );
 
-    // Prompt copied directly from your React code
     final prompt = """
-      You are a medical transcriptionist. Transcribe the dictation in the provided audio file.
-      The transcription should be relevant to the clinical note field: "$fieldName".
-      Return ONLY the clean transcribed text. Do not add any extra commentary or formatting.
+      You are a specialized medical transcriptionist. 
+      Transcribe the dictation in the audio file.
+      The output must be relevant to the clinical note field: "$fieldName".
+      
+      Formatting Rules:
+      1. Use UPPERCASE for medical terms if that is the standard style.
+      2. If dictating medications, list them clearly (e.g., INJ MONOCEF 1GM IV x BD).
+      3. Return ONLY the transcribed text. No markdown, no introductions.
     """;
 
     final audioPart = DataPart('audio/m4a', audioData);
@@ -429,10 +434,9 @@ class GeminiApiService {
     return response.text!.trim();
   }
 
-  /// Transcribes a full summary and returns a JSON map
+  /// Transcribes a full summary and returns a JSON map based on your specific format
   Future<Map<String, dynamic>> getSummaryFromAudio(
       Uint8List audioData) async {
-    // This model is configured to return JSON
     final model = GenerativeModel(
       model: _model,
       apiKey: _apiKey,
@@ -441,36 +445,44 @@ class GeminiApiService {
       ),
     );
 
-    // Prompt copied directly from your React code
+    // --- UPDATED PROMPT TO MATCH YOUR DUMMY FORMAT ---
     final prompt = """
-      You are a highly specialized medical transcriber. The doctor is dictating a detailed Discharge Summary.
-      The dictation will cover most of the fields required for the document.
-      Extract the following fields from the audio and return them STRICTLY as a clean JSON object.
-      If a field is not explicitly dictated, return an empty string "" for that field, but keep the field present in the JSON.
+      You are a specialized medical scribe for an Obstetric/Gynecology department. 
+      Listen to the doctor's dictation and extract the data into a JSON object.
+      
+      The doctor will dictate sections like "History", "Examination", "Treatment", "Discharge Advice".
+      
+      Map the dictation strictly to the following JSON keys. 
+      Use UPPERCASE for the content values (except units like mmhg).
+      
+      Here is the mapping logic based on standard formats:
+      1. "Provisional Diagnosis" -> provisionalDiagnosis
+      2. "Final Diagnosis" -> finalDiagnosis
+      3. "History of Present Illness" (Include LMP, EDD, Obstetric History here) -> historyOfPresentIllness
+      4. "General Physical Examination" (BP, PR, SPO2, TEMP) -> generalPhysicalExamination
+      5. "Systemic Examination" (CVS, CNS, RS, P/A, FHS) -> systemicExamination
+      6. "Investigations" -> investigations
+      7. "Treatment Given" (Injections, IVF, Transfusions) -> treatmentGiven
+      8. "Condition at Discharge" -> conditionAtDischarge
+      9. "Discharge Medications" / "Instructions" (Diet, Baby care, etc) -> dischargeInstruction
+      10. "Follow Up" -> followUp
 
-      Format the output only as JSON.
-
-      The JSON schema you must follow is:
+      JSON Schema to return:
       {
-        "type": "object",
-        "properties": {
-          "finalDiagnosis": { "type": "string" },
-          "finalDiagnosis2": { "type": "string" },
-          "procedure": { "type": "string" },
-          "procedure2": { "type": "string" },
-          "provisionalDiagnosis": { "type": "string" },
-          "historyOfPresentIllness": { "type": "string" },
-          "investigations": { "type": "string" },
-          "treatmentGiven": { "type": "string" },
-          "hospitalCourse": { "type": "string" },
-          "surgeryProcedureDetails": { "type": "string" },
-          "conditionAtDischarge": { "type": "string" },
-          "dischargeMedications": { "type": "string" },
-          "followUp": { "type": "string" },
-          "dischargeInstruction": { "type": "string" },
-          "reportImmediatelyIf": { "type": "string" }
-        }
+        "provisionalDiagnosis": "string",
+        "finalDiagnosis": "string",
+        "historyOfPresentIllness": "string",
+        "generalPhysicalExamination": "string",
+        "systemicExamination": "string",
+        "investigations": "string",
+        "treatmentGiven": "string",
+        "conditionAtDischarge": "string",
+        "dischargeInstruction": "string",
+        "followUp": "string",
+        "procedure": "string"
       }
+      
+      If a field is not mentioned, return an empty string "".
     """;
 
     final audioPart = DataPart('audio/m4a', audioData);
@@ -497,7 +509,8 @@ class GeminiApiService {
 }
 
 // --- Reusable Input Component (No change) ---
-class VoiceInput extends StatelessWidget {
+// --- UPDATED VoiceInput (Fixes AI Display Issue) ---
+class VoiceInput extends StatefulWidget {
   final String fieldName;
   final String currentValue;
   final ValueChanged<String> onChanged;
@@ -521,7 +534,42 @@ class VoiceInput extends StatelessWidget {
     this.isAnyRecordingOrProcessing = false,
   });
 
+  @override
+  State<VoiceInput> createState() => _VoiceInputState();
+}
 
+class _VoiceInputState extends State<VoiceInput> {
+  late TextEditingController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    // Initialize controller with current value
+    _controller = TextEditingController(text: widget.currentValue);
+  }
+
+  @override
+  void didUpdateWidget(covariant VoiceInput oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // This is the MAGIC FIX:
+    // If the parent (AI) sends a new value that is different from what is
+    // currently in the text box, update the text box immediately.
+    if (widget.currentValue != _controller.text) {
+      // Use the new value from AI
+      _controller.text = widget.currentValue;
+
+      // Optional: Move cursor to the end so it doesn't jump to start if you are typing
+      _controller.selection = TextSelection.fromPosition(
+        TextPosition(offset: _controller.text.length),
+      );
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -537,41 +585,44 @@ class VoiceInput extends StatelessWidget {
       fillColor: Colors.transparent,
     );
 
+    // Use controller instead of initialValue
     final inputWidget = TextFormField(
-      initialValue: currentValue,
-      onChanged: onChanged,
+      controller: _controller,
+      onChanged: widget.onChanged,
       keyboardType: TextInputType.multiline,
       maxLines: null,
       decoration: inputDecoration,
-      enabled: !disabled && !isProcessing,
+      enabled: !widget.disabled && !widget.isProcessing,
       textDirection: ui.TextDirection.ltr,
       style: const TextStyle(fontSize: 14),
     );
 
-    final voiceButton = !disableVoiceFill && onVoiceFill != null
+    final voiceButton = !widget.disableVoiceFill && widget.onVoiceFill != null
         ? IconButton(
-      icon: isProcessing
+      icon: widget.isProcessing
           ? const SizedBox(
           height: 16,
           width: 16,
           child: CircularProgressIndicator(strokeWidth: 2))
           : Icon(
-        isRecording ? Icons.mic_off : Icons.flash_on,
-        color: isRecording
+        widget.isRecording ? Icons.mic_off : Icons.flash_on,
+        color: widget.isRecording
             ? Colors.red.shade600
-            : isProcessing
+            : widget.isProcessing
             ? Colors.yellow.shade800
-            : isAnyRecordingOrProcessing
+            : widget.isAnyRecordingOrProcessing
             ? Colors.grey
             : Colors.indigo.shade600,
       ),
-      onPressed: disabled ||
-          (isAnyRecordingOrProcessing && !isRecording && !isProcessing)
+      onPressed: widget.disabled ||
+          (widget.isAnyRecordingOrProcessing &&
+              !widget.isRecording &&
+              !widget.isProcessing)
           ? null
-          : onVoiceFill,
-      tooltip: isRecording
+          : widget.onVoiceFill,
+      tooltip: widget.isRecording
           ? 'Stop Recording'
-          : isProcessing
+          : widget.isProcessing
           ? 'Processing...'
           : 'Voice Fill (Appends)',
     )
@@ -587,7 +638,7 @@ class VoiceInput extends StatelessWidget {
             children: [
               Expanded(
                 child: Text(
-                  '$fieldName:',
+                  '${widget.fieldName}:',
                   style: const TextStyle(
                       fontWeight: FontWeight.bold, fontSize: 13),
                 ),
@@ -1022,14 +1073,29 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
 
       if (mounted) {
         setState(() {
+          // Get the current form data as a map
           final currentMap = _formData.toJson();
+
+          // Loop through the AI response and update the form map
           aiData.forEach((key, value) {
             if (value != null && (value as String).isNotEmpty) {
-              if (currentMap.containsKey(key)) {
+
+              // Special handling for Medications/Instructions
+              // In your dummy format, 'dischargeInstruction' often contains both
+              if (key == 'dischargeInstruction') {
+                // You can choose to put specific meds into dischargeMedications
+                // or dump everything into instructions.
+                // Here we update instructions:
+                currentMap['dischargeInstruction'] = value;
+              }
+              // Standard mapping for other fields
+              else if (currentMap.containsKey(key)) {
                 currentMap[key] = value;
               }
             }
           });
+
+          // Convert updated map back to object
           _formData = DischargeSummaryData.fromJson(currentMap);
           _isProcessingAudio = false;
         });
@@ -1674,7 +1740,7 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
             const Text('Type of Discharge:',
                 style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
             const SizedBox(width: 16),
-            ...["Regular", "DAMA", "Transfer"].map((type) => Row(
+            ...["Regular", "DAMA", "Transfer", "DOR (Discharge On Request)"].map((type) => Row(
               children: [
                 Radio<String>(
                   value: type,

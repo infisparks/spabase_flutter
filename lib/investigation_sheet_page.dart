@@ -601,7 +601,7 @@ class _InvestigationSheetPageState extends State<InvestigationSheetPage> {
             const Icon(Icons.error_outline, color: redIndicator, size: 48),
             const SizedBox(height: 16),
             const Text(
-              "Error Loading Data",
+              "No Lab Report Found",
               style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: darkText),
             ),
             const SizedBox(height: 8),

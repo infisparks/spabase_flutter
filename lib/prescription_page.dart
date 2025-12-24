@@ -109,7 +109,31 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
   final ImagePicker _picker = ImagePicker();
 
 // --- NEW: MACRO LOGIC START ---
+// --- NEW HELPER: Convert 24hr string to 12hr AM/PM ---
+  String _formatTimeTo12Hr(String? timeStr) {
+    if (timeStr == null || timeStr.isEmpty) return '';
+    try {
+      // Expecting format like "14:30" or "14:30:00"
+      final parts = timeStr.split(':');
+      if (parts.isEmpty) return timeStr;
 
+      int hour = int.parse(parts[0]);
+      int minute = parts.length > 1 ? int.parse(parts[1]) : 0;
+
+      final String period = hour >= 12 ? 'PM' : 'AM';
+
+      if (hour > 12) {
+        hour = hour - 12;
+      } else if (hour == 0) {
+        hour = 12;
+      }
+
+      final String minuteStr = minute.toString().padLeft(2, '0');
+      return "$hour:$minuteStr $period";
+    } catch (e) {
+      return timeStr; // Return original if parsing fails
+    }
+  }
   // 1. Logic to Save the selection as a Macro
   // --- NEW MACRO SAVE LOGIC (Uses Clipboard Data) ---
   Future<void> _saveMacroFromClipboard() async {
@@ -352,6 +376,8 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
       return;
     }
     // 1. Prepare Data Strings
+    final String rawTime = _ipdRegistrationDetails['admission_time']?.toString() ?? '';
+    final String admTime = _formatTimeTo12Hr(rawTime);
     final String name = _patientDetails['name'] ?? '';
     String fullUhid = widget.uhid;
     final String uhid = fullUhid.length > 5 ? fullUhid.substring(fullUhid.length - 5) : fullUhid;
@@ -360,7 +386,6 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     final String sexVal = _patientDetails['gender'] ?? '';
     final String ageSex = "$ageVal / $sexVal";
     final String doa = _ipdRegistrationDetails['admission_date']?.toString() ?? '';
-    final String admTime = _ipdRegistrationDetails['admission_time']?.toString() ?? '';
     final String consultant = _ipdRegistrationDetails['under_care_of_doctor'] ?? '';
     String room = _bedDetails['room_type']?.toString() ?? '';
     String bedNo = _bedDetails['bed_number']?.toString() ?? '';
@@ -618,7 +643,8 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     // Only run for "Indoor Patient File" and only if the page is empty
     if (widget.groupName != 'Indoor Patient File') return;
     if (_viewablePages.isEmpty || _viewablePages[_currentPageIndex].texts.isNotEmpty) return;
-
+    String rawTime = _ipdRegistrationDetails['admission_time']?.toString() ?? '';
+    String admTime = _formatTimeTo12Hr(rawTime);
     // Prepare Data safely
     final String name = _patientDetails['name'] ?? '';
     final String soWoDo = _ipdRegistrationDetails['so_wo_do'] ?? '';
@@ -633,7 +659,6 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     if (address.isEmpty) address = _ipdRegistrationDetails['relative_address'] ?? '';
 
     String admDate = _ipdRegistrationDetails['admission_date']?.toString() ?? '';
-    String admTime = _ipdRegistrationDetails['admission_time']?.toString() ?? '';
     String room = _bedDetails['room_type']?.toString() ?? '';
     String bedNo = _bedDetails['bed_number']?.toString() ?? '';
     // Combine them with a " / " as you requested
