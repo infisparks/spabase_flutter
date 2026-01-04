@@ -409,6 +409,7 @@ class VoiceInput extends StatefulWidget {
   final bool isRecording;
   final bool isProcessing;
   final bool isAnyRecordingOrProcessing;
+  final String? jsonKey;
 
   const VoiceInput({
     super.key,
@@ -422,6 +423,7 @@ class VoiceInput extends StatefulWidget {
     this.isRecording = false,
     this.isProcessing = false,
     this.isAnyRecordingOrProcessing = false,
+    this.jsonKey,
   });
 
   @override
@@ -430,17 +432,179 @@ class VoiceInput extends StatefulWidget {
 
 class _VoiceInputState extends State<VoiceInput> {
   late TextEditingController _controller;
+  final FocusNode _focusNode = FocusNode();
+  final LayerLink _layerLink = LayerLink();
+  OverlayEntry? _overlayEntry;
+  List<String> _suggestions = [];
+  Timer? _debounce;
 
   @override
   void initState() {
     super.initState();
     _controller = TextEditingController(text: widget.currentValue);
+    _focusNode.addListener(() {
+      if (!_focusNode.hasFocus) {
+        _removeOverlay();
+      }
+    });
+  }
+
+  void _onTextChanged(String text) {
+    widget.onChanged(text);
+
+    if (widget.jsonKey == null || widget.disabled) return;
+
+    // --- Suggestion Logic ---
+    final selection = _controller.selection;
+    if (!selection.isValid || selection.start < 0) return;
+
+    final cursorPosition = selection.start;
+    final textBeforeCursor = text.substring(0, cursorPosition);
+    
+    // Find the word being typed (split by space, newline, comma, etc.)
+    // We want the last token before cursor.
+    // Regex: Split by anything that is NOT a letter/digit/underscore/hyphen?
+    // User SQL uses \n \r . ,
+    // Let's rely on space and comma/dot/newline as separators.
+    final lastSeparatorIndex = textBeforeCursor.lastIndexOf(RegExp(r'[\s,\.\n]'));
+    final currentWordStartIndex = lastSeparatorIndex + 1;
+    
+    if (currentWordStartIndex > cursorPosition) {
+       _removeOverlay();
+       return;
+    }
+    
+    final currentWord = textBeforeCursor.substring(currentWordStartIndex);
+
+    if (currentWord.trim().length < 2) {
+      _removeOverlay();
+      return;
+    }
+
+    if (_debounce?.isActive ?? false) _debounce!.cancel();
+    _debounce = Timer(const Duration(milliseconds: 300), () {
+      _fetchSuggestions(currentWord.trim());
+    });
+  }
+
+  Future<void> _fetchSuggestions(String query) async {
+    if (!mounted) return;
+    try {
+      final res = await SupabaseConfig.client.rpc(
+        'get_field_suggestions',
+        params: {'target_field': widget.jsonKey!, 'search_text': query},
+      );
+      
+      if (!mounted) return;
+      
+      final List<dynamic> data = res as List<dynamic>;
+      // Filter out duplicate suggestions and same as query
+      final suggestions = data
+          .map((e) => e['suggestion'] as String)
+          .where((s) => s.toLowerCase() != query.toLowerCase())
+          .toList();
+
+      setState(() {
+        _suggestions = suggestions;
+      });
+
+      if (_suggestions.isNotEmpty) {
+        _showOverlay();
+      } else {
+        _removeOverlay();
+      }
+    } catch (e) {
+      debugPrint("Suggestion fetch error: $e");
+    }
+  }
+
+  void _showOverlay() {
+    if (!mounted) return;
+    if (_overlayEntry != null) {
+      _overlayEntry!.markNeedsBuild();
+      return;
+    }
+
+    final renderBox = context.findRenderObject() as RenderBox?;
+    if (renderBox == null) return;
+    final size = renderBox.size;
+
+    _overlayEntry = OverlayEntry(
+      builder: (context) => Positioned(
+        width: size.width - 20, // Slightly smaller than container
+        child: CompositedTransformFollower(
+          link: _layerLink,
+          showWhenUnlinked: false,
+          offset: Offset(0.0, size.height + 5.0),
+          child: Material(
+            elevation: 8,
+            borderRadius: BorderRadius.circular(8),
+            color: Colors.white,
+            shadowColor: Colors.black26,
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 200),
+              child: ListView.builder(
+                padding: EdgeInsets.zero,
+                shrinkWrap: true,
+                itemCount: _suggestions.length,
+                itemBuilder: (context, index) {
+                  final suggestion = _suggestions[index];
+                  return ListTile(
+                    dense: true,
+                    title: Text(suggestion, style: const TextStyle(fontSize: 14)),
+                    onTap: () => _applySuggestion(suggestion),
+                    hoverColor: Colors.indigo.shade50,
+                  );
+                },
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    Overlay.of(context).insert(_overlayEntry!);
+  }
+
+  void _removeOverlay() {
+    _overlayEntry?.remove();
+    _overlayEntry = null;
+  }
+
+  void _applySuggestion(String suggestion) {
+    final text = _controller.text;
+    final selection = _controller.selection;
+    if (!selection.isValid || selection.start < 0) return;
+
+    final cursorPosition = selection.start;
+    final textBeforeCursor = text.substring(0, cursorPosition);
+    final textAfterCursor = text.substring(cursorPosition);
+
+    final lastSeparatorIndex = textBeforeCursor.lastIndexOf(RegExp(r'[\s,\.\n]'));
+    final currentWordStartIndex = lastSeparatorIndex + 1;
+    
+    final newTextBeforeCursor = textBeforeCursor.substring(0, currentWordStartIndex) + suggestion;
+    
+    final newText = newTextBeforeCursor + textAfterCursor;
+    
+    _controller.value = TextEditingValue(
+      text: newText,
+      selection: TextSelection.collapsed(offset: newTextBeforeCursor.length),
+    );
+    
+    widget.onChanged(newText);
+    _removeOverlay();
+    _focusNode.requestFocus();
   }
 
   @override
   void didUpdateWidget(covariant VoiceInput oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (widget.currentValue != _controller.text) {
+      // Avoid overwriting if user is typing (handled by parent update usually, but careful here)
+      // If the update comes from outside (e.g. voice fill), we update.
+      // We check if the controller text matches widget.currentValue to avoid cursor jumps?
+      // Actually the standard pattern is:
       _controller.text = widget.currentValue;
       _controller.selection = TextSelection.fromPosition(
         TextPosition(offset: _controller.text.length),
@@ -450,7 +614,10 @@ class _VoiceInputState extends State<VoiceInput> {
 
   @override
   void dispose() {
+    _removeOverlay();
     _controller.dispose();
+    _focusNode.dispose();
+    _debounce?.cancel();
     super.dispose();
   }
 
@@ -468,15 +635,19 @@ class _VoiceInputState extends State<VoiceInput> {
       fillColor: Colors.transparent,
     );
 
-    final inputWidget = TextFormField(
-      controller: _controller,
-      onChanged: widget.onChanged,
-      keyboardType: TextInputType.multiline,
-      maxLines: null,
-      decoration: inputDecoration,
-      enabled: !widget.disabled && !widget.isProcessing,
-      textDirection: ui.TextDirection.ltr,
-      style: const TextStyle(fontSize: 14),
+    final inputWidget = CompositedTransformTarget(
+      link: _layerLink,
+      child: TextFormField(
+        controller: _controller,
+        focusNode: _focusNode,
+        onChanged: _onTextChanged,
+        keyboardType: TextInputType.multiline,
+        maxLines: null,
+        decoration: inputDecoration,
+        enabled: !widget.disabled && !widget.isProcessing,
+        textDirection: ui.TextDirection.ltr,
+        style: const TextStyle(fontSize: 14),
+      ),
     );
 
     final voiceButton = !widget.disableVoiceFill && widget.onVoiceFill != null
@@ -1562,8 +1733,13 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
         ),
         body: LayoutBuilder(
           builder: (context, constraints) {
-            return Stack(
-              children: [
+            return GestureDetector(
+              onTap: () {
+                FocusScope.of(context).unfocus();
+              },
+              behavior: HitTestBehavior.translucent,
+              child: Stack(
+                children: [
                 SingleChildScrollView(
                   child: Padding(
                     padding: const EdgeInsets.all(16.0),
@@ -1648,7 +1824,8 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
                     ),
                   ),
               ],
-            );
+            ),
+           );
           },
         ),
       ),
@@ -1774,6 +1951,7 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
                 isRecording: _isFieldRecording == 'consultantInCharge',
                 isProcessing: _isFieldProcessing == 'consultantInCharge',
                 isAnyRecordingOrProcessing: isAnyRecordingOrProcessing,
+                jsonKey: 'consultantInCharge',
               ),
             ),
             const SizedBox(width: 10),
@@ -1789,6 +1967,7 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
                 isRecording: _isFieldRecording == 'admissionDateAndTime',
                 isProcessing: _isFieldProcessing == 'admissionDateAndTime',
                 isAnyRecordingOrProcessing: isAnyRecordingOrProcessing,
+                jsonKey: 'admissionDateAndTime',
               ),
             ),
           ],
@@ -1831,6 +2010,7 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
           isRecording: _isFieldRecording == 'provisionalDiagnosis',
           isProcessing: _isFieldProcessing == 'provisionalDiagnosis',
           isAnyRecordingOrProcessing: isAnyRecordingOrProcessing,
+          jsonKey: 'provisionalDiagnosis',
         ),
         VoiceInput(
           fieldName: 'Final Diagnosis 1',
@@ -1843,6 +2023,7 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
           isRecording: _isFieldRecording == 'finalDiagnosis',
           isProcessing: _isFieldProcessing == 'finalDiagnosis',
           isAnyRecordingOrProcessing: isAnyRecordingOrProcessing,
+          jsonKey: 'finalDiagnosis',
         ),
         VoiceInput(
           fieldName: 'Final Diagnosis 2',
@@ -1855,6 +2036,7 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
           isRecording: _isFieldRecording == 'finalDiagnosis2',
           isProcessing: _isFieldProcessing == 'finalDiagnosis2',
           isAnyRecordingOrProcessing: isAnyRecordingOrProcessing,
+          jsonKey: 'finalDiagnosis2',
         ),
         VoiceInput(
           fieldName: 'Procedure 1',
@@ -1866,6 +2048,7 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
           isRecording: _isFieldRecording == 'procedure',
           isProcessing: _isFieldProcessing == 'procedure',
           isAnyRecordingOrProcessing: isAnyRecordingOrProcessing,
+          jsonKey: 'procedure',
         ),
         VoiceInput(
           fieldName: 'Procedure 2',
@@ -1877,6 +2060,7 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
           isRecording: _isFieldRecording == 'procedure2',
           isProcessing: _isFieldProcessing == 'procedure2',
           isAnyRecordingOrProcessing: isAnyRecordingOrProcessing,
+          jsonKey: 'procedure2',
         ),
         VoiceInput(
           fieldName: 'History of Present Illness',
@@ -1889,6 +2073,7 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
           isRecording: _isFieldRecording == 'historyOfPresentIllness',
           isProcessing: _isFieldProcessing == 'historyOfPresentIllness',
           isAnyRecordingOrProcessing: isAnyRecordingOrProcessing,
+          jsonKey: 'historyOfPresentIllness',
         ),
         VoiceInput(
           fieldName: 'General Physical Examination',
@@ -1902,6 +2087,7 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
           isRecording: _isFieldRecording == 'generalPhysicalExamination',
           isProcessing: _isFieldProcessing == 'generalPhysicalExamination',
           isAnyRecordingOrProcessing: isAnyRecordingOrProcessing,
+          jsonKey: 'generalPhysicalExamination',
         ),
         VoiceInput(
           fieldName: 'Systemic Examination',
@@ -1914,6 +2100,7 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
           isRecording: _isFieldRecording == 'systemicExamination',
           isProcessing: _isFieldProcessing == 'systemicExamination',
           isAnyRecordingOrProcessing: isAnyRecordingOrProcessing,
+          jsonKey: 'systemicExamination',
         ),
         VoiceInput(
           fieldName: 'Investigations',
@@ -1926,6 +2113,7 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
           isRecording: _isFieldRecording == 'investigations',
           isProcessing: _isFieldProcessing == 'investigations',
           isAnyRecordingOrProcessing: isAnyRecordingOrProcessing,
+          jsonKey: 'investigations',
         ),
         VoiceInput(
           fieldName: 'Treatment Given',
@@ -1938,6 +2126,7 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
           isRecording: _isFieldRecording == 'treatmentGiven',
           isProcessing: _isFieldProcessing == 'treatmentGiven',
           isAnyRecordingOrProcessing: isAnyRecordingOrProcessing,
+          jsonKey: 'treatmentGiven',
         ),
       ],
     );
@@ -1958,6 +2147,7 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
           isRecording: _isFieldRecording == 'hospitalCourse',
           isProcessing: _isFieldProcessing == 'hospitalCourse',
           isAnyRecordingOrProcessing: isAnyRecordingOrProcessing,
+          jsonKey: 'hospitalCourse',
         ),
         VoiceInput(
           fieldName: 'Surgery / Procedure Details',
@@ -1970,6 +2160,7 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
           isRecording: _isFieldRecording == 'surgeryProcedureDetails',
           isProcessing: _isFieldProcessing == 'surgeryProcedureDetails',
           isAnyRecordingOrProcessing: isAnyRecordingOrProcessing,
+          jsonKey: 'surgeryProcedureDetails',
         ),
         VoiceInput(
           fieldName: 'Condition at time of Discharge',
@@ -1982,6 +2173,7 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
           isRecording: _isFieldRecording == 'conditionAtDischarge',
           isProcessing: _isFieldProcessing == 'conditionAtDischarge',
           isAnyRecordingOrProcessing: isAnyRecordingOrProcessing,
+          jsonKey: 'conditionAtDischarge',
         ),
         VoiceInput(
           fieldName: 'Discharge Medications',
@@ -1994,6 +2186,7 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
           isRecording: _isFieldRecording == 'dischargeMedications',
           isProcessing: _isFieldProcessing == 'dischargeMedications',
           isAnyRecordingOrProcessing: isAnyRecordingOrProcessing,
+          jsonKey: 'dischargeMedications',
         ),
         VoiceInput(
           fieldName: 'Follow Up',
@@ -2005,6 +2198,7 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
           isRecording: _isFieldRecording == 'followUp',
           isProcessing: _isFieldProcessing == 'followUp',
           isAnyRecordingOrProcessing: isAnyRecordingOrProcessing,
+          jsonKey: 'followUp',
         ),
         VoiceInput(
           fieldName: 'Discharge Instruction (diet, activity, etc.)',
@@ -2017,6 +2211,7 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
           isRecording: _isFieldRecording == 'dischargeInstruction',
           isProcessing: _isFieldProcessing == 'dischargeInstruction',
           isAnyRecordingOrProcessing: isAnyRecordingOrProcessing,
+          jsonKey: 'dischargeInstruction',
         ),
         VoiceInput(
           fieldName: 'Report immediately to hospital if you notice',
@@ -2029,6 +2224,7 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
           isRecording: _isFieldRecording == 'reportImmediatelyIf',
           isProcessing: _isFieldProcessing == 'reportImmediatelyIf',
           isAnyRecordingOrProcessing: isAnyRecordingOrProcessing,
+          jsonKey: 'reportImmediatelyIf',
         ),
       ],
     );
