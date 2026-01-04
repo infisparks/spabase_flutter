@@ -117,10 +117,12 @@ class IPDRegistration {
           ? DateTime.parse(json['created_at'] as String)
           : null,
       patientDetail: json['patient_detail'] != null
-          ? PatientDetail.fromJson(json['patient_detail'] as Map<String, dynamic>)
+          ? PatientDetail.fromJson(
+          json['patient_detail'] as Map<String, dynamic>)
           : null,
       bedManagement: json['bed_management'] != null
-          ? BedManagement.fromJson(json['bed_management'] as Map<String, dynamic>)
+          ? BedManagement.fromJson(
+          json['bed_management'] as Map<String, dynamic>)
           : null,
     );
   }
@@ -174,7 +176,8 @@ class IpdManagementPage extends StatefulWidget {
   State<IpdManagementPage> createState() => _IpdManagementPageState();
 }
 
-class _IpdManagementPageState extends State<IpdManagementPage> with SingleTickerProviderStateMixin {
+class _IpdManagementPageState extends State<IpdManagementPage>
+    with SingleTickerProviderStateMixin {
   final SupabaseClient supabase = SupabaseConfig.client;
 
   // Data State
@@ -185,7 +188,7 @@ class _IpdManagementPageState extends State<IpdManagementPage> with SingleTicker
   String _searchTerm = "";
   String _selectedTab = "non-discharge";
   String _selectedWard = "All";
-  String _selectedDoctor = "All"; // <--- NEW DOCTOR FILTER STATE
+  String _selectedDoctor = "All";
 
   // UI State
   bool _isLoading = true;
@@ -193,7 +196,8 @@ class _IpdManagementPageState extends State<IpdManagementPage> with SingleTicker
   bool _isSearchingDischarged = false;
 
   // Controllers
-  final TextEditingController _dischargeSearchController = TextEditingController();
+  final TextEditingController _dischargeSearchController =
+  TextEditingController();
   late TabController _tabController;
 
   // Colors Palette
@@ -207,7 +211,8 @@ class _IpdManagementPageState extends State<IpdManagementPage> with SingleTicker
     super.initState();
     _tabController = TabController(length: 3, vsync: this);
     _tabController.addListener(() {
-      if (_tabController.indexIsChanging || _tabController.index != _tabController.previousIndex) {
+      if (_tabController.indexIsChanging ||
+          _tabController.index != _tabController.previousIndex) {
         setState(() {
           // Reset filters on tab switch
           _selectedWard = "All";
@@ -264,13 +269,16 @@ class _IpdManagementPageState extends State<IpdManagementPage> with SingleTicker
       final List<Map<String, dynamic>> ipdData = List.from(response);
       if (mounted) {
         setState(() {
-          _allIpdRecordsRaw = ipdData.map((json) => IPDRegistration.fromJson(json)).toList();
+          _allIpdRecordsRaw =
+              ipdData.map((json) => IPDRegistration.fromJson(json)).toList();
         });
       }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error loading data: $e'), backgroundColor: Colors.red),
+          SnackBar(
+              content: Text('Error loading data: $e'),
+              backgroundColor: Colors.red),
         );
       }
     } finally {
@@ -289,7 +297,9 @@ class _IpdManagementPageState extends State<IpdManagementPage> with SingleTicker
 
     if (searchInput.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please enter a Name, Mobile or UHID'), backgroundColor: Colors.orange),
+        const SnackBar(
+            content: Text('Please enter a Name, Mobile or UHID'),
+            backgroundColor: Colors.orange),
       );
       return;
     }
@@ -310,20 +320,24 @@ class _IpdManagementPageState extends State<IpdManagementPage> with SingleTicker
       if (isNumeric) {
         query = query.eq('patient_detail.number', searchInput);
       } else {
-        query = query.or('name.ilike.%$searchInput%,uhid.ilike.%$searchInput%', referencedTable: 'patient_detail');
+        query = query.or('name.ilike.%$searchInput%,uhid.ilike.%$searchInput%',
+            referencedTable: 'patient_detail');
       }
 
-      final response = await query.order("discharge_date", ascending: false).limit(50);
+      final response =
+      await query.order("discharge_date", ascending: false).limit(50);
       final List<Map<String, dynamic>> ipdData = List.from(response);
-      final rawRecords = ipdData.map((json) => IPDRegistration.fromJson(json)).toList();
+      final rawRecords =
+      ipdData.map((json) => IPDRegistration.fromJson(json)).toList();
 
       _dischargedSearchResults = _processRawRecords(rawRecords);
-
     } catch (e) {
       debugPrint("Search Error: $e");
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Search failed. Try searching by exact mobile number.'), backgroundColor: Colors.red),
+          SnackBar(
+              content: Text('Search failed. Try searching by exact mobile number.'),
+              backgroundColor: Colors.red),
         );
       }
     } finally {
@@ -340,8 +354,11 @@ class _IpdManagementPageState extends State<IpdManagementPage> with SingleTicker
   String _formatRoomType(String roomType) {
     if (roomType.isEmpty) return "N/A";
     final upperCaseTypes = ["icu", "nicu"];
-    if (upperCaseTypes.contains(roomType.toLowerCase())) return roomType.toUpperCase();
-    return roomType.substring(0, 1).toUpperCase() + roomType.substring(1).toLowerCase();
+    if (upperCaseTypes.contains(roomType.toLowerCase())) {
+      return roomType.toUpperCase();
+    }
+    return roomType.substring(0, 1).toUpperCase() +
+        roomType.substring(1).toLowerCase();
   }
 
   List<BillingRecord> _processRawRecords(List<IPDRegistration> rawRecords) {
@@ -353,7 +370,8 @@ class _IpdManagementPageState extends State<IpdManagementPage> with SingleTicker
       if (record.paymentDetailRaw != null) {
         try {
           final payments = (record.paymentDetailRaw!)
-              .map((item) => PaymentDetailItem.fromJson(item as Map<String, dynamic>))
+              .map((item) =>
+              PaymentDetailItem.fromJson(item as Map<String, dynamic>))
               .toList();
           totalDeposit = payments.fold(0.0, (sum, item) => sum + item.amount);
         } catch (_) {}
@@ -375,7 +393,8 @@ class _IpdManagementPageState extends State<IpdManagementPage> with SingleTicker
         name: patient?.name ?? "Unknown",
         mobileNumber: patient?.number ?? "N/A",
         depositAmount: totalDeposit,
-        roomType: bed?.roomType != null ? _formatRoomType(bed!.roomType) : "N/A",
+        roomType:
+        bed?.roomType != null ? _formatRoomType(bed!.roomType) : "N/A",
         bedNumber: bed?.bedNumber ?? "N/A",
         status: st,
         dischargeDate: record.dischargeDate,
@@ -391,50 +410,83 @@ class _IpdManagementPageState extends State<IpdManagementPage> with SingleTicker
   List<String> get _uniqueWards {
     final wards = <String>{};
     for (final record in _allIpdRecordsRaw) {
-      if (record.bedManagement != null && record.bedManagement!.roomType.isNotEmpty) {
+      if (record.bedManagement != null &&
+          record.bedManagement!.roomType.isNotEmpty) {
         wards.add(_formatRoomType(record.bedManagement!.roomType));
       }
     }
     return wards.toList()..sort();
   }
 
-  // NEW: Get Unique Doctors List
   List<String> get _uniqueDoctors {
     final docs = <String>{};
     for (final record in _allIpdRecordsRaw) {
-      if (record.underCareOfDoctor != null && record.underCareOfDoctor!.isNotEmpty) {
+      if (record.underCareOfDoctor != null &&
+          record.underCareOfDoctor!.isNotEmpty) {
         docs.add(record.underCareOfDoctor!);
       }
     }
     return docs.toList()..sort();
   }
 
+  // --- MODIFIED GETTER WITH NATURAL SORTING ---
   List<BillingRecord> get _activeFilteredRecords {
+    // 1. Filter Tab
     List<BillingRecord> source = _selectedTab == "non-discharge"
-        ? _processRawRecords(_allIpdRecordsRaw).where((r) => r.status == PatientStatus.active).toList()
-        : _processRawRecords(_allIpdRecordsRaw).where((r) => r.status == PatientStatus.dischargedPartially).toList();
+        ? _processRawRecords(_allIpdRecordsRaw)
+        .where((r) => r.status == PatientStatus.active)
+        .toList()
+        : _processRawRecords(_allIpdRecordsRaw)
+        .where((r) => r.status == PatientStatus.dischargedPartially)
+        .toList();
 
     final term = _searchTerm.trim().toLowerCase();
 
-    // 1. Filter by Doctor
+    // 2. Filter Doctor
     if (_selectedDoctor != "All") {
       source = source.where((r) => r.doctorName == _selectedDoctor).toList();
     }
 
-    // 2. Filter by Ward
+    // 3. Filter Ward
     if (_selectedWard != "All") {
-      source = source.where((r) => r.roomType.toLowerCase() == _selectedWard.toLowerCase()).toList();
+      source = source
+          .where((r) => r.roomType.toLowerCase() == _selectedWard.toLowerCase())
+          .toList();
     }
 
-    // 3. Filter by Search Term
+    // 4. Search Filter
     if (term.isNotEmpty) {
-      source = source.where((r) =>
+      source = source
+          .where((r) =>
       r.name.toLowerCase().contains(term) ||
           r.mobileNumber.contains(term) ||
           r.uhid.toLowerCase().contains(term) ||
-          r.ipdId.toString().contains(term)
-      ).toList();
+          r.ipdId.toString().contains(term))
+          .toList();
     }
+
+    // 5. NATURAL SORTING LOGIC
+    source.sort((a, b) {
+      // Helper: Extract only digits (e.g., "ICU-2" -> 2)
+      int? getBedNum(String bedStr) {
+        String numericString = bedStr.replaceAll(RegExp(r'[^0-9]'), '');
+        return numericString.isEmpty ? null : int.tryParse(numericString);
+      }
+
+      int? numA = getBedNum(a.bedNumber);
+      int? numB = getBedNum(b.bedNumber);
+
+      // Compare numbers if both exist
+      if (numA != null && numB != null) {
+        int comparison = numA.compareTo(numB);
+        // If numbers are different, sort by number
+        if (comparison != 0) return comparison;
+      }
+
+      // Fallback: If numbers are equal or missing, use standard alphabet sorting
+      return a.bedNumber.compareTo(b.bedNumber);
+    });
+
     return source;
   }
 
@@ -445,7 +497,8 @@ class _IpdManagementPageState extends State<IpdManagementPage> with SingleTicker
   @override
   Widget build(BuildContext context) {
     final isDischargedTab = _selectedTab == "discharge";
-    final currentRecords = isDischargedTab ? _dischargedSearchResults : _activeFilteredRecords;
+    final currentRecords =
+    isDischargedTab ? _dischargedSearchResults : _activeFilteredRecords;
 
     return Scaffold(
       backgroundColor: kBackgroundColor,
@@ -469,13 +522,17 @@ class _IpdManagementPageState extends State<IpdManagementPage> with SingleTicker
       backgroundColor: Colors.white,
       surfaceTintColor: Colors.white,
       elevation: 0,
-      leading: const Icon(Icons.local_hospital_rounded, color: Color(0xFF0F172A), size: 28),
+      leading: const Icon(Icons.local_hospital_rounded,
+          color: Color(0xFF0F172A), size: 28),
       title: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           const Text(
             "IPD Management",
-            style: TextStyle(color: Color(0xFF0F172A), fontWeight: FontWeight.bold, fontSize: 20),
+            style: TextStyle(
+                color: Color(0xFF0F172A),
+                fontWeight: FontWeight.bold,
+                fontSize: 20),
           ),
           Text(
             "Admission & Billing Overview",
@@ -522,7 +579,8 @@ class _IpdManagementPageState extends State<IpdManagementPage> with SingleTicker
                 ),
                 labelColor: Colors.white,
                 unselectedLabelColor: Colors.grey[600],
-                labelStyle: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
+                labelStyle:
+                const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
                 dividerColor: Colors.transparent,
                 padding: const EdgeInsets.all(4),
                 tabs: [
@@ -545,24 +603,36 @@ class _IpdManagementPageState extends State<IpdManagementPage> with SingleTicker
                         hintText: "Search Name, Mobile, or UHID...",
                         filled: true,
                         fillColor: Colors.white,
-                        prefixIcon: const Icon(Icons.search, color: Colors.grey),
-                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
-                        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                        prefixIcon:
+                        const Icon(Icons.search, color: Colors.grey),
+                        border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(12),
+                            borderSide: BorderSide.none),
+                        contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 16, vertical: 14),
                       ),
                       onSubmitted: (_) => _fetchDischargedRecordsBySearch(),
                     ),
                   ),
                   const SizedBox(width: 10),
                   ElevatedButton(
-                    onPressed: _isSearchingDischarged ? null : _fetchDischargedRecordsBySearch,
+                    onPressed: _isSearchingDischarged
+                        ? null
+                        : _fetchDischargedRecordsBySearch,
                     style: ElevatedButton.styleFrom(
                       backgroundColor: kAccentColor,
                       foregroundColor: Colors.white,
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12)),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 24, vertical: 14),
                     ),
                     child: _isSearchingDischarged
-                        ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
+                        ? const SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(
+                            color: Colors.white, strokeWidth: 2))
                         : const Text("Find"),
                   ),
                 ],
@@ -571,7 +641,9 @@ class _IpdManagementPageState extends State<IpdManagementPage> with SingleTicker
             else ...[
               // Text Search
               TextField(
-                onChanged: (val) => setState(() { _searchTerm = val; }),
+                onChanged: (val) => setState(() {
+                  _searchTerm = val;
+                }),
                 decoration: InputDecoration(
                   hintText: "Filter active patients...",
                   filled: true,
@@ -581,15 +653,18 @@ class _IpdManagementPageState extends State<IpdManagementPage> with SingleTicker
                     icon: Icon(Icons.refresh, color: kAccentColor),
                     onPressed: _fetchIPDRecords,
                   ),
-                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
+                  border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide: BorderSide.none),
                 ),
               ),
 
-              // NEW: Doctor Dropdown Filter
+              // Doctor Dropdown Filter
               if (_uniqueDoctors.isNotEmpty) ...[
                 const SizedBox(height: 12),
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                  padding:
+                  const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
                   decoration: BoxDecoration(
                     color: Colors.white,
                     borderRadius: BorderRadius.circular(12),
@@ -599,14 +674,17 @@ class _IpdManagementPageState extends State<IpdManagementPage> with SingleTicker
                     child: DropdownButton<String>(
                       isExpanded: true,
                       value: _selectedDoctor,
-                      icon: const Icon(Icons.arrow_drop_down_circle_outlined, color: Colors.grey),
-                      style: const TextStyle(color: Colors.black87, fontWeight: FontWeight.w500),
+                      icon: const Icon(Icons.arrow_drop_down_circle_outlined,
+                          color: Colors.grey),
+                      style: const TextStyle(
+                          color: Colors.black87, fontWeight: FontWeight.w500),
                       dropdownColor: Colors.white,
                       items: [
                         const DropdownMenuItem(
                           value: "All",
                           child: Row(children: [
-                            Icon(Icons.people_outline, size: 18, color: Colors.grey),
+                            Icon(Icons.people_outline,
+                                size: 18, color: Colors.grey),
                             SizedBox(width: 10),
                             Text("All Doctors"),
                           ]),
@@ -615,7 +693,8 @@ class _IpdManagementPageState extends State<IpdManagementPage> with SingleTicker
                           return DropdownMenuItem(
                             value: doc,
                             child: Row(children: [
-                              Icon(Icons.medical_services_outlined, size: 18, color: Colors.blueGrey),
+                              Icon(Icons.medical_services_outlined,
+                                  size: 18, color: Colors.blueGrey),
                               SizedBox(width: 10),
                               Text(" $doc"),
                             ]),
@@ -640,7 +719,8 @@ class _IpdManagementPageState extends State<IpdManagementPage> with SingleTicker
                   child: Row(
                     children: [
                       _buildFilterChip("All", _selectedWard == "All"),
-                      ..._uniqueWards.map((w) => _buildFilterChip(w, _selectedWard == w)),
+                      ..._uniqueWards
+                          .map((w) => _buildFilterChip(w, _selectedWard == w)),
                     ],
                   ),
                 ),
@@ -649,10 +729,14 @@ class _IpdManagementPageState extends State<IpdManagementPage> with SingleTicker
 
             const SizedBox(height: 10),
             // Result Count
-            if(!isDischargedTab || (isDischargedTab && _dischargedSearchResults.isNotEmpty))
+            if (!isDischargedTab ||
+                (isDischargedTab && _dischargedSearchResults.isNotEmpty))
               Text(
                 "Showing ${isDischargedTab ? _dischargedSearchResults.length : _activeFilteredRecords.length} records",
-                style: TextStyle(color: Colors.grey[600], fontSize: 12, fontWeight: FontWeight.w500),
+                style: TextStyle(
+                    color: Colors.grey[600],
+                    fontSize: 12,
+                    fontWeight: FontWeight.w500),
               ),
           ],
         ),
@@ -671,7 +755,8 @@ class _IpdManagementPageState extends State<IpdManagementPage> with SingleTicker
           decoration: BoxDecoration(
             color: isSelected ? kAccentColor : Colors.white,
             borderRadius: BorderRadius.circular(20),
-            border: Border.all(color: isSelected ? kAccentColor : Colors.grey.shade300),
+            border: Border.all(
+                color: isSelected ? kAccentColor : Colors.grey.shade300),
           ),
           child: Text(
             label,
@@ -695,12 +780,16 @@ class _IpdManagementPageState extends State<IpdManagementPage> with SingleTicker
             mainAxisSize: MainAxisSize.min,
             children: [
               Icon(
-                  isDischargedTab ? Icons.person_search_outlined : Icons.bed_outlined,
-                  size: 60, color: Colors.grey[300]
-              ),
+                  isDischargedTab
+                      ? Icons.person_search_outlined
+                      : Icons.bed_outlined,
+                  size: 60,
+                  color: Colors.grey[300]),
               const SizedBox(height: 16),
               Text(
-                isDischargedTab ? "Search for closed files" : "No active patients found",
+                isDischargedTab
+                    ? "Search for closed files"
+                    : "No active patients found",
                 style: TextStyle(color: Colors.grey[500], fontSize: 16),
               ),
             ],
@@ -724,8 +813,13 @@ class _IpdManagementPageState extends State<IpdManagementPage> with SingleTicker
   }
 
   Widget _buildPatientCard(BillingRecord record) {
-    final bool isDischarged = record.status == PatientStatus.discharged || record.status == PatientStatus.death;
-    final color = isDischarged ? Colors.grey : (record.status == PatientStatus.dischargedPartially ? Colors.orange : kAccentColor);
+    final bool isDischarged = record.status == PatientStatus.discharged ||
+        record.status == PatientStatus.death;
+    final color = isDischarged
+        ? Colors.grey
+        : (record.status == PatientStatus.dischargedPartially
+        ? Colors.orange
+        : kAccentColor);
 
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
@@ -733,7 +827,10 @@ class _IpdManagementPageState extends State<IpdManagementPage> with SingleTicker
         color: kCardColor,
         borderRadius: BorderRadius.circular(16),
         boxShadow: [
-          BoxShadow(color: Colors.black.withOpacity(0.03), blurRadius: 10, offset: const Offset(0, 4)),
+          BoxShadow(
+              color: Colors.black.withOpacity(0.03),
+              blurRadius: 10,
+              offset: const Offset(0, 4)),
         ],
       ),
       child: InkWell(
@@ -758,7 +855,8 @@ class _IpdManagementPageState extends State<IpdManagementPage> with SingleTicker
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
                   Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                    padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
                     decoration: BoxDecoration(
                       color: color.withOpacity(0.1),
                       borderRadius: BorderRadius.circular(8),
@@ -769,21 +867,29 @@ class _IpdManagementPageState extends State<IpdManagementPage> with SingleTicker
                         const SizedBox(width: 6),
                         Text(
                           "${record.roomType} - ${record.bedNumber}",
-                          style: TextStyle(color: color, fontWeight: FontWeight.bold, fontSize: 12),
+                          style: TextStyle(
+                              color: color,
+                              fontWeight: FontWeight.bold,
+                              fontSize: 12),
                         ),
                       ],
                     ),
                   ),
                   if (isDischarged)
                     Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 8, vertical: 4),
                       decoration: BoxDecoration(
                           color: Colors.red.withOpacity(0.1),
-                          borderRadius: BorderRadius.circular(6)
-                      ),
+                          borderRadius: BorderRadius.circular(6)),
                       child: Text(
-                        record.status == PatientStatus.death ? "EXPIRED" : "DISCHARGED",
-                        style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.red),
+                        record.status == PatientStatus.death
+                            ? "EXPIRED"
+                            : "DISCHARGED",
+                        style: const TextStyle(
+                            fontSize: 10,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.red),
                       ),
                     ),
                 ],
@@ -798,8 +904,13 @@ class _IpdManagementPageState extends State<IpdManagementPage> with SingleTicker
                     radius: 24,
                     backgroundColor: Colors.grey[100],
                     child: Text(
-                      record.name.isNotEmpty ? record.name[0].toUpperCase() : "?",
-                      style: TextStyle(color: kPrimaryColor, fontWeight: FontWeight.bold, fontSize: 18),
+                      record.name.isNotEmpty
+                          ? record.name[0].toUpperCase()
+                          : "?",
+                      style: TextStyle(
+                          color: kPrimaryColor,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 18),
                     ),
                   ),
                   const SizedBox(width: 16),
@@ -809,23 +920,30 @@ class _IpdManagementPageState extends State<IpdManagementPage> with SingleTicker
                       children: [
                         Text(
                           record.name,
-                          style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: kPrimaryColor),
-                          maxLines: 1, overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.w700,
+                              color: kPrimaryColor),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
                         ),
                         const SizedBox(height: 4),
                         Text(
                           "UHID: ${record.uhid}",
-                          style: TextStyle(fontSize: 12, color: Colors.grey[500]),
+                          style:
+                          TextStyle(fontSize: 12, color: Colors.grey[500]),
                         ),
                         if (record.mobileNumber != 'N/A')
                           Text(
                             "Mob: ${record.mobileNumber}",
-                            style: TextStyle(fontSize: 12, color: Colors.grey[500]),
+                            style: TextStyle(
+                                fontSize: 12, color: Colors.grey[500]),
                           ),
                       ],
                     ),
                   ),
-                  const Icon(Icons.arrow_forward_ios_rounded, size: 16, color: Colors.grey),
+                  const Icon(Icons.arrow_forward_ios_rounded,
+                      size: 16, color: Colors.grey),
                 ],
               ),
 
@@ -836,13 +954,18 @@ class _IpdManagementPageState extends State<IpdManagementPage> with SingleTicker
               // Footer: Doctor & Date
               Row(
                 children: [
-                  Icon(Icons.medical_services_outlined, size: 14, color: Colors.grey[400]),
+                  Icon(Icons.medical_services_outlined,
+                      size: 14, color: Colors.grey[400]),
                   const SizedBox(width: 6),
                   Expanded(
                     child: Text(
                       " ${record.doctorName}",
-                      style: TextStyle(fontSize: 13, color: Colors.grey[700], fontWeight: FontWeight.w500),
-                      maxLines: 1, overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                          fontSize: 13,
+                          color: Colors.grey[700],
+                          fontWeight: FontWeight.w500),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                     ),
                   ),
                   if (isDischarged && record.dischargeDate != null)

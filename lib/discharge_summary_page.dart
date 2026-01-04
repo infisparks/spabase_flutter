@@ -16,7 +16,7 @@ import 'package:printing/printing.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:open_file/open_file.dart';
 
-// --- NEW IMPORTS FOR AI & MIC ---
+// --- AI & MIC IMPORTS ---
 import 'package:google_generative_ai/google_generative_ai.dart';
 import 'package:record/record.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -25,56 +25,20 @@ import 'dart:convert'; // For jsonDecode
 // Assuming these helpers/configs exist in your Flutter project
 import 'supabase_config.dart';
 import 'floating_reference_window.dart'; // Contains PipReferenceWindow
-import 'ipd_structure.dart'; // <-- Import for groupToColumnMap
-import 'drawing_models.dart'; // <-- NEW: Assumed source for DrawingGroup, DrawingPage, PipSelectedPageData
+import 'ipd_structure.dart'; // Import for groupToColumnMap
+import 'drawing_models.dart'; // Assumed source for DrawingGroup, DrawingPage
 
-// --- Utility Functions (Kept for local use) ---
+// --- Utility Functions ---
 
 String generateUniqueId() {
   return DateTime.now().microsecondsSinceEpoch.toString() +
       Random().nextInt(100000).toString();
 }
 
-List<Offset> simplify(List<Offset> points, double epsilon) {
-  if (points.length < 3) {
-    return points;
-  }
-
-  double findPerpendicularDistance(
-      Offset point, Offset lineStart, Offset lineEnd) {
-    double dx = lineEnd.dx - lineStart.dx;
-    double dy = lineEnd.dy - lineStart.dy;
-    if (dx == 0 && dy == 0) return (point - lineStart).distance;
-    double t =
-        ((point.dx - lineStart.dx) * dx + (point.dy - lineStart.dy) * dy) /
-            (dx * dx + dy * dy);
-    t = max(0, min(1, t));
-    double closestX = lineStart.dx + t * dx;
-    double closestY = lineStart.dy + t * dy;
-    return sqrt(pow(point.dx - closestX, 2) + pow(point.dy - closestY, 2));
-  }
-
-  double dMax = 0;
-  int index = 0;
-  for (int i = 1; i < points.length - 1; i++) {
-    double d = findPerpendicularDistance(points[i], points.first, points.last);
-    if (d > dMax) {
-      index = i;
-      dMax = d;
-    }
-  }
-
-  if (dMax > epsilon) {
-    var recResults1 = simplify(points.sublist(0, index + 1), epsilon);
-    var recResults2 = simplify(points.sublist(index, points.length), epsilon);
-    return recResults1.sublist(0, recResults1.length - 1) + recResults2;
-  } else {
-    return [points.first, points.last];
-  }
-}
-
-// --- Type Definitions for Clinical/Discharge Data (No change) ---
+// --- Type Definitions ---
 class ClinicalNotesData {
+  // Kept class definition for backward compatibility reading,
+  // but logic to fetch FROM this is removed as requested.
   final String mainComplaintsDuration;
   final String pastHistory;
   final String familySocialHistory;
@@ -96,8 +60,7 @@ class ClinicalNotesData {
         pastHistory = json['pastHistory'] ?? '',
         familySocialHistory = json['familySocialHistory'] ?? '',
         generalPhysicalExamination = json['generalPhysicalExamination'] ?? '',
-        systemicExaminationCardiovascular =
-            json['systemicExaminationCardiovascular'] ?? '',
+        systemicExaminationCardiovascular = json['systemicExaminationCardiovascular'] ?? '',
         respiratory = json['respiratory'] ?? '',
         perAbdomen = json['perAbdomen'] ?? '',
         neurology = json['neurology'] ?? '',
@@ -108,24 +71,6 @@ class ClinicalNotesData {
         provisionalDiagnosis2 = json['provisionalDiagnosis2'] ?? '',
         provisionalDiagnosis3 = json['provisionalDiagnosis3'] ?? '',
         otherNotes = json['otherNotes'] ?? '';
-
-  Map<String, dynamic> toJson() => {
-    'mainComplaintsDuration': mainComplaintsDuration,
-    'pastHistory': pastHistory,
-    'familySocialHistory': familySocialHistory,
-    'generalPhysicalExamination': generalPhysicalExamination,
-    'systemicExaminationCardiovascular': systemicExaminationCardiovascular,
-    'respiratory': respiratory,
-    'perAbdomen': perAbdomen,
-    'neurology': neurology,
-    'skeletal': skeletal,
-    'otherFindings': otherFindings,
-    'summary': summary,
-    'provisionalDiagnosis1': provisionalDiagnosis1,
-    'provisionalDiagnosis2': provisionalDiagnosis2,
-    'provisionalDiagnosis3': provisionalDiagnosis3,
-    'otherNotes': otherNotes,
-  };
 }
 
 class DischargeSummaryData {
@@ -144,12 +89,8 @@ class DischargeSummaryData {
   String procedure2;
   String provisionalDiagnosis;
   String historyOfPresentIllness;
-
-  // --- NEW FIELDS ---
   String generalPhysicalExamination;
   String systemicExamination;
-  // ------------------
-
   String investigations;
   String treatmentGiven;
   String hospitalCourse;
@@ -183,8 +124,8 @@ class DischargeSummaryData {
     required this.procedure2,
     required this.provisionalDiagnosis,
     required this.historyOfPresentIllness,
-    required this.generalPhysicalExamination, // Added
-    required this.systemicExamination,        // Added
+    required this.generalPhysicalExamination,
+    required this.systemicExamination,
     required this.investigations,
     required this.treatmentGiven,
     required this.hospitalCourse,
@@ -219,8 +160,8 @@ class DischargeSummaryData {
     'procedure2': procedure2,
     'provisionalDiagnosis': provisionalDiagnosis,
     'historyOfPresentIllness': historyOfPresentIllness,
-    'generalPhysicalExamination': generalPhysicalExamination, // Added
-    'systemicExamination': systemicExamination,               // Added
+    'generalPhysicalExamination': generalPhysicalExamination,
+    'systemicExamination': systemicExamination,
     'investigations': investigations,
     'treatmentGiven': treatmentGiven,
     'hospitalCourse': hospitalCourse,
@@ -256,8 +197,8 @@ class DischargeSummaryData {
       procedure2: json['procedure2'] ?? '',
       provisionalDiagnosis: json['provisionalDiagnosis'] ?? '',
       historyOfPresentIllness: json['historyOfPresentIllness'] ?? '',
-      generalPhysicalExamination: json['generalPhysicalExamination'] ?? '', // Added
-      systemicExamination: json['systemicExamination'] ?? '',               // Added
+      generalPhysicalExamination: json['generalPhysicalExamination'] ?? '',
+      systemicExamination: json['systemicExamination'] ?? '',
       investigations: json['investigations'] ?? '',
       treatmentGiven: json['treatmentGiven'] ?? '',
       hospitalCourse: json['hospitalCourse'] ?? '',
@@ -293,8 +234,8 @@ class DischargeSummaryData {
     String? procedure2,
     String? provisionalDiagnosis,
     String? historyOfPresentIllness,
-    String? generalPhysicalExamination, // Added
-    String? systemicExamination,        // Added
+    String? generalPhysicalExamination,
+    String? systemicExamination,
     String? investigations,
     String? treatmentGiven,
     String? hospitalCourse,
@@ -328,8 +269,8 @@ class DischargeSummaryData {
       procedure2: procedure2 ?? this.procedure2,
       provisionalDiagnosis: provisionalDiagnosis ?? this.provisionalDiagnosis,
       historyOfPresentIllness: historyOfPresentIllness ?? this.historyOfPresentIllness,
-      generalPhysicalExamination: generalPhysicalExamination ?? this.generalPhysicalExamination, // Added
-      systemicExamination: systemicExamination ?? this.systemicExamination, // Added
+      generalPhysicalExamination: generalPhysicalExamination ?? this.generalPhysicalExamination,
+      systemicExamination: systemicExamination ?? this.systemicExamination,
       investigations: investigations ?? this.investigations,
       treatmentGiven: treatmentGiven ?? this.treatmentGiven,
       hospitalCourse: hospitalCourse ?? this.hospitalCourse,
@@ -349,124 +290,80 @@ class DischargeSummaryData {
     );
   }
 }
-// --- REAL Microphone Service (No change) ---
+
+// --- REAL Microphone Service ---
 class MicrophoneService {
   final AudioRecorder _recorder = AudioRecorder();
   String? _path;
 
   Future<void> startRecording() async {
-    // 1. Check permissions
     if (!await Permission.microphone.request().isGranted) {
       throw Exception("Microphone permission not granted");
     }
-
-    // 2. Get temp path
     final dir = await getTemporaryDirectory();
     _path = '${dir.path}/temp_audio.m4a';
-
-    // 3. Start recording
-    // Using aacLc encoder which produces an m4a file, compatible with Gemini
     await _recorder.start(
         const RecordConfig(encoder: AudioEncoder.aacLc), path: _path!);
   }
 
   Future<Uint8List> stopRecording() async {
-    // 1. Stop recorder
     final path = await _recorder.stop();
     if (path == null) {
       throw Exception("Failed to stop recording or no path found.");
     }
-
-    // 2. Read file as bytes
     final file = File(path);
     final bytes = await file.readAsBytes();
-
-    // 3. Clean up temp file
     await file.delete();
     _path = null;
-
-    // 4. Return bytes
     return bytes;
   }
 
-  // Call this from the main widget's dispose method
   void dispose() {
     _recorder.dispose();
   }
 }
 
-// --- REAL Gemini API Service (No change) ---
 // --- REAL Gemini API Service ---
 class GeminiApiService {
-  // --- UPDATED API KEY ---
   static const String _apiKey = "AIzaSyC0VlnIQ5n_Jv6pX17dNdqKPOzqsukdKeo";
   static const String _model = "gemini-2.5-flash";
 
-  /// Transcribes audio for a single field
   Future<String> getTranscriptionFromAudio(
       Uint8List audioData, String fieldName) async {
-    final model = GenerativeModel(
-      model: _model,
-      apiKey: _apiKey,
-    );
-
+    final model = GenerativeModel(model: _model, apiKey: _apiKey);
     final prompt = """
       You are a specialized medical transcriptionist. 
       Transcribe the dictation in the audio file.
       The output must be relevant to the clinical note field: "$fieldName".
-      
       Formatting Rules:
       1. Use UPPERCASE for medical terms if that is the standard style.
       2. If dictating medications, list them clearly (e.g., INJ MONOCEF 1GM IV x BD).
       3. Return ONLY the transcribed text. No markdown, no introductions.
     """;
-
     final audioPart = DataPart('audio/m4a', audioData);
     final textPart = TextPart(prompt);
-
     final response = await model.generateContent([
       Content.multi([textPart, audioPart])
     ]);
-
     if (response.text == null) {
       throw Exception("AI returned an empty transcription.");
     }
     return response.text!.trim();
   }
 
-  /// Transcribes a full summary and returns a JSON map based on your specific format
   Future<Map<String, dynamic>> getSummaryFromAudio(
       Uint8List audioData) async {
     final model = GenerativeModel(
       model: _model,
       apiKey: _apiKey,
-      generationConfig: GenerationConfig(
-        responseMimeType: 'application/json', // Enforce JSON output
-      ),
+      generationConfig: GenerationConfig(responseMimeType: 'application/json'),
     );
-
-    // --- UPDATED PROMPT TO MATCH YOUR DUMMY FORMAT ---
     final prompt = """
       You are a specialized medical scribe for an Obstetric/Gynecology department. 
       Listen to the doctor's dictation and extract the data into a JSON object.
-      
-      The doctor will dictate sections like "History", "Examination", "Treatment", "Discharge Advice".
-      
       Map the dictation strictly to the following JSON keys. 
       Use UPPERCASE for the content values (except units like mmhg).
       
-      Here is the mapping logic based on standard formats:
-      1. "Provisional Diagnosis" -> provisionalDiagnosis
-      2. "Final Diagnosis" -> finalDiagnosis
-      3. "History of Present Illness" (Include LMP, EDD, Obstetric History here) -> historyOfPresentIllness
-      4. "General Physical Examination" (BP, PR, SPO2, TEMP) -> generalPhysicalExamination
-      5. "Systemic Examination" (CVS, CNS, RS, P/A, FHS) -> systemicExamination
-      6. "Investigations" -> investigations
-      7. "Treatment Given" (Injections, IVF, Transfusions) -> treatmentGiven
-      8. "Condition at Discharge" -> conditionAtDischarge
-      9. "Discharge Medications" / "Instructions" (Diet, Baby care, etc) -> dischargeInstruction
-      10. "Follow Up" -> followUp
-
       JSON Schema to return:
       {
         "provisionalDiagnosis": "string",
@@ -481,35 +378,26 @@ class GeminiApiService {
         "followUp": "string",
         "procedure": "string"
       }
-      
       If a field is not mentioned, return an empty string "".
     """;
-
     final audioPart = DataPart('audio/m4a', audioData);
     final textPart = TextPart(prompt);
-
     final response = await model.generateContent([
       Content.multi([textPart, audioPart])
     ]);
-
     if (response.text == null) {
       throw Exception("AI returned an empty response.");
     }
-
-    // Clean the response text (in case it includes ```json ... ```)
     final jsonText = response.text!
         .trim()
         .replaceAll('```json', '')
         .replaceAll('```', '')
         .trim();
-
-    // Decode the JSON string into a Map
     return jsonDecode(jsonText) as Map<String, dynamic>;
   }
 }
 
-// --- Reusable Input Component (No change) ---
-// --- UPDATED VoiceInput (Fixes AI Display Issue) ---
+// --- UPDATED VoiceInput Component ---
 class VoiceInput extends StatefulWidget {
   final String fieldName;
   final String currentValue;
@@ -517,6 +405,7 @@ class VoiceInput extends StatefulWidget {
   final bool disabled;
   final bool disableVoiceFill;
   final VoidCallback? onVoiceFill;
+  final VoidCallback? onHistoryClick; // NEW: Callback for fetching past history
   final bool isRecording;
   final bool isProcessing;
   final bool isAnyRecordingOrProcessing;
@@ -529,6 +418,7 @@ class VoiceInput extends StatefulWidget {
     this.disabled = false,
     this.disableVoiceFill = false,
     this.onVoiceFill,
+    this.onHistoryClick,
     this.isRecording = false,
     this.isProcessing = false,
     this.isAnyRecordingOrProcessing = false,
@@ -544,21 +434,14 @@ class _VoiceInputState extends State<VoiceInput> {
   @override
   void initState() {
     super.initState();
-    // Initialize controller with current value
     _controller = TextEditingController(text: widget.currentValue);
   }
 
   @override
   void didUpdateWidget(covariant VoiceInput oldWidget) {
     super.didUpdateWidget(oldWidget);
-    // This is the MAGIC FIX:
-    // If the parent (AI) sends a new value that is different from what is
-    // currently in the text box, update the text box immediately.
     if (widget.currentValue != _controller.text) {
-      // Use the new value from AI
       _controller.text = widget.currentValue;
-
-      // Optional: Move cursor to the end so it doesn't jump to start if you are typing
       _controller.selection = TextSelection.fromPosition(
         TextPosition(offset: _controller.text.length),
       );
@@ -585,7 +468,6 @@ class _VoiceInputState extends State<VoiceInput> {
       fillColor: Colors.transparent,
     );
 
-    // Use controller instead of initialValue
     final inputWidget = TextFormField(
       controller: _controller,
       onChanged: widget.onChanged,
@@ -620,11 +502,16 @@ class _VoiceInputState extends State<VoiceInput> {
               !widget.isProcessing)
           ? null
           : widget.onVoiceFill,
-      tooltip: widget.isRecording
-          ? 'Stop Recording'
-          : widget.isProcessing
-          ? 'Processing...'
-          : 'Voice Fill (Appends)',
+      tooltip: 'Voice Fill',
+    )
+        : const SizedBox.shrink();
+
+    // NEW: Small icon to fetch input from previous record
+    final historyButton = widget.onHistoryClick != null
+        ? IconButton(
+      icon: const Icon(Icons.history_rounded, size: 20, color: Colors.teal),
+      tooltip: 'Fetch from previous record',
+      onPressed: widget.disabled ? null : widget.onHistoryClick,
     )
         : const SizedBox.shrink();
 
@@ -637,10 +524,16 @@ class _VoiceInputState extends State<VoiceInput> {
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               Expanded(
-                child: Text(
-                  '${widget.fieldName}:',
-                  style: const TextStyle(
-                      fontWeight: FontWeight.bold, fontSize: 13),
+                child: Row(
+                  children: [
+                    Text(
+                      '${widget.fieldName}:',
+                      style: const TextStyle(
+                          fontWeight: FontWeight.bold, fontSize: 13),
+                    ),
+                    // Place the history icon right next to the label
+                    historyButton,
+                  ],
                 ),
               ),
               voiceButton,
@@ -659,7 +552,7 @@ class DischargeSummaryPage extends StatefulWidget {
   final int ipdId;
   final String uhid;
   final String patientName;
-  final String ageSex; // Prefill data
+  final String ageSex;
 
   const DischargeSummaryPage({
     super.key,
@@ -672,8 +565,8 @@ class DischargeSummaryPage extends StatefulWidget {
   @override
   State<DischargeSummaryPage> createState() => _DischargeSummaryPageState();
 }
+
 class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
-  // NOTE: Assuming SupabaseConfig and its client are correctly imported/available
   final SupabaseClient supabase = SupabaseConfig.client;
 
   late DischargeSummaryData _formData;
@@ -683,24 +576,20 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
 
   // --- PiP Window State ---
   String? _healthRecordId;
-  // Types DrawingGroup/PipSelectedPageData are now imported
   List<DrawingGroup>? _allPatientGroups;
   bool _isLoadingAllGroups = false;
   bool _isPipWindowVisible = false;
   PipSelectedPageData? _pipSelectedPageData;
-  Offset _pipPosition = const Offset(50, 50); // Initial position
-  Size _pipSize = const Size(400, 565); // A4 aspect ratio
-
-  // Mapping constant: NOW USING THE groupToColumnMap from the imported ipd_structure.dart
+  Offset _pipPosition = const Offset(50, 50);
+  Size _pipSize = const Size(400, 565);
   final Map<String, String> _groupToColumnMap = groupToColumnMap;
 
   // Audio/AI State
   bool _isRecording = false;
   bool _isProcessingAudio = false;
-  String? _isFieldRecording; // Field name currently recording
-  String? _isFieldProcessing; // Field name currently processing
+  String? _isFieldRecording;
+  String? _isFieldProcessing;
 
-  // --- USE REAL SERVICES ---
   final GeminiApiService _geminiService = GeminiApiService();
   final MicrophoneService _micService = MicrophoneService();
 
@@ -711,10 +600,9 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
     _fetchDischargeData();
   }
 
-  // --- ADD DISPOSE METHOD ---
   @override
   void dispose() {
-    _micService.dispose(); // Dispose the audio recorder
+    _micService.dispose();
     super.dispose();
   }
 
@@ -730,17 +618,15 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
       detailedAddress2: '',
       admissionDateAndTime: '',
       dischargeDateAndTime:
-      '${DateFormat('dd-MM-yyyy').format(now)} ${DateFormat('HH:mm').format(now)}',
+      '${DateFormat('dd-MM-yyyy').format(now)} ${DateFormat('hh:mm a').format(now)}',
       finalDiagnosis: '',
       finalDiagnosis2: '',
       procedure: '',
       procedure2: '',
       provisionalDiagnosis: '',
       historyOfPresentIllness: '',
-      // --- ADDED ---
       generalPhysicalExamination: '',
       systemicExamination: '',
-      // -------------
       investigations: '',
       treatmentGiven: '',
       hospitalCourse: '',
@@ -756,15 +642,13 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
       summaryExplainedTo: '',
       emergencyContact: '',
       date: DateFormat('yyyy-MM-dd').format(now),
-      time: DateFormat('HH:mm').format(now),
+      time: DateFormat('hh:mm a').format(now),
     );
   }
 
-  // --- Data Fetching ---
   Future<void> _fetchDischargeData() async {
     setState(() => _isLoading = true);
     try {
-      // 1. FETCH IPD DETAILS (Safe Admission Date)
       final ipdResponse = await supabase
           .from('ipd_registration')
           .select('admission_date, admission_time, created_at')
@@ -774,28 +658,36 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
       String fetchedAdmissionDate = '';
       if (ipdResponse != null) {
         if (ipdResponse['admission_date'] != null) {
-          fetchedAdmissionDate = "${ipdResponse['admission_date']} ${ipdResponse['admission_time'] ?? ''}".trim();
+          String rawTime = ipdResponse['admission_time'] ?? '';
+          String formattedTime = rawTime;
+          if (rawTime.isNotEmpty) {
+            try {
+              final tempDate = DateFormat('HH:mm').parse(rawTime.split('.')[0]);
+              formattedTime = DateFormat('hh:mm a').format(tempDate);
+            } catch (e) {}
+          }
+          fetchedAdmissionDate =
+              "${ipdResponse['admission_date']} $formattedTime".trim();
         } else if (ipdResponse['created_at'] != null) {
           final createdAt = DateTime.parse(ipdResponse['created_at']);
-          fetchedAdmissionDate = DateFormat('dd-MM-yyyy HH:mm').format(createdAt);
+          fetchedAdmissionDate =
+              DateFormat('dd-MM-yyyy hh:mm a').format(createdAt);
         }
       }
 
-      // 2. FETCH EXISTING SUMMARY
       final response = await supabase
           .from("user_health_details")
-          .select('id, dischare_summary_written, clinical_notes_data, patient_detail(address, age, gender)')
+          .select(
+          'id, dischare_summary_written, clinical_notes_data, patient_detail(address, age, gender)')
           .eq("ipd_registration_id", widget.ipdId)
           .maybeSingle();
 
       _healthRecordId = response?['id'] as String?;
 
-      // Handle Patient Details
       String address = '';
       String fetchedAgeSex = widget.ageSex;
 
       if (response != null && response['patient_detail'] != null) {
-        // Handle if patient_detail returns a List or a Map
         final rawPatient = response['patient_detail'];
         final patientData = (rawPatient is List && rawPatient.isNotEmpty)
             ? rawPatient[0]
@@ -811,18 +703,13 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
         }
       }
 
-      // 3. MERGE DATA (CRASH FIX HERE)
       if (response != null && response['dischare_summary_written'] != null) {
         final summaryData = response['dischare_summary_written'];
-
-        // Check if list is not empty before accessing .first
         if (summaryData is List && summaryData.isNotEmpty) {
           _formData = DischargeSummaryData.fromJson(summaryData.first);
         } else if (summaryData is Map<String, dynamic>) {
           _formData = DischargeSummaryData.fromJson(summaryData);
         }
-
-        // Fallback for admission date
         if (_formData.admissionDateAndTime.trim().isEmpty) {
           _formData.admissionDateAndTime = fetchedAdmissionDate;
         }
@@ -830,10 +717,9 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
         _formData.admissionDateAndTime = fetchedAdmissionDate;
       }
 
-      // 4. LOAD CLINICAL NOTES (CRASH FIX HERE)
+      // We still fetch clinical notes to have them in memory, but we don't show the buttons anymore
       if (response != null && response['clinical_notes_data'] != null) {
         final clinicalDataRaw = response['clinical_notes_data'];
-
         if (clinicalDataRaw is List && clinicalDataRaw.isNotEmpty) {
           _clinicalData = ClinicalNotesData.fromJson(clinicalDataRaw.first);
         } else if (clinicalDataRaw is Map<String, dynamic>) {
@@ -842,16 +728,217 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
       }
 
       _formData = _formData.copyWith(
-        detailedAddress: _formData.detailedAddress.isEmpty ? (address.split('\n').firstOrNull ?? address) : _formData.detailedAddress,
-        detailedAddress2: _formData.detailedAddress2.isEmpty ? (address.split('\n').skip(1).join(', ')) : _formData.detailedAddress2,
+        detailedAddress: _formData.detailedAddress.isEmpty
+            ? (address.split('\n').firstOrNull ?? address)
+            : _formData.detailedAddress,
+        detailedAddress2: _formData.detailedAddress2.isEmpty
+            ? (address.split('\n').skip(1).join(', '))
+            : _formData.detailedAddress2,
         ageSex: fetchedAgeSex,
       );
-
     } catch (e) {
       debugPrint("Error fetching data: $e");
       _showSnackbar('Failed to load data: $e', isError: true);
     } finally {
       if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  // --- NEW: SINGLE FIELD HISTORY FETCH ---
+  Future<void> _fetchSingleFieldHistory(
+      String currentFieldName, String jsonKey) async {
+    try {
+      // 1. Fetch latest previous summary
+      final response = await supabase
+          .from('user_health_details')
+          .select('dischare_summary_written, updated_at')
+          .eq('patient_uhid', widget.uhid)
+          .neq('ipd_registration_id', widget.ipdId)
+          .order('updated_at', ascending: false)
+          .limit(1)
+          .maybeSingle();
+
+      if (response == null || response['dischare_summary_written'] == null) {
+        _showSnackbar(
+            "No previous history found for this patient.",
+            isError: true);
+        return;
+      }
+
+      // 2. Parse Data
+      final rawData = response['dischare_summary_written'];
+      Map<String, dynamic> pastDataMap;
+
+      if (rawData is List && rawData.isNotEmpty) {
+        pastDataMap = rawData.first;
+      } else if (rawData is Map<String, dynamic>) {
+        pastDataMap = rawData;
+      } else {
+        return;
+      }
+
+      // 3. Extract the specific field
+      final String pastValue = pastDataMap[jsonKey] ?? '';
+
+      if (pastValue.trim().isEmpty) {
+        _showSnackbar("Previous record for $currentFieldName is empty.", isError: true);
+        return;
+      }
+
+      // 4. Show Confirmation Dialog
+      if (!mounted) return;
+
+      final String pastDate = response['updated_at'] != null
+          ? DateFormat('dd MMM yyyy').format(DateTime.parse(response['updated_at']))
+          : 'Unknown Date';
+
+      await showDialog(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: Text("Past Data: $currentFieldName"),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text("From: $pastDate", style: const TextStyle(fontSize: 12, color: Colors.grey)),
+              const SizedBox(height: 8),
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(color: Colors.grey[100], borderRadius: BorderRadius.circular(4)),
+                child: Text(pastValue, style: const TextStyle(fontSize: 14)),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text("Cancel"),
+            ),
+            TextButton(
+              onPressed: () {
+                // Append
+                final currentVal = _formData.toJson()[jsonKey] ?? '';
+                final newVal = currentVal.isEmpty ? pastValue : "$currentVal\n$pastValue";
+                _handleInputChange(newVal, jsonKey);
+                Navigator.pop(ctx);
+              },
+              child: const Text("Append"),
+            ),
+            TextButton(
+              onPressed: () {
+                // Replace
+                _handleInputChange(pastValue, jsonKey);
+                Navigator.pop(ctx);
+              },
+              child: const Text("Replace"),
+            ),
+          ],
+        ),
+      );
+
+    } catch (e) {
+      _showSnackbar("Error fetching history: $e", isError: true);
+    }
+  }
+
+  // --- GLOBAL COPY FROM PAST HISTORY ---
+  Future<void> _attemptCopyFromPast() async {
+    try {
+      final response = await supabase
+          .from('user_health_details')
+          .select('dischare_summary_written, updated_at')
+          .eq('patient_uhid', widget.uhid)
+          .neq('ipd_registration_id', widget.ipdId)
+          .order('updated_at', ascending: false)
+          .limit(1)
+          .maybeSingle();
+
+      if (response == null || response['dischare_summary_written'] == null) {
+        _showSnackbar(
+            "No previous discharge summary found for UHID: ${widget.uhid}",
+            isError: true);
+        return;
+      }
+
+      DischargeSummaryData pastData;
+      final rawData = response['dischare_summary_written'];
+      if (rawData is List && rawData.isNotEmpty) {
+        pastData = DischargeSummaryData.fromJson(rawData.first);
+      } else if (rawData is Map<String, dynamic>) {
+        pastData = DischargeSummaryData.fromJson(rawData);
+      } else {
+        return;
+      }
+
+      final String pastDateStr = response['updated_at'] != null
+          ? DateFormat('dd MMM yyyy')
+          .format(DateTime.parse(response['updated_at']))
+          : "Past Date";
+
+      final bool? confirmCopy = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text("Copy Past Summary?"),
+          content: Text(
+              "Found a discharge summary from $pastDateStr. Do you want to copy details from it?"),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text("No")),
+            TextButton(
+                onPressed: () => Navigator.pop(ctx, true),
+                child: const Text("Yes")),
+          ],
+        ),
+      );
+
+      if (confirmCopy != true) return;
+
+      final bool? confirmErase = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text("WARNING: Data Replacement"),
+          content: const Text(
+            "This will replace your current unsaved Diagnosis, History, Treatment, and Instructions with the old data.\n\n"
+                "NOTE: Consultant, Admission Date, Discharge Date, Address, and Signatures will NOT be changed.",
+            style: TextStyle(color: Colors.red),
+          ),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text("Cancel")),
+            TextButton(
+                onPressed: () => Navigator.pop(ctx, true),
+                style: TextButton.styleFrom(foregroundColor: Colors.red),
+                child: const Text("Yes, Replace")),
+          ],
+        ),
+      );
+
+      if (confirmErase != true) return;
+
+      setState(() {
+        _formData = pastData.copyWith(
+          patientName: _formData.patientName,
+          ageSex: _formData.ageSex,
+          uhidIpdNumber: _formData.uhidIpdNumber,
+          consultantInCharge: _formData.consultantInCharge,
+          admissionDateAndTime: _formData.admissionDateAndTime,
+          dischargeDateAndTime: _formData.dischargeDateAndTime,
+          detailedAddress: _formData.detailedAddress,
+          detailedAddress2: _formData.detailedAddress2,
+          summaryPreparedBy: _formData.summaryPreparedBy,
+          summaryVerifiedBy: _formData.summaryVerifiedBy,
+          summaryExplainedBy: _formData.summaryExplainedBy,
+          summaryExplainedTo: _formData.summaryExplainedTo,
+          date: _formData.date,
+          time: _formData.time,
+        );
+      });
+
+      _showSnackbar("Discharge Summary details copied from past record.");
+    } catch (e) {
+      _showSnackbar("Error copying past record: $e", isError: true);
     }
   }
 
@@ -864,12 +951,9 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
         'get_group_page_metadata',
         params: {'record_id': _healthRecordId!},
       );
-
-      // Safely map dynamic list elements to DrawingGroup objects.
       if (response is List) {
         List<DrawingGroup> allGroups = (response as List<dynamic>)
             .map((groupData) {
-          // Ensure each item is a Map<String, dynamic> before passing to fromJson
           if (groupData is Map<String, dynamic>) {
             return DrawingGroup.fromJson(groupData);
           }
@@ -881,9 +965,6 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
         setState(() {
           _allPatientGroups = allGroups;
         });
-      } else {
-        throw Exception(
-            'Unexpected response format from RPC: ${response.runtimeType}');
       }
     } catch (e) {
       debugPrint('Error fetching all groups via RPC: $e');
@@ -902,21 +983,17 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
       setState(() => _isPipWindowVisible = false);
       return;
     }
-
-    // Load groups if not already loaded
     if (_allPatientGroups == null && !_isLoadingAllGroups) {
       await _loadAllGroupsForPip();
     }
-
-    // Check again in case fetch failed or is in progress
     if (_allPatientGroups != null && _healthRecordId != null) {
       setState(() {
         _isPipWindowVisible = true;
-        // Setting _pipSelectedPageData to null is correct when opening the selector
         _pipSelectedPageData = null;
       });
     } else if (!_isLoadingAllGroups) {
-      _showSnackbar('Could not load patient groups for reference window.', isError: true);
+      _showSnackbar('Could not load patient groups for reference window.',
+          isError: true);
     }
   }
 
@@ -942,17 +1019,12 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
       if (session == null) {
         throw Exception("User not authenticated.");
       }
-
-      await supabase.from("user_health_details").upsert(
-          {
-            'ipd_registration_id': widget.ipdId,
-            'patient_uhid': widget.uhid,
-            'dischare_summary_written': _formData.toJson(),
-            'updated_at': DateTime.now().toIso8601String(),
-          },
-          onConflict:
-          'ipd_registration_id, patient_uhid');
-
+      await supabase.from("user_health_details").upsert({
+        'ipd_registration_id': widget.ipdId,
+        'patient_uhid': widget.uhid,
+        'dischare_summary_written': _formData.toJson(),
+        'updated_at': DateTime.now().toIso8601String(),
+      }, onConflict: 'ipd_registration_id, patient_uhid');
       _showSnackbar("Discharge summary saved successfully!");
     } catch (error) {
       _showSnackbar("Failed to save data: $error", isError: true);
@@ -961,7 +1033,7 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
     }
   }
 
-  // --- Voice Fill Logic (Omitted for brevity) ---
+  // --- Voice Fill Logic ---
   void _toggleFieldRecording(String field, String fieldName) {
     if (_isFieldRecording == field) {
       _stopFieldRecording(field, fieldName);
@@ -1007,7 +1079,6 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
     try {
       final transcription =
       await _geminiService.getTranscriptionFromAudio(audioData, fieldName);
-
       if (mounted) {
         setState(() {
           final currentContent =
@@ -1020,11 +1091,9 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
           final updatedContent = currentContent.isNotEmpty
               ? currentContent + separator + newContent
               : newContent;
-
           final dataMap = _formData.toJson();
           dataMap[field] = updatedContent;
           _formData = DischargeSummaryData.fromJson(dataMap);
-
           _isFieldProcessing = null;
         });
         _showSnackbar("'$fieldName' updated! Transcription appended.");
@@ -1070,32 +1139,18 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
   Future<void> _processFullSummaryAudio(Uint8List audioData) async {
     try {
       final aiData = await _geminiService.getSummaryFromAudio(audioData);
-
       if (mounted) {
         setState(() {
-          // Get the current form data as a map
           final currentMap = _formData.toJson();
-
-          // Loop through the AI response and update the form map
           aiData.forEach((key, value) {
             if (value != null && (value as String).isNotEmpty) {
-
-              // Special handling for Medications/Instructions
-              // In your dummy format, 'dischargeInstruction' often contains both
               if (key == 'dischargeInstruction') {
-                // You can choose to put specific meds into dischargeMedications
-                // or dump everything into instructions.
-                // Here we update instructions:
                 currentMap['dischargeInstruction'] = value;
-              }
-              // Standard mapping for other fields
-              else if (currentMap.containsKey(key)) {
+              } else if (currentMap.containsKey(key)) {
                 currentMap[key] = value;
               }
             }
           });
-
-          // Convert updated map back to object
           _formData = DischargeSummaryData.fromJson(currentMap);
           _isProcessingAudio = false;
         });
@@ -1107,73 +1162,24 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
     }
   }
 
-  // --- Clinical Data Fetching (Omitted for brevity) ---
-  void _handleFetchClinicalData(String targetField, dynamic sourceField) {
-    if (_clinicalData == null) {
-      _showSnackbar("No Clinical Notes Data available to fetch.");
-      return;
-    }
-
-    String fetchedValue = "";
-
-    if (sourceField is String) {
-      final fieldMap = _clinicalData!.toJson();
-      fetchedValue = fieldMap[sourceField] ?? "";
-    } else if (sourceField is List<String>) {
-      final fieldMap = _clinicalData!.toJson();
-      fetchedValue = sourceField
-          .map((field) => fieldMap[field] ?? "")
-          .where((val) => val.isNotEmpty)
-          .join("; ");
-    }
-
-    if (fetchedValue.trim().isNotEmpty) {
-      setState(() {
-        final dataMap = _formData.toJson();
-        dataMap[targetField] = fetchedValue;
-        _formData = DischargeSummaryData.fromJson(dataMap);
-      });
-      _showSnackbar("Data fetched from Clinical Notes for $targetField.");
-    } else {
-      _showSnackbar("Clinical Notes field(s) for $targetField are empty.",
-          isError: true);
-    }
-  }
-
-
-  // --- PDF Generation (Omitted for brevity) ---
-// --- PDF Generation ---
-  // --- PDF Generation ---
-  // --- PDF Generation ---
-  // --- PDF Generation ---
-  // --- PDF Generation ---
-
-
-
   Future<void> _generateAndSavePdf() async {
     setState(() => _isSaving = true);
     _showSnackbar("Generating PDF...");
-
     try {
       final doc = pw.Document();
       final data = _formData;
-
       final letterheadByteData = await rootBundle.load('assets/letterhead.png');
       final letterheadImage =
       pw.MemoryImage(letterheadByteData.buffer.asUint8List());
 
-      // --- THEME ---
       final PdfColor primaryColor = PdfColor.fromInt(0xff177589);
       const PdfColor accentColor = PdfColors.grey50;
       final PdfColor textColor = PdfColors.grey900;
-
-      // Font Sizes
       const double fsLabel = 7;
       const double fsValue = 9;
       const double fsHeader = 9;
       const double fsBody = 9;
 
-      // --- Helper: Compact Patient Info Item ---
       pw.Widget _buildPatientInfoItem(String label, String value) {
         return pw.Expanded(
           child: pw.Column(
@@ -1194,7 +1200,6 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
         );
       }
 
-      // --- Helper: Compact Section Header ---
       pw.Widget _buildSectionHeader(String title) {
         return pw.Container(
           margin: const pw.EdgeInsets.only(top: 8, bottom: 4),
@@ -1215,11 +1220,9 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
         );
       }
 
-      // --- Helper: Content Generator ---
       List<pw.Widget> _buildPdfSection(String label, String value) {
         if (value.trim().isEmpty) return [];
         final paragraphs = value.split('\n');
-
         return [
           pw.Padding(
             padding: const pw.EdgeInsets.only(top: 4, bottom: 1),
@@ -1248,7 +1251,6 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
         ];
       }
 
-      // --- NEW Helper: Signature Text Row ---
       pw.Widget _buildSigRow(String label, String value) {
         if (value.trim().isEmpty) return pw.SizedBox();
         return pw.Padding(
@@ -1257,9 +1259,11 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
             mainAxisSize: pw.MainAxisSize.min,
             children: [
               pw.Text("$label: ",
-                  style: const pw.TextStyle(fontSize: 9, color: PdfColors.grey700)),
+                  style: const pw.TextStyle(
+                      fontSize: 9, color: PdfColors.grey700)),
               pw.Text(value,
-                  style: pw.TextStyle(fontSize: 9, fontWeight: pw.FontWeight.bold)),
+                  style: pw.TextStyle(
+                      fontSize: 9, fontWeight: pw.FontWeight.bold)),
             ],
           ),
         );
@@ -1279,7 +1283,6 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
             },
           ),
           build: (pw.Context context) => [
-            // Title
             pw.Center(
               child: pw.Text('DISCHARGE SUMMARY',
                   style: pw.TextStyle(
@@ -1289,8 +1292,6 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
                       decoration: pw.TextDecoration.underline)),
             ),
             pw.SizedBox(height: 10),
-
-            // Patient Info Card
             pw.Container(
               padding:
               const pw.EdgeInsets.symmetric(vertical: 8, horizontal: 10),
@@ -1333,8 +1334,6 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
               ),
             ),
             pw.SizedBox(height: 8),
-
-            // Content
             _buildSectionHeader('Clinical Diagnosis'),
             ..._buildPdfSection(
                 'Provisional Diagnosis', data.provisionalDiagnosis),
@@ -1344,22 +1343,19 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
                 'Procedure / Surgeries',
                 '${data.procedure}\n${data.procedure2}\n${data.surgeryProcedureDetails}'
                     .trim()),
-
             _buildSectionHeader('Clinical Summary'),
             ..._buildPdfSection(
                 'History of Present Illness', data.historyOfPresentIllness),
-            ..._buildPdfSection(
-                'General Physical Examination', data.generalPhysicalExamination),
+            ..._buildPdfSection('General Physical Examination',
+                data.generalPhysicalExamination),
             ..._buildPdfSection(
                 'Systemic Examination', data.systemicExamination),
             ..._buildPdfSection('Investigations', data.investigations),
             ..._buildPdfSection('Treatment Given', data.treatmentGiven),
             ..._buildPdfSection('Hospital Course', data.hospitalCourse),
-
             _buildSectionHeader('Discharge Advice'),
             ..._buildPdfSection(
                 'Condition at Discharge', data.conditionAtDischarge),
-
             if (data.dischargeMedications.isNotEmpty) ...[
               pw.Padding(
                 padding: const pw.EdgeInsets.only(top: 4, bottom: 1),
@@ -1381,10 +1377,8 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
                       style: const pw.TextStyle(fontSize: fsBody))),
               pw.SizedBox(height: 4),
             ],
-
             ..._buildPdfSection('Follow Up', data.followUp),
             ..._buildPdfSection('Instructions', data.dischargeInstruction),
-
             if (data.reportImmediatelyIf.isNotEmpty)
               pw.Container(
                 margin: const pw.EdgeInsets.symmetric(vertical: 8),
@@ -1422,17 +1416,13 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
                   ],
                 ),
               ),
-
             pw.SizedBox(height: 20),
             pw.Divider(thickness: 0.5, color: PdfColors.grey400),
             pw.SizedBox(height: 8),
-
-            // --- UPDATED FOOTER SECTION ---
             pw.Row(
               mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
               crossAxisAlignment: pw.CrossAxisAlignment.end,
               children: [
-                // Left Column: Emergency + Date + Time
                 pw.Column(
                   crossAxisAlignment: pw.CrossAxisAlignment.start,
                   children: [
@@ -1446,8 +1436,6 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
                             fontSize: 9, color: PdfColors.grey700)),
                   ],
                 ),
-
-                // Right Column: ALL Signatures/Names
                 pw.Column(
                   crossAxisAlignment: pw.CrossAxisAlignment.end,
                   children: [
@@ -1455,7 +1443,6 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
                     _buildSigRow('Verified By', data.summaryVerifiedBy),
                     _buildSigRow('Explained By', data.summaryExplainedBy),
                     _buildSigRow('Explained To', data.summaryExplainedTo),
-
                     pw.SizedBox(height: 15),
                     pw.Text("Authorized Signatory",
                         style: const pw.TextStyle(
@@ -1467,7 +1454,6 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
           ],
         ),
       );
-
       if (kIsWeb) {
         await Printing.layoutPdf(
             onLayout: (PdfPageFormat format) async => doc.save());
@@ -1485,7 +1471,7 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
       if (mounted) setState(() => _isSaving = false);
     }
   }
-  // --- Utility (Omitted for brevity) ---
+
   void _showSnackbar(String message, {bool isError = false}) {
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -1521,15 +1507,11 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
       );
     }
 
-    // --- WRAPPED IN WillPopScope FOR AUTO-SAVE ---
     return WillPopScope(
       onWillPop: () async {
-        // Auto-save if not currently saving or recording
         if (!_isSaving && !isAnyRecordingOrProcessing) {
-          // Trigger save but don't block UI excessively (or show a quick toast)
           await _handleSave();
         }
-        // Allow pop
         return true;
       },
       child: Scaffold(
@@ -1538,14 +1520,24 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
           backgroundColor: Colors.white,
           actions: [
             IconButton(
+              icon: const Icon(Icons.history, color: Colors.indigo),
+              tooltip: 'Copy From Previous Discharge Summary',
+              onPressed:
+              _isSaving || isAnyRecordingOrProcessing || _isLoading
+                  ? null
+                  : _attemptCopyFromPast,
+            ),
+            IconButton(
               icon: Icon(Icons.picture_in_picture_alt_outlined,
-                  color: _isPipWindowVisible ? Colors.red : Colors.indigo.shade600),
+                  color: _isPipWindowVisible
+                      ? Colors.red
+                      : Colors.indigo.shade600),
               tooltip: 'Open Reference Window',
               onPressed: _togglePipWindow,
             ),
-            // Save button kept on top as requested
             IconButton(
-              onPressed: _isSaving || isAnyRecordingOrProcessing ? null : _handleSave,
+              onPressed:
+              _isSaving || isAnyRecordingOrProcessing ? null : _handleSave,
               icon: _isSaving
                   ? const SizedBox(
                   height: 18,
@@ -1556,9 +1548,11 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
               tooltip: 'Save Summary',
             ),
             IconButton(
-              onPressed:
-              _isSaving || isAnyRecordingOrProcessing ? null : _generateAndSavePdf,
-              icon: const Icon(Icons.picture_as_pdf, size: 18, color: Colors.indigo),
+              onPressed: _isSaving || isAnyRecordingOrProcessing
+                  ? null
+                  : _generateAndSavePdf,
+              icon: const Icon(Icons.picture_as_pdf,
+                  size: 18, color: Colors.indigo),
               tooltip: 'Download PDF',
             ),
           ],
@@ -1581,7 +1575,8 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
                                   fontWeight: FontWeight.bold, fontSize: 18)),
                         ),
                         const SizedBox(height: 16),
-                        _buildFullSummaryVoiceControl(isAnyRecordingOrProcessing),
+                        _buildFullSummaryVoiceControl(
+                            isAnyRecordingOrProcessing),
                         _buildTopSection(isAnyRecordingOrProcessing),
                         const Divider(thickness: 2, height: 32),
                         _buildBottomSection(isAnyRecordingOrProcessing),
@@ -1594,8 +1589,6 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
                     ),
                   ),
                 ),
-
-                // PiP Window
                 if (_isPipWindowVisible && _healthRecordId != null)
                   Positioned(
                     left: _pipPosition.dx,
@@ -1603,7 +1596,8 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
                     child: PipReferenceWindow(
                       key: const ValueKey('pip_discharge_window'),
                       patientUhid: widget.uhid,
-                      allGroups: (_allPatientGroups ?? []) as List<DrawingGroup>,
+                      allGroups:
+                      (_allPatientGroups ?? []) as List<DrawingGroup>,
                       selectedPageData: _pipSelectedPageData,
                       initialSize: _pipSize,
                       healthRecordId: _healthRecordId!,
@@ -1613,7 +1607,8 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
                       },
                       onPageSelected: (dynamic group, dynamic page) {
                         setState(() {
-                          _pipSelectedPageData = (group as DrawingGroup, page as DrawingPage);
+                          _pipSelectedPageData =
+                          (group as DrawingGroup, page as DrawingPage);
                         });
                       },
                       onPositionChanged: (delta) {
@@ -1627,14 +1622,21 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
                       },
                       onSizeChanged: (delta) {
                         setState(() {
-                          final newWidth = (_pipSize.width + delta.dx).clamp(300.0, constraints.maxWidth);
+                          final newWidth = (_pipSize.width + delta.dx)
+                              .clamp(300.0, constraints.maxWidth);
                           const double dummyAspectRatio = 1.414;
                           double newHeight = newWidth * dummyAspectRatio;
 
-                          if (newHeight > constraints.maxHeight - _pipPosition.dy) {
-                            newHeight = constraints.maxHeight - _pipPosition.dy;
-                            final recalculatedWidth = newHeight / dummyAspectRatio;
-                            _pipSize = Size(recalculatedWidth.clamp(300.0, constraints.maxWidth), newHeight);
+                          if (newHeight >
+                              constraints.maxHeight - _pipPosition.dy) {
+                            newHeight =
+                                constraints.maxHeight - _pipPosition.dy;
+                            final recalculatedWidth =
+                                newHeight / dummyAspectRatio;
+                            _pipSize = Size(
+                                recalculatedWidth.clamp(
+                                    300.0, constraints.maxWidth),
+                                newHeight);
                           } else {
                             _pipSize = Size(newWidth, newHeight);
                           }
@@ -1722,7 +1724,8 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
                   ? "Processing $_isFieldProcessing..."
                   : "Only one dictation/processing can run at a time.",
               style: TextStyle(
-                  color: _isProcessingAudio ? Colors.orange : Colors.indigo),
+                  color:
+                  _isProcessingAudio ? Colors.orange : Colors.indigo),
               textAlign: TextAlign.center,
             ),
           ),
@@ -1734,13 +1737,13 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        // --- Discharge Type Radio Buttons ---
         Row(
           children: [
             const Text('Type of Discharge:',
                 style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
             const SizedBox(width: 16),
-            ...["Regular", "DAMA", "Transfer", "DOR (Discharge On Request)"].map((type) => Row(
+            ...["Regular", "DAMA", "Transfer", "DOR (Discharge On Request)"]
+                .map((type) => Row(
               children: [
                 Radio<String>(
                   value: type,
@@ -1754,8 +1757,6 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
             )),
           ],
         ),
-
-        // --- Row: Consultant & Admission Date (Editable) ---
         Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -1775,11 +1776,11 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
             const SizedBox(width: 10),
             Expanded(
               child: VoiceInput(
-                fieldName: 'Admission Date & Time', // Now Editable
+                fieldName: 'Admission Date & Time',
                 currentValue: _formData.admissionDateAndTime,
-                onChanged: (v) => _handleInputChange(v, 'admissionDateAndTime'),
+                onChanged: (v) =>
+                    _handleInputChange(v, 'admissionDateAndTime'),
                 disabled: _isProcessingAudio,
-                // Optional: Enable voice fill if you want to dictate the date
                 onVoiceFill: () => _toggleFieldRecording(
                     'admissionDateAndTime', 'Admission Date & Time'),
                 isRecording: _isFieldRecording == 'admissionDateAndTime',
@@ -1789,18 +1790,14 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
             ),
           ],
         ),
-
-        // --- Row: Discharge Date ---
         VoiceInput(
           fieldName: 'Discharge Date & Time',
           currentValue: _formData.dischargeDateAndTime,
           onChanged: (v) => _handleInputChange(v, 'dischargeDateAndTime'),
           disabled: _isProcessingAudio,
-          disableVoiceFill: true, // Usually auto-filled, but editable
+          disableVoiceFill: true,
           isAnyRecordingOrProcessing: isAnyRecordingOrProcessing,
         ),
-
-        // --- Address Fields ---
         VoiceInput(
           fieldName: 'Detailed Address',
           currentValue: _formData.detailedAddress,
@@ -1818,7 +1815,8 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
           isAnyRecordingOrProcessing: isAnyRecordingOrProcessing,
         ),
 
-        // --- Diagnosis Section ---
+        // --- UPDATED FIELDS WITH HISTORY ICON ---
+
         VoiceInput(
           fieldName: 'Provisional Diagnosis',
           currentValue: _formData.provisionalDiagnosis,
@@ -1826,25 +1824,11 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
           disabled: _isProcessingAudio,
           onVoiceFill: () => _toggleFieldRecording(
               'provisionalDiagnosis', 'Provisional Diagnosis'),
+          onHistoryClick: () => _fetchSingleFieldHistory('Provisional Diagnosis', 'provisionalDiagnosis'),
           isRecording: _isFieldRecording == 'provisionalDiagnosis',
           isProcessing: _isFieldProcessing == 'provisionalDiagnosis',
           isAnyRecordingOrProcessing: isAnyRecordingOrProcessing,
         ),
-        if (_clinicalData != null)
-          Align(
-            alignment: Alignment.centerLeft,
-            child: TextButton.icon(
-              icon: const Icon(Icons.data_object, size: 16),
-              label: const Text('Fetch from Clinical Notes (Diagnosis 1-3)'),
-              onPressed: _isProcessingAudio || isAnyRecordingOrProcessing
-                  ? null
-                  : () => _handleFetchClinicalData('provisionalDiagnosis', [
-                'provisionalDiagnosis1',
-                'provisionalDiagnosis2',
-                'provisionalDiagnosis3'
-              ]),
-            ),
-          ),
         VoiceInput(
           fieldName: 'Final Diagnosis 1',
           currentValue: _formData.finalDiagnosis,
@@ -1852,6 +1836,7 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
           disabled: _isProcessingAudio,
           onVoiceFill: () =>
               _toggleFieldRecording('finalDiagnosis', 'Final Diagnosis 1'),
+          onHistoryClick: () => _fetchSingleFieldHistory('Final Diagnosis 1', 'finalDiagnosis'),
           isRecording: _isFieldRecording == 'finalDiagnosis',
           isProcessing: _isFieldProcessing == 'finalDiagnosis',
           isAnyRecordingOrProcessing: isAnyRecordingOrProcessing,
@@ -1863,6 +1848,7 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
           disabled: _isProcessingAudio,
           onVoiceFill: () =>
               _toggleFieldRecording('finalDiagnosis2', 'Final Diagnosis 2'),
+          onHistoryClick: () => _fetchSingleFieldHistory('Final Diagnosis 2', 'finalDiagnosis2'),
           isRecording: _isFieldRecording == 'finalDiagnosis2',
           isProcessing: _isFieldProcessing == 'finalDiagnosis2',
           isAnyRecordingOrProcessing: isAnyRecordingOrProcessing,
@@ -1873,6 +1859,7 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
           onChanged: (v) => _handleInputChange(v, 'procedure'),
           disabled: _isProcessingAudio,
           onVoiceFill: () => _toggleFieldRecording('procedure', 'Procedure 1'),
+          onHistoryClick: () => _fetchSingleFieldHistory('Procedure 1', 'procedure'),
           isRecording: _isFieldRecording == 'procedure',
           isProcessing: _isFieldProcessing == 'procedure',
           isAnyRecordingOrProcessing: isAnyRecordingOrProcessing,
@@ -1883,6 +1870,7 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
           onChanged: (v) => _handleInputChange(v, 'procedure2'),
           disabled: _isProcessingAudio,
           onVoiceFill: () => _toggleFieldRecording('procedure2', 'Procedure 2'),
+          onHistoryClick: () => _fetchSingleFieldHistory('Procedure 2', 'procedure2'),
           isRecording: _isFieldRecording == 'procedure2',
           isProcessing: _isFieldProcessing == 'procedure2',
           isAnyRecordingOrProcessing: isAnyRecordingOrProcessing,
@@ -1894,41 +1882,24 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
           disabled: _isProcessingAudio,
           onVoiceFill: () => _toggleFieldRecording(
               'historyOfPresentIllness', 'History of Present Illness'),
+          onHistoryClick: () => _fetchSingleFieldHistory('History of Present Illness', 'historyOfPresentIllness'),
           isRecording: _isFieldRecording == 'historyOfPresentIllness',
           isProcessing: _isFieldProcessing == 'historyOfPresentIllness',
           isAnyRecordingOrProcessing: isAnyRecordingOrProcessing,
         ),
-        if (_clinicalData != null)
-          TextButton.icon(
-            icon: const Icon(Icons.data_object, size: 16),
-            label: const Text(
-                'Fetch from Clinical Notes (Main Complaints & Duration)'),
-            onPressed: _isProcessingAudio || isAnyRecordingOrProcessing
-                ? null
-                : () => _handleFetchClinicalData(
-                'historyOfPresentIllness', 'mainComplaintsDuration'),
-          ),
         VoiceInput(
           fieldName: 'General Physical Examination',
           currentValue: _formData.generalPhysicalExamination,
-          onChanged: (v) => _handleInputChange(v, 'generalPhysicalExamination'),
+          onChanged: (v) =>
+              _handleInputChange(v, 'generalPhysicalExamination'),
           disabled: _isProcessingAudio,
           onVoiceFill: () => _toggleFieldRecording(
               'generalPhysicalExamination', 'General Physical Examination'),
+          onHistoryClick: () => _fetchSingleFieldHistory('General Physical Examination', 'generalPhysicalExamination'),
           isRecording: _isFieldRecording == 'generalPhysicalExamination',
           isProcessing: _isFieldProcessing == 'generalPhysicalExamination',
           isAnyRecordingOrProcessing: isAnyRecordingOrProcessing,
         ),
-        if (_clinicalData != null)
-          TextButton.icon(
-            icon: const Icon(Icons.data_object, size: 16),
-            label: const Text('Fetch from Clinical Notes (General Exam)'),
-            onPressed: _isProcessingAudio || isAnyRecordingOrProcessing
-                ? null
-                : () => _handleFetchClinicalData(
-                'generalPhysicalExamination', 'generalPhysicalExamination'),
-          ),
-
         VoiceInput(
           fieldName: 'Systemic Examination',
           currentValue: _formData.systemicExamination,
@@ -1936,27 +1907,11 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
           disabled: _isProcessingAudio,
           onVoiceFill: () => _toggleFieldRecording(
               'systemicExamination', 'Systemic Examination'),
+          onHistoryClick: () => _fetchSingleFieldHistory('Systemic Examination', 'systemicExamination'),
           isRecording: _isFieldRecording == 'systemicExamination',
           isProcessing: _isFieldProcessing == 'systemicExamination',
           isAnyRecordingOrProcessing: isAnyRecordingOrProcessing,
         ),
-        if (_clinicalData != null)
-          TextButton.icon(
-            icon: const Icon(Icons.data_object, size: 16),
-            label: const Text('Fetch from Clinical Notes (Systemic Exams)'),
-            onPressed: _isProcessingAudio || isAnyRecordingOrProcessing
-                ? null
-                : () => _handleFetchClinicalData(
-                'systemicExamination', [
-              'systemicExaminationCardiovascular',
-              'respiratory',
-              'perAbdomen',
-              'neurology',
-              'skeletal',
-              'otherFindings'
-            ]),
-          ),
-        // ----------------------------
         VoiceInput(
           fieldName: 'Investigations',
           currentValue: _formData.investigations,
@@ -1964,6 +1919,7 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
           disabled: _isProcessingAudio,
           onVoiceFill: () =>
               _toggleFieldRecording('investigations', 'Investigations'),
+          onHistoryClick: () => _fetchSingleFieldHistory('Investigations', 'investigations'),
           isRecording: _isFieldRecording == 'investigations',
           isProcessing: _isFieldProcessing == 'investigations',
           isAnyRecordingOrProcessing: isAnyRecordingOrProcessing,
@@ -1975,6 +1931,7 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
           disabled: _isProcessingAudio,
           onVoiceFill: () =>
               _toggleFieldRecording('treatmentGiven', 'Treatment Given'),
+          onHistoryClick: () => _fetchSingleFieldHistory('Treatment Given', 'treatmentGiven'),
           isRecording: _isFieldRecording == 'treatmentGiven',
           isProcessing: _isFieldProcessing == 'treatmentGiven',
           isAnyRecordingOrProcessing: isAnyRecordingOrProcessing,
@@ -1994,18 +1951,11 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
           disabled: _isProcessingAudio,
           onVoiceFill: () =>
               _toggleFieldRecording('hospitalCourse', 'Hospital Course'),
+          onHistoryClick: () => _fetchSingleFieldHistory('Hospital Course', 'hospitalCourse'),
           isRecording: _isFieldRecording == 'hospitalCourse',
           isProcessing: _isFieldProcessing == 'hospitalCourse',
           isAnyRecordingOrProcessing: isAnyRecordingOrProcessing,
         ),
-        if (_clinicalData != null)
-          TextButton.icon(
-            icon: const Icon(Icons.data_object, size: 16),
-            label: const Text('Fetch from Clinical Notes (Summary)'),
-            onPressed: _isProcessingAudio || isAnyRecordingOrProcessing
-                ? null
-                : () => _handleFetchClinicalData('hospitalCourse', 'summary'),
-          ),
         VoiceInput(
           fieldName: 'Surgery / Procedure Details',
           currentValue: _formData.surgeryProcedureDetails,
@@ -2013,19 +1963,11 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
           disabled: _isProcessingAudio,
           onVoiceFill: () => _toggleFieldRecording(
               'surgeryProcedureDetails', 'Surgery / Procedure Details'),
+          onHistoryClick: () => _fetchSingleFieldHistory('Surgery / Procedure Details', 'surgeryProcedureDetails'),
           isRecording: _isFieldRecording == 'surgeryProcedureDetails',
           isProcessing: _isFieldProcessing == 'surgeryProcedureDetails',
           isAnyRecordingOrProcessing: isAnyRecordingOrProcessing,
         ),
-        if (_clinicalData != null)
-          TextButton.icon(
-            icon: const Icon(Icons.data_object, size: 16),
-            label: const Text('Fetch from Clinical Notes (Other Findings)'),
-            onPressed: _isProcessingAudio || isAnyRecordingOrProcessing
-                ? null
-                : () => _handleFetchClinicalData(
-                'surgeryProcedureDetails', 'otherFindings'),
-          ),
         VoiceInput(
           fieldName: 'Condition at time of Discharge',
           currentValue: _formData.conditionAtDischarge,
@@ -2033,6 +1975,7 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
           disabled: _isProcessingAudio,
           onVoiceFill: () => _toggleFieldRecording(
               'conditionAtDischarge', 'Condition at time of Discharge'),
+          onHistoryClick: () => _fetchSingleFieldHistory('Condition at time of Discharge', 'conditionAtDischarge'),
           isRecording: _isFieldRecording == 'conditionAtDischarge',
           isProcessing: _isFieldProcessing == 'conditionAtDischarge',
           isAnyRecordingOrProcessing: isAnyRecordingOrProcessing,
@@ -2044,6 +1987,7 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
           disabled: _isProcessingAudio,
           onVoiceFill: () => _toggleFieldRecording(
               'dischargeMedications', 'Discharge Medications'),
+          onHistoryClick: () => _fetchSingleFieldHistory('Discharge Medications', 'dischargeMedications'),
           isRecording: _isFieldRecording == 'dischargeMedications',
           isProcessing: _isFieldProcessing == 'dischargeMedications',
           isAnyRecordingOrProcessing: isAnyRecordingOrProcessing,
@@ -2054,6 +1998,7 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
           onChanged: (v) => _handleInputChange(v, 'followUp'),
           disabled: _isProcessingAudio,
           onVoiceFill: () => _toggleFieldRecording('followUp', 'Follow Up'),
+          onHistoryClick: () => _fetchSingleFieldHistory('Follow Up', 'followUp'),
           isRecording: _isFieldRecording == 'followUp',
           isProcessing: _isFieldProcessing == 'followUp',
           isAnyRecordingOrProcessing: isAnyRecordingOrProcessing,
@@ -2065,6 +2010,7 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
           disabled: _isProcessingAudio,
           onVoiceFill: () => _toggleFieldRecording(
               'dischargeInstruction', 'Discharge Instruction'),
+          onHistoryClick: () => _fetchSingleFieldHistory('Discharge Instruction', 'dischargeInstruction'),
           isRecording: _isFieldRecording == 'dischargeInstruction',
           isProcessing: _isFieldProcessing == 'dischargeInstruction',
           isAnyRecordingOrProcessing: isAnyRecordingOrProcessing,
@@ -2076,6 +2022,7 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
           disabled: _isProcessingAudio,
           onVoiceFill: () => _toggleFieldRecording('reportImmediatelyIf',
               'Report immediately to hospital if you notice'),
+          onHistoryClick: () => _fetchSingleFieldHistory('Report immediately to hospital if you notice', 'reportImmediatelyIf'),
           isRecording: _isFieldRecording == 'reportImmediatelyIf',
           isProcessing: _isFieldProcessing == 'reportImmediatelyIf',
           isAnyRecordingOrProcessing: isAnyRecordingOrProcessing,
@@ -2183,8 +2130,9 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
         mainAxisAlignment: MainAxisAlignment.end,
         children: [
           ElevatedButton.icon(
-            onPressed:
-            _isSaving || isAnyRecordingOrProcessing ? null : _generateAndSavePdf,
+            onPressed: _isSaving || isAnyRecordingOrProcessing
+                ? null
+                : _generateAndSavePdf,
             icon: const Icon(Icons.picture_as_pdf, size: 18),
             label: const Text("Download PDF"),
             style: ElevatedButton.styleFrom(
@@ -2194,7 +2142,8 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
           ),
           const SizedBox(width: 16),
           ElevatedButton.icon(
-            onPressed: _isSaving || isAnyRecordingOrProcessing ? null : _handleSave,
+            onPressed:
+            _isSaving || isAnyRecordingOrProcessing ? null : _handleSave,
             icon: _isSaving
                 ? const SizedBox(
                 height: 18,
