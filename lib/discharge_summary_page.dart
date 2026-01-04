@@ -593,6 +593,9 @@ class _DischargeSummaryPageState extends State<DischargeSummaryPage> {
   final GeminiApiService _geminiService = GeminiApiService();
   final MicrophoneService _micService = MicrophoneService();
 
+
+
+
   @override
   void initState() {
     super.initState();
